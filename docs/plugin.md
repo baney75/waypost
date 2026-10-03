@@ -2,10 +2,10 @@
 
 The plugin uses the portable Agent Plugins format, with a bundled Node.js runtime, the MCP connection, and the Waypost skill. Node.js 22.14+ and local service setup are required. The package contains no credentials, cookies, or real account data.
 
-After the public `v0.1.0` tag is available:
+Install the pinned release:
 
 ```sh
-codex plugin marketplace add baney75/waypost --ref v0.1.0
+codex plugin marketplace add baney75/waypost --ref v0.2.0
 codex plugin add waypost@waypost
 ```
 

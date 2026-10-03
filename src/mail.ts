@@ -9,17 +9,18 @@ import { z } from 'zod';
 import { checkedPath, saveArtifact, type Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { defineTool } from './tool.js';
+import { helperMailDoctor, helperMailList, helperMailRead } from './mail-helper.js';
 
 const MAX_BODY = 256 * 1024;
 const MAX_DRAFT = 512 * 1024;
 const header = (max:number) => z.string().max(max).refine(value => !/[\x00-\x1f\x7f]/.test(value), 'Header control characters are not permitted.');
 const address = header(254).pipe(z.email());
-const mailbox = header(256).min(1).default('INBOX');
-export const mailDoctorSchema = z.object({smtp:z.boolean().default(false)}).strict();
-export const mailListSchema = z.object({mailbox, limit:z.number().int().min(1).max(20).default(10)}).strict();
-export const mailReadSchema = z.object({mailbox, uid:z.number().int().min(1).max(4294967295)}).strict();
-export const mailDraftSchema = z.object({from:address, to:z.array(address).min(1).max(20), cc:z.array(address).max(20).default([]), subject:header(998), text:z.string().max(120000).refine(value => !value.includes('\0'), 'NUL is not permitted.')}).strict();
-export const mailSendSchema = z.object({path:z.string().min(1), sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+const mailbox = header(256).min(1).default('INBOX').describe('Exact mailbox name; defaults to INBOX.');
+export const mailDoctorSchema = z.object({smtp:z.boolean().default(false).describe('Also authenticate SMTP without sending; direct Bridge only.')}).strict();
+export const mailListSchema = z.object({mailbox, limit:z.number().int().min(1).max(20).default(10).describe('Most recent headers to read, 1–20.')}).strict();
+export const mailReadSchema = z.object({mailbox, uid:z.number().int().min(1).max(4294967295).describe('Message UID returned by mail list, in the same mailbox.')}).strict();
+export const mailDraftSchema = z.object({from:address.describe('Sender email address.'), to:z.array(address).min(1).max(20).describe('Recipient email addresses, 1–20.'), cc:z.array(address).max(20).default([]).describe('Copy recipient email addresses, at most 20.'), subject:header(998).describe('Message subject, without line breaks.'), text:z.string().max(120000).refine(value => !value.includes('\0'), 'NUL is not permitted.').describe('Plain-text body, at most 120,000 characters.')}).strict();
+export const mailSendSchema = z.object({path:z.string().min(1).describe('Exact EML path returned by mail draft.'), sha256:z.string().regex(/^[a-f0-9]{64}$/).describe('Exact SHA-256 from the reviewed mail draft; no automatic retries.')}).strict();
 
 async function bridge(config:Config) {
   const mail = config.mail;
@@ -63,6 +64,10 @@ async function smtp(config:Config) {
 }
 export async function mailDoctor(config:Config, input:unknown) {
   const options = mailDoctorSchema.parse(input);
+  if (config.mailHelper) {
+    if (options.smtp) throw new WaypostError('MAIL_HELPER_READ_ONLY', 'The configured Mail helper supports IMAP reads only. SMTP authentication and sending are unavailable.');
+    return helperMailDoctor(config);
+  }
   await imap(config, async () => undefined);
   if (options.smtp) {
     const transport = await smtp(config);
@@ -82,6 +87,7 @@ function safeDate(value:Date | string | undefined) {
 }
 export async function mailList(config:Config, input:unknown) {
   const query = mailListSchema.parse(input);
+  if (config.mailHelper) return helperMailList(config,query);
   return imap(config, async client => {
     const lock = await client.getMailboxLock(query.mailbox,{readOnly:true});
     try {
@@ -96,6 +102,7 @@ export async function mailList(config:Config, input:unknown) {
 }
 export async function mailRead(config:Config, input:unknown) {
   const query = mailReadSchema.parse(input);
+  if (config.mailHelper) return helperMailRead(config,query);
   return imap(config, async client => {
     const lock = await client.getMailboxLock(query.mailbox,{readOnly:true});
     try {
@@ -122,6 +129,7 @@ export async function mailDraft(config:Config, input:unknown) {
 }
 export async function mailSend(config:Config, input:unknown) {
   const request = mailSendSchema.parse(input);
+  if (config.mailHelper) throw new WaypostError('MAIL_HELPER_READ_ONLY', 'The configured Mail helper supports IMAP reads only. Prepare a local draft for review and send it through Proton Mail.');
   if (!config.mail?.sendEnabled) throw new WaypostError('MAIL_SEND_DISABLED', 'Mail sending is disabled by policy. Prepare a local draft instead.');
   const path = await checkedPath(request.path,config.artifactsDir);
   if (!/^draft-[0-9a-f-]+\.eml$/.test(basename(path))) throw new WaypostError('MAIL_DRAFT', 'Send requires an artifact prepared by mail_draft.');
@@ -151,9 +159,9 @@ export async function mailSend(config:Config, input:unknown) {
   finally { transport.close(); }
 }
 export const mailTools = [
-  defineTool({name:'mail_doctor', title:'Check Bridge authentication', description:'Authenticate to local Bridge without reading messages. Optionally check SMTP authentication without sending.', schema:mailDoctorSchema, readOnly:true, destructive:false, handler:mailDoctor}),
+  defineTool({name:'mail_doctor', title:'Check Bridge authentication', description:'Authenticate to Bridge directly or through a configured read-only helper without reading messages. SMTP checks require the direct Bridge route.', schema:mailDoctorSchema, readOnly:true, destructive:false, handler:mailDoctor}),
   defineTool({name:'mail_list', title:'List mail headers', description:'Read at most 20 headers in an EXAMINE mailbox, without flag updates.', schema:mailListSchema, readOnly:true, destructive:false, handler:mailList}),
-  defineTool({name:'mail_read', title:'Read one message', description:'Read one UID using BODY.PEEK with 256 KiB fetched and 12,000 characters returned. No external content or attachments are returned.', schema:mailReadSchema, readOnly:true, destructive:false, handler:mailRead}),
+  defineTool({name:'mail_read', title:'Read one message', description:'Read one UID using BODY.PEEK with at most 256 KiB fetched and 12,000 characters returned. Helper metadata that is unavailable is null. No external content or attachments are returned.', schema:mailReadSchema, readOnly:true, destructive:false, handler:mailRead}),
   defineTool({name:'mail_draft', title:'Prepare local mail draft', description:'Save a local EML artifact and digest. It is not sent or stored in a mailbox.', schema:mailDraftSchema, readOnly:false, destructive:false, handler:mailDraft}),
   defineTool({name:'mail_send', title:'Submit prepared mail', description:'Requires sendEnabled policy, exact prepared EML path and SHA256. Makes one SMTP submission with no retries. Call only for an explicitly authorized recipient and purpose.', schema:mailSendSchema, readOnly:false, destructive:true, handler:mailSend}),
 ];

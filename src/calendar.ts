@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { saveArtifact, type Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { defineTool } from './tool.js';
+import { calendarFeedSnapshots } from './calendar-feed.js';
 
 const MAX_SNAPSHOT = 10 * 1024 * 1024;
 const MAX_OCCURRENCES = 20000;
@@ -16,13 +17,13 @@ const MAX_TIMEZONE_TRANSITIONS = 8192;
 const utc = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, 'Use a UTC date-time with seconds and Z.').refine(value => {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) && date.toISOString().replace('.000Z', 'Z') === value && date.getUTCFullYear() >= 1900 && date.getUTCFullYear() <= 2100;
-}, 'Invalid date-time; supported years are 1900–2100.');
+}, 'Invalid date-time; supported years are 1900–2100.').describe('UTC date-time with seconds, YYYY-MM-DDTHH:MM:SSZ; years 1900–2100.');
 const text = (max: number) => z.string().max(max).refine(value => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value), 'Control characters are not permitted.');
-export const calendarEventsSchema = z.object({from:utc, to:utc, limit:z.number().int().min(1).max(200).default(50)}).strict().refine(value => {
+export const calendarEventsSchema = z.object({from:utc, to:utc, limit:z.number().int().min(1).max(200).default(50).describe('Maximum returned events, 1–200.')}).strict().refine(value => {
   const duration = Date.parse(value.to) - Date.parse(value.from);
   return duration > 0 && duration <= 366 * 86400000;
 }, 'Choose a positive range no longer than 366 days.');
-export const calendarPrepareSchema = z.object({start:utc, end:utc, summary:text(500).min(1), description:text(12000).default(''), location:text(1000).default('')}).strict().refine(value => {
+export const calendarPrepareSchema = z.object({start:utc, end:utc, summary:text(500).min(1).describe('Event title, up to 500 characters.'), description:text(12000).default('').describe('Event notes, up to 12,000 characters.'), location:text(1000).default('').describe('Event location, up to 1,000 characters.')}).strict().refine(value => {
   const duration = Date.parse(value.end) - Date.parse(value.start);
   return duration > 0 && duration <= 366 * 86400000;
 }, 'Event end must follow start by at most 366 days.');
@@ -100,14 +101,18 @@ function timestamp(time: ICAL.Time) {
 type SnapshotEvent = {uid:string; summary:string; description:string; location:string; start:string; end:string; allDay:boolean; source:string; recurrence:boolean};
 export async function calendarEvents(config: Config, input: unknown) {
   const query = calendarEventsSchema.parse(input);
-  if (!config.calendar) throw new WaypostError('CALENDAR_UNCONFIGURED', 'Configure explicit local ICS snapshot files first.');
+  if (!config.calendar || !(config.calendar.files.length || config.calendar.feeds?.length)) throw new WaypostError('CALENDAR_UNCONFIGURED', 'Connect a local ICS export or Proton calendar share link first.');
   const from = Date.parse(query.from), to = Date.parse(query.to);
   const events: SnapshotEvent[] = [];
-  const sources: {path:string; mtime:string}[] = [];
+  const sources: {path:string; mtime:string; fetchedAt?:string; kind?:string; upstreamDelay?:string}[] = [];
   let examined = 0, partial = false;
-  for (const path of config.calendar.files) {
-    const snapshot = await readSnapshot(path);
-    sources.push({path, mtime:snapshot.mtime});
+  async function* snapshots() {
+    for(const path of config.calendar?.files??[]) yield {path,...await readSnapshot(path),kind:'file'};
+    yield* calendarFeedSnapshots(config);
+  }
+  for await (const snapshot of snapshots()) {
+    const {path,content:_,...metadata}=snapshot;
+    sources.push({path,...metadata});
     let calendar: ICAL.Component;
     try { calendar = new ICAL.Component(ICAL.parse(snapshot.content)); }
     catch { throw new WaypostError('CALENDAR_INVALID', 'An approved snapshot is not valid iCalendar data.'); }
@@ -281,6 +286,6 @@ export async function calendarPrepare(config: Config, input: unknown) {
   return {path, sha256:createHash('sha256').update(content).digest('hex'), uid, start:event.start, end:event.end, imported:false, notifications:false, invitations:false};
 }
 export const calendarTools = [
-  defineTool({name:'calendar_events', title:'Read calendar snapshots', description:'Query only approved local ICS snapshots. Results are dated snapshots, not live Calendar API data.', schema:calendarEventsSchema, readOnly:true, destructive:false, handler:calendarEvents}),
+  defineTool({name:'calendar_events', title:'Read calendar snapshots', description:'Read approved ICS files and refresh configured Proton share links. Reports source timestamps and upstream delay; not a live Calendar API.', schema:calendarEventsSchema, readOnly:true, destructive:false, handler:calendarEvents}),
   defineTool({name:'calendar_prepare', title:'Prepare calendar import', description:'Save a new UTC ICS artifact locally. It is not imported and sends no invitations or notifications.', schema:calendarPrepareSchema, readOnly:false, destructive:false, handler:calendarPrepare}),
 ];

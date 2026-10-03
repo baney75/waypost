@@ -9,7 +9,7 @@ Report a vulnerability through [GitHub private vulnerability reporting](https://
 - Bridge credentials come from the named environment variables. Inject them through your host’s protected secret manager. No credentials in arguments or committed files.
 - Mail connections are loopback-only and require a pinned Bridge public certificate. No unpinned TLS fallback.
 - Drive invokes a configured absolute executable without a shell. Group/world-writable executables and the CLI’s plaintext session store are rejected.
-- Calendar input is restricted to approved snapshot files. Upload input is restricted to the real artifacts directory, including symlink checks. New artifacts never overwrite files.
+- Calendar input is restricted to approved snapshot files and protected Proton share links. Link fetches allow only the official HTTPS ICS endpoint, reject redirects, and bound response size/time. Upload input is restricted to the real artifacts directory, including private-owner directory and symlink checks. New artifacts never overwrite files.
 - Reads, message size, recurrence expansion, process output, and operation duration are bounded. Write timeouts carry an uncertain-outcome warning; sends are never retried automatically.
 - Sending and uploading are separate, opt-in local policies. Prepared message digests bind a send to the reviewed artifact.
 

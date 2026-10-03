@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "waypost",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local Proton Mail, Drive and Calendar tools for agents.",
   "author": {
     "name": "Donovan Baney",

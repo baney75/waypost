@@ -6,9 +6,9 @@ Local tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP
 
 | Service | Connection | What works |
 | --- | --- | --- |
-| Mail | Proton Mail Bridge · paid Mail plan | Read headers and messages, prepare drafts, optionally send. |
+| Mail | Proton Mail Bridge · direct or authenticated read-only helper | Read headers and messages, prepare drafts, optionally send. |
 | Drive | Official Proton Drive CLI | List, inspect, download, optionally upload. |
-| Calendar | Local ICS snapshots | Query events and prepare import files. Import in Proton Calendar. |
+| Calendar | ICS exports or refreshable Proton links | Read an agenda and prepare import files. Import in Proton Calendar. |
 
 Waypost is an independent project. Your Proton account password stays in Proton’s sign-in screens. Bridge and Drive keep separate sessions; Calendar imports need verification in the app. Read the [supported routes and limits](docs/proton-support.md) before connecting an account.
 
@@ -32,7 +32,7 @@ node dist/cli.js connect drive
 node dist/cli.js connect calendar /absolute/path/to/calendar-export.ics
 ```
 
-Mail setup uses Bridge’s public certificate and generated credentials. Follow [Setup](docs/setup.md), then run:
+Mail uses Bridge’s public certificate and generated credentials, or an existing authenticated read-only helper. Calendar share links refresh on each query; Proton may delay changes by up to eight hours. Follow [Setup](docs/setup.md), then run:
 
 ```sh
 node dist/cli.js doctor
@@ -57,10 +57,10 @@ The bundled runtime needs Node.js and has no dependency-install step.
 
 For a Codex TOML entry, run `node dist/cli.js agent-config codex`. For Cursor or Claude, run `node dist/cli.js agent-config generic` and copy the JSON output. MCP uses standard input/output and opens no network listener.
 
-The [Codex plugin](docs/plugin.md) bundles the runtime and a focused agent skill. After the public `v0.1.0` release, install from its pinned marketplace:
+The [Codex plugin](docs/plugin.md) bundles the runtime and a focused agent skill. Install from the pinned release:
 
 ```sh
-codex plugin marketplace add baney75/waypost --ref v0.1.0
+codex plugin marketplace add baney75/waypost --ref v0.2.0
 codex plugin add waypost@waypost
 ```
 
@@ -71,13 +71,14 @@ Service setup is still required after installing the plugin. The GitHub marketpl
 Install locally with `npm install -g .`, or replace `waypost` below with `node runtime/waypost.mjs`.
 
 ```sh
-waypost drive list --input '{"path":"/my-files"}'
-waypost mail list --input '{"mailbox":"INBOX","limit":5}'
-waypost calendar events --input '{"from":"2026-10-05T00:00:00Z","to":"2026-10-12T00:00:00Z"}'
-waypost calendar prepare --input '{"summary":"Project review","start":"2026-10-05T14:00:00Z","end":"2026-10-05T14:30:00Z"}'
+waypost drive list --path /my-files
+waypost mail list --mailbox INBOX --limit 5
+waypost calendar agenda --days 7
+waypost calendar prepare --summary "Project review" \
+  --start 2026-10-05T14:00:00Z --end 2026-10-05T14:30:00Z
 ```
 
-Commands return JSON. `waypost tools` lists every input schema; `waypost call <tool> --input '{}'` addresses the same tools as MCP.
+Use normal flags for terminal work, or retain `--input` JSON for scripts. Repeat array flags such as `--to` for each recipient. Commands return JSON. `waypost tools` lists every input schema; `waypost call <tool> --input '{}'` addresses the same tools as MCP.
 
 Mail sends and Drive uploads start disabled. A send requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
 

@@ -1,7 +1,8 @@
-Local Proton tools shared by a CLI and stdio MCP server.
+- Reuse an authenticated read-only Mail helper without copying Bridge credentials.
+- Read Calendar exports or refresh protected Proton share links on each query, with retrieval times and upstream-delay reporting.
+- Use ordinary CLI flags and `calendar agenda`; JSON calls remain supported.
+- Reject unsafe artifact directories and downloaded symlinks before reading their contents.
 
-Mail uses authenticated Bridge and generated client credentials. Drive uses the official CLI. Calendar reads ICS snapshots and prepares imports; it does not save live events through an API. Sending and uploads start disabled.
+Calendar writes still produce import files. Proton share links are read-only and can lag by up to eight hours. Direct Bridge is required for SMTP. Account passwords remain in Proton’s official tools.
 
-The plugin archive includes its Node.js runtime and agent skill. Node.js 22.14+ and separate service setup are required. Read the setup guide and verification coverage before connecting an account.
-
-Package checksums are in SHA256SUMS. The CLI package also has a GitHub build attestation when built by this workflow.
+Release assets include SHA-256 checksums. GitHub Actions builds also attest the CLI and plugin archives. The installable Codex marketplace plugin is separate from OpenAI’s reviewed directory.

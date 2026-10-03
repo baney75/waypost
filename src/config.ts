@@ -2,6 +2,8 @@ import { readFile, realpath, stat, mkdir, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
+import { constants } from 'node:fs';
+import { ensureArtifactsDirectory } from './artifacts.js';
 import { WaypostError } from './errors.js';
 
 const absolutePath = z.string().refine(isAbsolute, 'Use an absolute path.');
@@ -17,14 +19,15 @@ export const configSchema = z.object({
     certificate: absolutePath,
     sendEnabled: z.boolean().default(false),
   }).strict().optional(),
+  mailHelper: z.object({executable:absolutePath}).strict().optional(),
   drive: z.object({
     executable: absolutePath,
     root: z.string().startsWith('/my-files').default('/my-files'),
     writeEnabled: z.boolean().default(false),
   }).strict().optional(),
-  calendar: z.object({files:z.array(absolutePath).max(20).default([])}).strict().optional(),
+  calendar: z.object({files:z.array(absolutePath).max(20).default([]),feeds:z.array(z.object({name:z.string().min(1).max(80),urlFile:absolutePath}).strict()).max(10).default([])}).strict().optional(),
   timeoutMs: z.number().int().min(1000).max(120000).default(45000),
-}).strict();
+}).strict().refine(value => !(value.mail && value.mailHelper), 'Choose either local Bridge or a Mail helper.');
 export type Config = z.infer<typeof configSchema>;
 export const defaultConfigPath = () => process.env.WAYPOST_CONFIG ?? join(homedir(), '.config', 'waypost', 'config.json');
 export async function loadConfig(path = defaultConfigPath()): Promise<Config> {
@@ -35,7 +38,7 @@ export async function loadConfig(path = defaultConfigPath()): Promise<Config> {
     return configSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   } catch (error) {
     if(error instanceof WaypostError) throw error;
-    throw new WaypostError('CONFIG_INVALID', 'Configuration is missing or invalid. Run waypost init, then edit the paths in your config.');
+    throw new WaypostError('CONFIG_INVALID', 'Configuration is missing or invalid. Run waypost init, then waypost connect --help.');
   }
 }
 export async function initConfig(path = defaultConfigPath()): Promise<string> {
@@ -53,10 +56,9 @@ export async function checkedPath(path:string, root:string): Promise<string> {
 }
 export async function saveArtifact(config:Config, name:string, content:string | Uint8Array):Promise<string> {
   if(!/^[a-z0-9][a-z0-9._-]{0,120}$/i.test(name)) throw new WaypostError('PATH_DENIED','Invalid artifact name.');
-  await mkdir(config.artifactsDir,{recursive:true,mode:0o700});
-  const root=await realpath(config.artifactsDir);
+  const root=await ensureArtifactsDirectory(config.artifactsDir);
   const file=resolve(root,name);
-  const handle=await open(file,'wx',0o600);
+  const handle=await open(file,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
   try {await handle.writeFile(content);} finally {await handle.close();}
   return file;
 }

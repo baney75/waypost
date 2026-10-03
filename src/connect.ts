@@ -1,11 +1,13 @@
 import { access, chmod, open, readFile, rename, unlink, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { configSchema, loadConfig } from './config.js';
+import { configSchema, loadConfig, saveArtifact } from './config.js';
 import type { Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { runExecutable } from './process.js';
+import { helperMailDoctor } from './mail-helper.js';
+import { calendarFeedUrl, readFeedUrl, fetchCalendarFeed } from './calendar-feed.js';
 
 export async function amendConfig(path:string,change:(config:Config)=>Config):Promise<Config> {
   const lock=path+'.lock';let handle;
@@ -30,12 +32,32 @@ export async function connectDrive(path:string,executable?:string,signin=true):P
 export async function connectCalendar(path:string,file:string):Promise<unknown> {
   const resolved=await realpath(resolve(file));const content=await readFile(resolved,'utf8');
   if(Buffer.byteLength(content)>10*1024*1024||!content.startsWith('BEGIN:VCALENDAR'))throw new WaypostError('CALENDAR_INVALID','Use a Calendar ICS export no larger than 10 MiB.');
-  await amendConfig(path,c=>({...c,calendar:{files:[...new Set([...(c.calendar?.files??[]),resolved])]}}));
-  await chmod(path,0o600);return {service:'calendar',configured:true,snapshot:true,next:'Run calendar events for the desired date range. Re-export when your calendar changes.'};
+  await amendConfig(path,c=>({...c,calendar:{files:[...new Set([...(c.calendar?.files??[]),resolved])],feeds:c.calendar?.feeds??[]}}));
+  await chmod(path,0o600);return {service:'calendar',configured:true,snapshot:true,next:'Run waypost calendar agenda. Re-export when your calendar changes.'};
 }
 export async function connectMail(path:string,certificate:string,imapPort=1143,smtpPort=1025):Promise<unknown> {
   const resolved=await realpath(resolve(certificate));const content=await readFile(resolved,'utf8');
   if(content.includes('PRIVATE KEY')||!content.includes('BEGIN CERTIFICATE'))throw new WaypostError('CERTIFICATE_INVALID','Use only Bridge’s exported public PEM certificate.');
-  await amendConfig(path,c=>({...c,mail:{host:'127.0.0.1',imapPort,smtpPort,usernameEnv:c.mail?.usernameEnv??'WAYPOST_MAIL_USERNAME',passwordEnv:c.mail?.passwordEnv??'WAYPOST_MAIL_PASSWORD',certificate:resolved,sendEnabled:c.mail?.sendEnabled??false}}));
+  await amendConfig(path,c=>({...c,mailHelper:undefined,mail:{host:'127.0.0.1',imapPort,smtpPort,usernameEnv:c.mail?.usernameEnv??'WAYPOST_MAIL_USERNAME',passwordEnv:c.mail?.passwordEnv??'WAYPOST_MAIL_PASSWORD',certificate:resolved,sendEnabled:c.mail?.sendEnabled??false}}));
   return {service:'mail',configured:true,next:'Inject Bridge-generated credentials through your protected secret manager, then run waypost mail doctor.'};
+}
+
+export async function connectMailHelper(path:string,executable:string):Promise<unknown> {
+  const found=await realpath(resolve(executable));
+  await access(found,constants.X_OK);
+  await helperMailDoctor({...await loadConfig(path),mail:undefined,mailHelper:{executable:found}});
+  await amendConfig(path,c=>({...c,mail:undefined,mailHelper:{executable:found}}));
+  return {service:'mail',configured:true,route:'helper',readOnly:true,next:'Run waypost mail list --limit 1.'};
+}
+
+export async function connectCalendarFeed(path:string,name:string,source:{url:string}|{file:string}):Promise<unknown> {
+  if(!name.trim()||name.length>80||/[\x00-\x1f\x7f]/.test(name))throw new WaypostError('INPUT_INVALID','Use a calendar name of 1–80 visible characters.');
+  const config=await loadConfig(path);
+  const url='url' in source?calendarFeedUrl(source.url):await readFeedUrl(resolve(source.file));
+  const fetched=await fetchCalendarFeed(url,config.timeoutMs);
+  const urlFile='file' in source?resolve(source.file):await saveArtifact({...config,artifactsDir:join(dirname(resolve(path)),'calendar-links')},`link-${randomUUID()}.url`,url+'\n');
+  try {
+    await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,urlFile}]}}));
+  }catch(error){if('url' in source)await unlink(urlFile).catch(()=>undefined);throw error;}
+  return {service:'calendar',configured:true,name,route:'proton_link',fetchedAt:fetched.fetchedAt,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours.',next:'Run waypost calendar agenda. The link refreshes on each query.'};
 }

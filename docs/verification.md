@@ -11,7 +11,13 @@ Observed on October 2, 2026. Tests use synthetic data; live account checks are l
 | Calendar | UTC and declared-timezone fixtures cover recurrence, exceptions, DST, invalid dates, mixed endpoint types, and bounded hostile timezone rules. Unsupported spring-gap recurrence fails explicitly. |
 | MCP / CLI | Protocol initialization, tool schemas, error envelopes, configuration policies, and the bundled runtime are exercised. |
 
-## Live Proton checks
+## Version 0.2 connection checks
+
+The local 0.2.0 suite passed 64 tests and the production dependency audit. The Mac CLI and packaged MCP authenticated through an existing read-only Mail helper, read one header and one bounded body, and queried a private Proton-exported calendar. These checks retained only counts and success status. Synthetic tests exercise helper JSON validation, Unicode limits, protected feed URLs, redirect rejection, bounded responses, CLI flag/JSON parity, and artifact directory replacement failures. The helper refuses SMTP; direct Bridge tests continue to cover it.
+
+A live Calendar share-link fetch and live import remain unverified. Do not infer immediate freshness from a fetch timestamp. Proton may delay link updates by up to eight hours.
+
+## Original release live Proton checks
 
 - **Mail Bridge:** authenticated IMAP and SMTP, read one header and one bounded message, then confirmed flags were unchanged. No email was sent.
 - **Drive CLI:** listed a directory, uploaded one synthetic text file, inspected it, downloaded it, and compared the bytes. The test file was moved to recoverable trash. The local digest matches the original; this does not verify a Proton-provided remote checksum.
