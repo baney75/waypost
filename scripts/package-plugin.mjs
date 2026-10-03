@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 const {version}=JSON.parse(await readFile('package.json','utf8'));
 const temp=await mkdtemp(join(tmpdir(),'waypost-package-'));const root=join(temp,'waypost');await mkdir(root);
 try {
-  for(const name of ['.codex-plugin','.mcp.json','skills','runtime','assets','docs','README.md','LICENSE','SECURITY.md'])await cp(name,join(root,name),{recursive:true});
+  for(const name of ['plugin.json','mcp.json','skills','runtime','assets','docs','README.md','LICENSE','SECURITY.md'])await cp(name,join(root,name),{recursive:true});
   await rm(join(root,'docs','plan.html'),{force:true});
   const files=[];async function walk(dir){for(const item of await readdir(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())await walk(path);else if(item.isFile())files.push(path.slice(temp.length+1));else throw Error('Unexpected archive entry');}}
   await walk(root);

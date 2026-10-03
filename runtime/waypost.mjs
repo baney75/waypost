@@ -117150,6 +117150,7 @@ program2.command("agent-config [client]").description("Print MCP connection conf
   if (client === "codex") process.stdout.write(`[mcp_servers.waypost]
 command = ${JSON.stringify(process.execPath)}
 args = ${JSON.stringify(args)}
+env_vars = ["WAYPOST_MAIL_USERNAME", "WAYPOST_MAIL_PASSWORD"]
 `);
   else if (client === "generic" || client === "cursor" || client === "claude") process.stdout.write(JSON.stringify({ mcpServers: { waypost: { command: process.execPath, args } } }, null, 2) + "\n");
   else throw new WaypostError("CLIENT_INVALID", "Choose codex, generic, cursor or claude.");

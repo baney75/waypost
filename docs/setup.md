@@ -71,7 +71,9 @@ Use your actual vault/item identifiers. Keep this reference file private. Pass r
 pass-cli run --env-file /absolute/path/to/bridge.references.env -- node /absolute/path/to/waypost/runtime/waypost.mjs mail doctor
 ```
 
-For an MCP client, set `command` to the absolute `pass-cli` path and `args` to `["run", "--env-file", "/absolute/path/to/bridge.references.env", "--", "node", "/absolute/path/to/waypost/runtime/waypost.mjs", "mcp"]`. Keep Pass’s output masking enabled. For Codex CLI with the bundled plugin, launch Codex under `pass-cli run` so the plugin inherits these variables. Avoid putting resolved passwords in the client’s plaintext `env` block.
+For an MCP client, set `command` to the absolute `pass-cli` path and `args` to `["run", "--env-file", "/absolute/path/to/bridge.references.env", "--", "node", "/absolute/path/to/waypost/runtime/waypost.mjs", "mcp"]`. Keep Pass’s output masking enabled. Avoid putting resolved passwords in the client’s plaintext `env` block.
+
+Codex filters environment variables passed to MCP servers. Run `waypost agent-config codex` and add its complete connection entry to `~/.codex/config.toml`; it explicitly forwards the two Bridge variables. This user connection takes precedence over the bundled plugin’s connection. Launch Codex under `pass-cli run --env-file /absolute/path/to/bridge.references.env -- codex` so Pass supplies those variables. The plugin’s skill remains available.
 
 ## Calendar
 

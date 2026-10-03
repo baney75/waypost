@@ -20,14 +20,14 @@
     "dist",
     "assets",
     "skills",
-    ".codex-plugin",
-    ".mcp.json",
     "README.md",
     "SECURITY.md",
     "LICENSE",
     "runtime",
     "docs/*.md",
-    "docs/index.html"
+    "docs/index.html",
+    "plugin.json",
+    "mcp.json"
   ],
   "scripts": {
     "build": "tsc && npm run bundle",

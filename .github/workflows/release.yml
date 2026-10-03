@@ -20,7 +20,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run verify
       - name: Check release version
-        run: node --input-type=module -e 'import p from "./package.json" with {type:"json"}; if(process.env.GITHUB_REF_NAME !== "v"+p.version)process.exit(1)'
+        run: node --input-type=module -e 'import p from "./package.json" with {type:"json"}; import q from "./plugin.json" with {type:"json"}; if(process.env.GITHUB_REF_NAME !== "v"+p.version || p.version !== q.version)process.exit(1)'
       - run: npm pack
       - name: Package plugin
         run: node scripts/package-plugin.mjs

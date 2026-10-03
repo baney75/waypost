@@ -46,7 +46,7 @@ program.command('login <service>').description('Sign in through Proton’s own t
 program.command('agent-config [client]').description('Print MCP connection configuration for codex or generic clients.').action((client='generic')=>{
   const entry=fileURLToPath(new URL('../runtime/waypost.mjs',import.meta.url));
   const args=[entry,'--config',program.opts<{config:string}>().config,'mcp'];
-  if(client==='codex')process.stdout.write(`[mcp_servers.waypost]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(args)}\n`);
+  if(client==='codex')process.stdout.write(`[mcp_servers.waypost]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(args)}\nenv_vars = ["WAYPOST_MAIL_USERNAME", "WAYPOST_MAIL_PASSWORD"]\n`);
   else if(client==='generic'||client==='cursor'||client==='claude')process.stdout.write(JSON.stringify({mcpServers:{waypost:{command:process.execPath,args}}},null,2)+'\n');
   else throw new WaypostError('CLIENT_INVALID','Choose codex, generic, cursor or claude.');
 });
