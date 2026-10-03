@@ -13,7 +13,7 @@ import { checkUpdate } from './update.js';
 
 const program=new Command().name('waypost').description('Local Proton tools for agents.').version(VERSION).option('--config <path>','Configuration file',defaultConfigPath()).showHelpAfterError();
 const output=(value:unknown):void=>{process.stdout.write(JSON.stringify({ok:true,data:value},null,2)+'\n');};
-program.command('init').description('Create a private configuration file; preserve existing files.').action(async()=>output({config:await initConfig(program.opts<{config:string}>().config),next:'Edit service paths, then run waypost doctor.'}));
+program.command('init').description('Create a private configuration file; preserve existing files.').action(async()=>output({config:await initConfig(program.opts<{config:string}>().config),next:'Connect a service using the setup guide, then run doctor.'}));
 const connect=program.command('connect').description('Connect official service routes without storing account passwords.');
 connect.command('drive').description('Find the official Drive CLI and open Proton browser sign-in.').option('--executable <path>','Official CLI path').option('--no-signin','Reuse an existing official session').action(async(options:{executable?:string;signin:boolean})=>output(await connectDrive(program.opts<{config:string}>().config,options.executable,options.signin)));
 connect.command('calendar <file>').description('Approve a local Proton ICS snapshot.').action(async(file:string)=>output(await connectCalendar(program.opts<{config:string}>().config,file)));

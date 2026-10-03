@@ -117087,7 +117087,7 @@ var program2 = new Command().name("waypost").description("Local Proton tools for
 var output2 = (value) => {
   process.stdout.write(JSON.stringify({ ok: true, data: value }, null, 2) + "\n");
 };
-program2.command("init").description("Create a private configuration file; preserve existing files.").action(async () => output2({ config: await initConfig(program2.opts().config), next: "Edit service paths, then run waypost doctor." }));
+program2.command("init").description("Create a private configuration file; preserve existing files.").action(async () => output2({ config: await initConfig(program2.opts().config), next: "Connect a service using the setup guide, then run doctor." }));
 var connect = program2.command("connect").description("Connect official service routes without storing account passwords.");
 connect.command("drive").description("Find the official Drive CLI and open Proton browser sign-in.").option("--executable <path>", "Official CLI path").option("--no-signin", "Reuse an existing official session").action(async (options) => output2(await connectDrive(program2.opts().config, options.executable, options.signin)));
 connect.command("calendar <file>").description("Approve a local Proton ICS snapshot.").action(async (file2) => output2(await connectCalendar(program2.opts().config, file2)));

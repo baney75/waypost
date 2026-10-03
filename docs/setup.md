@@ -1,5 +1,7 @@
 # Setup
 
+From a source checkout, replace `waypost` below with `node runtime/waypost.mjs`. To install the command locally, run `npm install -g .`.
+
 Run `waypost init`, then connect the services you need:
 
 ```sh

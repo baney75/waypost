@@ -6,7 +6,7 @@ Local tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP
 
 | Service | Connection | What works |
 | --- | --- | --- |
-| Mail | Proton Mail Bridge | Read headers and messages, prepare drafts, optionally send. |
+| Mail | Proton Mail Bridge · paid Mail plan | Read headers and messages, prepare drafts, optionally send. |
 | Drive | Official Proton Drive CLI | List, inspect, download, optionally upload. |
 | Calendar | Local ICS snapshots | Query events and prepare import files. Import in Proton Calendar. |
 

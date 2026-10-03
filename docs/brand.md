@@ -20,6 +20,7 @@ Use the system sans stack for prose and system monospace for commands. No downlo
 - `assets/icon.svg` and `assets/favicon.svg`: ivory mark on a navy tile.
 - `assets/icon.png`: 512 × 512 transparent-corner PNG export of the icon SVG, suitable for plugin use.
 - `assets/github-banner.svg`: 1280 × 640 repository banner.
+- `assets/site-preview.jpg`: 1280 × 920 capture of the final landing page, used by the personal-site project entry.
 - `assets/site-preview.svg`: 1280 × 800 vector illustration of the documentation page; not a runtime screenshot.
 
 All geometry and compositions were authored for this project. System fonts are referenced, not redistributed. The SVG source remains editable.
