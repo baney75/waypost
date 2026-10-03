@@ -1,0 +1,56 @@
+{
+  "name": "@baney75/waypost",
+  "version": "0.1.0",
+  "description": "Local Proton Mail, Calendar and Drive tools for agents.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Donovan Baney",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/baney75/waypost.git"
+  },
+  "homepage": "https://github.com/baney75/waypost#readme",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "bin": {
+    "waypost": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "skills",
+    ".codex-plugin",
+    ".mcp.json",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "runtime",
+    "docs/*.md",
+    "docs/index.html"
+  ],
+  "scripts": {
+    "build": "tsc && npm run bundle",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build",
+    "verify": "npm run check && npm test && npm audit --omit=dev --audit-level=high",
+    "bundle": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=runtime/waypost.mjs --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "commander": "15.0.0",
+    "ical.js": "2.2.1",
+    "imapflow": "2.2.1",
+    "mailparser": "3.9.33",
+    "nodemailer": "10.0.13",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/mailparser": "3.9.0",
+    "@types/node": "26.6.4",
+    "@types/nodemailer": "8.0.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run verify
+      - name: Check release version
+        run: node --input-type=module -e 'import p from "./package.json" with {type:"json"}; if(process.env.GITHUB_REF_NAME !== "v"+p.version)process.exit(1)'
+      - run: npm pack
+      - name: Package plugin
+        run: node scripts/package-plugin.mjs
+      - name: Checksums
+        run: sha256sum *.tgz waypost-plugin-*.zip > SHA256SUMS
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: |
+            *.tgz
+            waypost-plugin-*.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" *.tgz waypost-plugin-*.zip SHA256SUMS --verify-tag --title "Waypost $GITHUB_REF_NAME" --notes-file .github/release-notes.md

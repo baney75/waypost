@@ -1,0 +1,44 @@
+{
+  "name": "waypost",
+  "version": "0.1.0",
+  "description": "Local Proton Mail, Drive and Calendar tools for agents.",
+  "author": {
+    "name": "Donovan Baney",
+    "url": "https://dbaney.com"
+  },
+  "homepage": "https://github.com/baney75/waypost",
+  "repository": "https://github.com/baney75/waypost",
+  "license": "MIT",
+  "keywords": [
+    "proton",
+    "mail",
+    "drive",
+    "calendar",
+    "local",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Waypost",
+    "shortDescription": "Local Proton tools for agents",
+    "longDescription": "Read Mail through Bridge, work with Drive through the official CLI, and prepare Calendar ICS imports. Runs locally. Each service needs its own setup.",
+    "developerName": "Donovan Baney",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "logo": "./assets/icon.png",
+    "composerIcon": "./assets/icon.png",
+    "websiteURL": "https://github.com/baney75/waypost",
+    "privacyPolicyURL": "https://github.com/baney75/waypost/blob/main/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/baney75/waypost/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Read my Waypost connection status.",
+      "Prepare a Calendar import for the event I describe."
+    ],
+    "brandColor": "#172331",
+    "supportURL": "https://github.com/baney75/waypost/issues"
+  }
+}

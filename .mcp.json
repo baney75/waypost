@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "waypost": {"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/runtime/waypost.mjs","mcp"]}
+  }
+}

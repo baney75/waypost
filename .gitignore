@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tgz
+*.zip
+.env*
+!example.env
+.DS_Store
+evidence/
+docs/plan.html
