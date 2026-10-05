@@ -26,6 +26,7 @@ export const configSchema = z.object({
     writeEnabled: z.boolean().default(false),
   }).strict().optional(),
   calendar: z.object({files:z.array(absolutePath).max(20).default([]),feeds:z.array(z.object({name:z.string().min(1).max(80),urlFile:absolutePath}).strict()).max(10).default([])}).strict().optional(),
+  pass: z.object({executable:absolutePath}).strict().optional(),
   timeoutMs: z.number().int().min(1000).max(120000).default(45000),
 }).strict().refine(value => !(value.mail && value.mailHelper), 'Choose either local Bridge or a Mail helper.');
 export type Config = z.infer<typeof configSchema>;

@@ -178,6 +178,15 @@ test('helper requires an absolute owner executable with safe permissions', async
   assert.deepEqual(await f.calls(),[]);
 });
 
+test('list search forwards sender and dates and does not read a body', async t => {
+  const f=await fixture(t);
+  const result=await mailList(f.config,{from:'sender@example.com',since:'2026-03-01',before:'2026-03-07',limit:5});
+  assert.equal(result.searched,true);
+  assert.equal(result.bodyFetched,false);
+  assert.deepEqual(await f.calls(),[['recent','--mailbox=INBOX','--limit=5','--from=sender@example.com','--since=2026-03-01','--before=2026-03-07']]);
+  await assert.rejects(mailList(f.config,{from:'not an address'}));
+});
+
 test('helper rejects a shared writable parent before any code executes',async()=>{
   const {mkdtemp,writeFile,chmod,stat,mkdir}=await import('node:fs/promises');
   const {join}=await import('node:path');const {tmpdir}=await import('node:os');

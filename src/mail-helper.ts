@@ -60,11 +60,15 @@ export async function helperMailDoctor(config:Config) {
   await invoke(config,['check'],checkResponse);
   return {imapAuthenticated:true, smtpAuthenticated:null, mailboxRead:false, tls:'Helper-managed Bridge TLS; consult the configured helper', localBridge:false, helper:true, readOnly:true};
 }
-export async function helperMailList(config:Config, query:{mailbox:string;limit:number}) {
-  const result = await invoke(config,['recent',`--mailbox=${query.mailbox}`,`--limit=${query.limit}`],listResponse);
+export async function helperMailList(config:Config, query:{mailbox:string;limit:number;from?:string | undefined;since?:string | undefined;before?:string | undefined}) {
+  const args = ['recent',`--mailbox=${query.mailbox}`,`--limit=${query.limit}`];
+  if (query.from) args.push(`--from=${query.from}`);
+  if (query.since) args.push(`--since=${query.since}`);
+  if (query.before) args.push(`--before=${query.before}`);
+  const result = await invoke(config,args,listResponse);
   if (result.mailbox !== query.mailbox || result.messages.length > query.limit || new Set(result.messages.map(message => message.uid)).size !== result.messages.length) return invalidResponse();
   const messages = await Promise.all(result.messages.map(async message => ({...await normalizedHeaders(message),bytes:null,seen:null})));
-  return {mailbox:result.mailbox, messages, readOnly:true, bodyFetched:false, helper:true};
+  return {mailbox:result.mailbox, messages, readOnly:true, bodyFetched:false, helper:true, searched:Boolean(query.from||query.since||query.before)};
 }
 export async function helperMailRead(config:Config, query:{mailbox:string;uid:number}) {
   const result = await invoke(config,['read',String(query.uid),`--mailbox=${query.mailbox}`],readResponse);
