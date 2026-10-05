@@ -1,6 +1,10 @@
 ![Waypost — Mail and files. Calendar handoffs.](assets/github-banner.svg)
 
+![Waypost documentation for Mail, Drive, and Calendar](assets/site-preview.jpg)
+
 Local tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP server. Built for agents working on your computer.
+
+Built with TypeScript and Node.js.
 
 [Get started](#get-started) · [Setup](docs/setup.md) · [Proton support](docs/proton-support.md) · [Security](SECURITY.md)
 
