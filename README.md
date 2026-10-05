@@ -32,7 +32,7 @@ node dist/cli.js connect drive
 node dist/cli.js connect calendar /absolute/path/to/calendar-export.ics
 ```
 
-Mail uses Bridge’s public certificate and generated credentials, or an existing authenticated read-only helper. Calendar share links refresh on each query; Proton may delay changes by up to eight hours. Follow [Setup](docs/setup.md), then run:
+Mail uses Bridge’s public certificate and generated credentials, or an existing authenticated read-only helper. Calendar share links are read from a private file or a Proton Pass item and reused for 10 minutes; Proton may delay changes by up to eight hours. Follow [Setup](docs/setup.md), then run:
 
 ```sh
 node dist/cli.js doctor

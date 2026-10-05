@@ -9,7 +9,7 @@ import { callTool, tools, capabilities } from './registry.js';
 import { serve } from './mcp.js';
 import { VERSION } from './version.js';
 import { runExecutable } from './process.js';
-import { connectDrive, connectMail, connectMailHelper, connectCalendar, connectCalendarFeed } from './connect.js';
+import { connectDrive, connectMail, connectMailHelper, connectCalendar, connectCalendarFeed, connectCalendarPass } from './connect.js';
 import { checkUpdate } from './update.js';
 
 const program=new Command().name('waypost').description('Proton Mail, Calendar and Drive for your terminal and agents.').version(VERSION).option('--config <path>','Configuration file',defaultConfigPath()).showHelpAfterError();
@@ -27,8 +27,13 @@ program.command('init').description('Create a private configuration; preserve ex
 program.command('status').description('Show connection settings and available routes.').action(async()=>output(capabilities(await loadConfig(configPath()))));
 const connect=program.command('connect').description('Connect official service routes. Run a subcommand with --help for options.');
 connect.command('drive').description('Find the official Drive CLI and open Proton browser sign-in.').option('--executable <path>','Official CLI path').option('--no-signin','Reuse an existing official session').action(async(options:{executable?:string;signin:boolean})=>output(await connectDrive(configPath(),options.executable,options.signin)));
-connect.command('calendar [file]').description('Connect an ICS export or a refreshable Proton share link.').option('--url-file <path>','Owner-only file containing a Proton share URL').option('--url-stdin','Read a Proton share URL from standard input').option('--name <name>','Name for a linked calendar','Calendar').action(async(file:string|undefined,options:{urlFile?:string;urlStdin?:boolean;name:string})=>{
-  if(Number(!!file)+Number(!!options.urlFile)+Number(!!options.urlStdin)!==1)throw new WaypostError('INPUT_INVALID','Supply an ICS file, --url-file, or --url-stdin. Use exactly one source.');
+connect.command('calendar [file]').description('Connect an ICS export or a refreshable Proton share link.').option('--url-file <path>','Owner-only file containing a Proton share URL').option('--url-stdin','Read a Proton share URL from standard input').option('--pass-item <title>','Proton Pass item title whose URL is the share link').option('--vault <name>','Proton Pass vault that holds --pass-item').option('--name <name>','Name for a linked calendar','Calendar').action(async(file:string|undefined,options:{urlFile?:string;urlStdin?:boolean;passItem?:string;vault?:string;name:string})=>{
+  if(Number(!!file)+Number(!!options.urlFile)+Number(!!options.urlStdin)+Number(!!options.passItem)!==1)throw new WaypostError('INPUT_INVALID','Supply an ICS file, --url-file, --url-stdin, or --pass-item. Use exactly one source.');
+  if(options.passItem){
+    if(!options.vault)throw new WaypostError('INPUT_INVALID','Name the Proton Pass vault with --vault. Do not put the share link on the command line.');
+    output(await connectCalendarPass(configPath(),options.name,{passItem:options.passItem,vault:options.vault}));
+    return;
+  }
   output(file?await connectCalendar(configPath(),file):await connectCalendarFeed(configPath(),options.name,options.urlFile?{file:options.urlFile}:{url:await stdinLink()}));
 });
 connect.command('mail').description('Connect local Bridge or an authenticated read-only Mail helper.').option('--certificate <path>','Bridge public PEM; also inject WAYPOST_MAIL_USERNAME and WAYPOST_MAIL_PASSWORD').option('--helper <path>','Authenticated read-only helper executable').option('--imap-port <port>','IMAP STARTTLS port','1143').option('--smtp-port <port>','SMTP STARTTLS port','1025').action(async(options:{certificate?:string;helper?:string;imapPort:string;smtpPort:string})=>{

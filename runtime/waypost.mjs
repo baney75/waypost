@@ -77724,7 +77724,10 @@ var configSchema = external_exports.object({
     root: external_exports.string().startsWith("/my-files").default("/my-files"),
     writeEnabled: external_exports.boolean().default(false)
   }).strict().optional(),
-  calendar: external_exports.object({ files: external_exports.array(absolutePath).max(20).default([]), feeds: external_exports.array(external_exports.object({ name: external_exports.string().min(1).max(80), urlFile: absolutePath }).strict()).max(10).default([]) }).strict().optional(),
+  calendar: external_exports.object({ files: external_exports.array(absolutePath).max(20).default([]), feeds: external_exports.array(external_exports.union([
+    external_exports.object({ name: external_exports.string().min(1).max(80), urlFile: absolutePath }).strict(),
+    external_exports.object({ name: external_exports.string().min(1).max(80), passItem: external_exports.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u), vault: external_exports.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u) }).strict()
+  ])).max(10).default([]) }).strict().optional(),
   pass: external_exports.object({ executable: absolutePath }).strict().optional(),
   timeoutMs: external_exports.number().int().min(1e3).max(12e4).default(45e3)
 }).strict().refine((value) => !(value.mail && value.mailHelper), "Choose either local Bridge or a Mail helper.");
@@ -107273,10 +107276,58 @@ async function fetchCalendarFeed(url2, timeoutMs) {
     throw new WaypostError("CALENDAR_FEED_FAILED", "Could not refresh the Proton calendar link. Check connectivity and whether the link was revoked. No stale fallback was used.");
   }
 }
+var FEED_CACHE_MS = 10 * 60 * 1e3;
+var feedCache = /* @__PURE__ */ new Map();
+var feedClock = () => Date.now();
+function collectFeedUrls(value, found) {
+  if (typeof value === "string") {
+    try {
+      found.push(calendarFeedUrl(value));
+    } catch {
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectFeedUrls(item, found);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const nested of Object.values(value)) collectFeedUrls(nested, found);
+  }
+}
+async function readPassCalendarUrl(config2, feed) {
+  const executable = config2.pass?.executable;
+  if (!executable) throw new WaypostError("PASS_UNCONFIGURED", "Set pass.executable to the official pass-cli before reading a calendar item.");
+  const output3 = await runExecutable(executable, ["item", "view", "--vault-name", feed.vault, "--item-title", feed.passItem, "--output", "json"], config2.timeoutMs, 256 * 1024);
+  let parsed;
+  try {
+    parsed = JSON.parse(output3);
+  } catch {
+    throw new WaypostError("CALENDAR_PASS_ITEM", "Proton Pass did not return the calendar item as JSON. The response was not logged.");
+  }
+  const found = [];
+  collectFeedUrls(parsed, found);
+  const unique = [...new Set(found)];
+  const link = unique.length === 1 ? unique[0] : void 0;
+  if (!link) throw new WaypostError("CALENDAR_PASS_ITEM", unique.length ? "The Proton Pass item contains more than one calendar share link. The links were not logged." : "The Proton Pass item has no Proton calendar share link. Add the full-view link as a URL on that item.");
+  return link;
+}
+async function loadCalendarFeed(key, load) {
+  const now = feedClock();
+  const hit = feedCache.get(key);
+  if (hit && hit.expires > now) return { content: hit.content, fetchedAt: hit.fetchedAt, cached: true };
+  const fresh = await load();
+  feedCache.set(key, { content: fresh.content, fetchedAt: fresh.fetchedAt, expires: now + FEED_CACHE_MS });
+  return { ...fresh, cached: false };
+}
+function passFeedKey(feed) {
+  return `pass:${feed.vault}:${feed.passItem}`;
+}
 async function* calendarFeedSnapshots(config2) {
   for (const feed of config2.calendar?.feeds ?? []) {
-    const result = await fetchCalendarFeed(await readFeedUrl(feed.urlFile), config2.timeoutMs);
-    yield { path: `feed:${feed.name}`, content: result.content, mtime: result.fetchedAt, fetchedAt: result.fetchedAt, kind: "proton_link", upstreamDelay: "Proton share links can lag calendar changes by up to 8 hours." };
+    const key = "urlFile" in feed ? `file:${feed.urlFile}` : passFeedKey(feed);
+    const result = await loadCalendarFeed(key, async () => fetchCalendarFeed("urlFile" in feed ? await readFeedUrl(feed.urlFile) : await readPassCalendarUrl(config2, feed), config2.timeoutMs));
+    yield { path: `feed:${feed.name}`, content: result.content, mtime: result.fetchedAt, fetchedAt: result.fetchedAt, cached: result.cached, kind: "proton_link", upstreamDelay: "Proton share links can lag calendar changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes and does not keep a failed fetch." };
   }
 }
 
@@ -107627,7 +107678,7 @@ var capabilities = (config2) => ({
   services: {
     mail: { route: config2?.mailHelper ? "Authenticated read-only Mail helper" : "Proton Mail Bridge", configured: !!(config2?.mail || config2?.mailHelper), sendEnabled: config2?.mail?.sendEnabled ?? false, requires: config2?.mailHelper ? "An authenticated read-only helper with protected Bridge credentials. SMTP requires direct Bridge." : "A paid Proton plan including Mail, authenticated Bridge, pinned certificate and Bridge-generated credentials." },
     drive: { route: "Official Proton Drive CLI", configured: !!config2?.drive, writeEnabled: config2?.drive?.writeEnabled ?? false, requires: "Official CLI installed and signed in through Proton browser authentication." },
-    calendar: { route: "ICS files, refreshable Proton links and prepared imports", configured: !!(config2?.calendar?.files.length || config2?.calendar?.feeds?.length), files: config2?.calendar?.files.length ?? 0, feeds: config2?.calendar?.feeds?.map((f) => f.name) ?? [], liveAPI: false, writeStatus: "Preparation only. Import in Proton Calendar and verify the saved event. Every configured file is read, including a Baney Family export when one is connected." },
+    calendar: { route: "ICS files, Proton links from a private file or Proton Pass, and prepared imports", configured: !!(config2?.calendar?.files.length || config2?.calendar?.feeds?.length), files: config2?.calendar?.files.length ?? 0, feeds: config2?.calendar?.feeds?.map((f) => f.name) ?? [], liveAPI: false, cache: "Successful Proton link fetches are reused for 10 minutes. The share URL is not stored in this status.", writeStatus: "Preparation only. Import in Proton Calendar and verify the saved event. Every configured file is read, including a Baney Family export when one is connected." },
     pass: { route: "Official Proton Pass CLI", configured: !!config2?.pass, returns: "Item names and http(s) URLs only.", secrets: false }
   },
   transport: "stdio",
@@ -117318,7 +117369,7 @@ var StdioServerTransport = class {
 };
 
 // src/version.ts
-var VERSION = "0.4.0";
+var VERSION = "0.4.1";
 
 // src/mcp.ts
 async function serve(configPath2) {
@@ -117417,19 +117468,31 @@ async function connectMailHelper(path4, executable) {
   await amendConfig(path4, (c) => ({ ...c, mail: void 0, mailHelper: { executable: found } }));
   return { service: "mail", configured: true, route: "helper", readOnly: true, next: "Run waypost mail list --limit 1." };
 }
-async function connectCalendarFeed(path4, name3, source) {
+function calendarName(name3) {
   if (!name3.trim() || name3.length > 80 || /[\x00-\x1f\x7f]/.test(name3)) throw new WaypostError("INPUT_INVALID", "Use a calendar name of 1\u201380 visible characters.");
+}
+async function connectCalendarFeed(path4, name3, source) {
+  calendarName(name3);
   const config2 = await loadConfig(path4);
   const url2 = "url" in source ? calendarFeedUrl(source.url) : await readFeedUrl(resolve5(source.file));
-  const fetched = await fetchCalendarFeed(url2, config2.timeoutMs);
   const urlFile = "file" in source ? resolve5(source.file) : await saveArtifact({ ...config2, artifactsDir: join6(dirname3(resolve5(path4)), "calendar-links") }, `link-${randomUUID3()}.url`, url2 + "\n");
+  let fetched;
   try {
+    fetched = await loadCalendarFeed(`file:${urlFile}`, () => fetchCalendarFeed(url2, config2.timeoutMs));
     await amendConfig(path4, (c) => ({ ...c, calendar: { files: c.calendar?.files ?? [], feeds: [...(c.calendar?.feeds ?? []).filter((f) => f.name !== name3), { name: name3, urlFile }] } }));
   } catch (error63) {
     if ("url" in source) await unlink(urlFile).catch(() => void 0);
     throw error63;
   }
-  return { service: "calendar", configured: true, name: name3, route: "proton_link", fetchedAt: fetched.fetchedAt, readOnly: true, upstreamDelay: "Proton share links can lag changes by up to 8 hours.", next: "Run waypost calendar agenda. The link refreshes on each query." };
+  return { service: "calendar", configured: true, name: name3, route: "proton_link", fetchedAt: fetched.fetchedAt, cached: fetched.cached, readOnly: true, upstreamDelay: "Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.", next: "Run waypost calendar agenda. The link is read from the private file and is not logged." };
+}
+async function connectCalendarPass(path4, name3, item) {
+  calendarName(name3);
+  if (!/^[\p{L}\p{N} .@_+/-]+$/u.test(item.passItem) || !/^[\p{L}\p{N} .@_+/-]+$/u.test(item.vault)) throw new WaypostError("INPUT_INVALID", "Use a Pass item title and vault name without control characters.");
+  const config2 = await loadConfig(path4);
+  const fetched = await loadCalendarFeed(passFeedKey(item), async () => fetchCalendarFeed(await readPassCalendarUrl(config2, item), config2.timeoutMs));
+  await amendConfig(path4, (c) => ({ ...c, calendar: { files: c.calendar?.files ?? [], feeds: [...(c.calendar?.feeds ?? []).filter((f) => f.name !== name3), { name: name3, passItem: item.passItem, vault: item.vault }] } }));
+  return { service: "calendar", configured: true, name: name3, route: "proton_pass", vault: item.vault, passItem: item.passItem, fetchedAt: fetched.fetchedAt, cacheMinutes: 10, urlStored: false, readOnly: true, upstreamDelay: "Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.", next: "Run waypost calendar agenda. The share link stays in Proton Pass and is not written to Waypost config or logs." };
 }
 
 // src/update.ts
@@ -117478,8 +117541,13 @@ program2.command("init").description("Create a private configuration; preserve e
 program2.command("status").description("Show connection settings and available routes.").action(async () => output2(capabilities(await loadConfig(configPath()))));
 var connect = program2.command("connect").description("Connect official service routes. Run a subcommand with --help for options.");
 connect.command("drive").description("Find the official Drive CLI and open Proton browser sign-in.").option("--executable <path>", "Official CLI path").option("--no-signin", "Reuse an existing official session").action(async (options) => output2(await connectDrive(configPath(), options.executable, options.signin)));
-connect.command("calendar [file]").description("Connect an ICS export or a refreshable Proton share link.").option("--url-file <path>", "Owner-only file containing a Proton share URL").option("--url-stdin", "Read a Proton share URL from standard input").option("--name <name>", "Name for a linked calendar", "Calendar").action(async (file2, options) => {
-  if (Number(!!file2) + Number(!!options.urlFile) + Number(!!options.urlStdin) !== 1) throw new WaypostError("INPUT_INVALID", "Supply an ICS file, --url-file, or --url-stdin. Use exactly one source.");
+connect.command("calendar [file]").description("Connect an ICS export or a refreshable Proton share link.").option("--url-file <path>", "Owner-only file containing a Proton share URL").option("--url-stdin", "Read a Proton share URL from standard input").option("--pass-item <title>", "Proton Pass item title whose URL is the share link").option("--vault <name>", "Proton Pass vault that holds --pass-item").option("--name <name>", "Name for a linked calendar", "Calendar").action(async (file2, options) => {
+  if (Number(!!file2) + Number(!!options.urlFile) + Number(!!options.urlStdin) + Number(!!options.passItem) !== 1) throw new WaypostError("INPUT_INVALID", "Supply an ICS file, --url-file, --url-stdin, or --pass-item. Use exactly one source.");
+  if (options.passItem) {
+    if (!options.vault) throw new WaypostError("INPUT_INVALID", "Name the Proton Pass vault with --vault. Do not put the share link on the command line.");
+    output2(await connectCalendarPass(configPath(), options.name, { passItem: options.passItem, vault: options.vault }));
+    return;
+  }
   output2(file2 ? await connectCalendar(configPath(), file2) : await connectCalendarFeed(configPath(), options.name, options.urlFile ? { file: options.urlFile } : { url: await stdinLink() }));
 });
 connect.command("mail").description("Connect local Bridge or an authenticated read-only Mail helper.").option("--certificate <path>", "Bridge public PEM; also inject WAYPOST_MAIL_USERNAME and WAYPOST_MAIL_PASSWORD").option("--helper <path>", "Authenticated read-only helper executable").option("--imap-port <port>", "IMAP STARTTLS port", "1143").option("--smtp-port <port>", "SMTP STARTTLS port", "1025").action(async (options) => {

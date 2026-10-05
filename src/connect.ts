@@ -7,7 +7,7 @@ import type { Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { runExecutable } from './process.js';
 import { helperMailDoctor } from './mail-helper.js';
-import { calendarFeedUrl, readFeedUrl, fetchCalendarFeed } from './calendar-feed.js';
+import { calendarFeedUrl, readFeedUrl, fetchCalendarFeed, loadCalendarFeed, passFeedKey, readPassCalendarUrl } from './calendar-feed.js';
 
 export async function amendConfig(path:string,change:(config:Config)=>Config):Promise<Config> {
   const lock=path+'.lock';let handle;
@@ -50,14 +50,26 @@ export async function connectMailHelper(path:string,executable:string):Promise<u
   return {service:'mail',configured:true,route:'helper',readOnly:true,next:'Run waypost mail list --limit 1.'};
 }
 
-export async function connectCalendarFeed(path:string,name:string,source:{url:string}|{file:string}):Promise<unknown> {
+function calendarName(name:string){
   if(!name.trim()||name.length>80||/[\x00-\x1f\x7f]/.test(name))throw new WaypostError('INPUT_INVALID','Use a calendar name of 1–80 visible characters.');
+}
+export async function connectCalendarFeed(path:string,name:string,source:{url:string}|{file:string}):Promise<unknown> {
+  calendarName(name);
   const config=await loadConfig(path);
   const url='url' in source?calendarFeedUrl(source.url):await readFeedUrl(resolve(source.file));
-  const fetched=await fetchCalendarFeed(url,config.timeoutMs);
   const urlFile='file' in source?resolve(source.file):await saveArtifact({...config,artifactsDir:join(dirname(resolve(path)),'calendar-links')},`link-${randomUUID()}.url`,url+'\n');
+  let fetched;
   try {
+    fetched=await loadCalendarFeed(`file:${urlFile}`,()=>fetchCalendarFeed(url,config.timeoutMs));
     await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,urlFile}]}}));
   }catch(error){if('url' in source)await unlink(urlFile).catch(()=>undefined);throw error;}
-  return {service:'calendar',configured:true,name,route:'proton_link',fetchedAt:fetched.fetchedAt,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours.',next:'Run waypost calendar agenda. The link refreshes on each query.'};
+  return {service:'calendar',configured:true,name,route:'proton_link',fetchedAt:fetched.fetchedAt,cached:fetched.cached,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.',next:'Run waypost calendar agenda. The link is read from the private file and is not logged.'};
+}
+export async function connectCalendarPass(path:string,name:string,item:{passItem:string;vault:string}):Promise<unknown> {
+  calendarName(name);
+  if(!/^[\p{L}\p{N} .@_+/-]+$/u.test(item.passItem)||!/^[\p{L}\p{N} .@_+/-]+$/u.test(item.vault))throw new WaypostError('INPUT_INVALID','Use a Pass item title and vault name without control characters.');
+  const config=await loadConfig(path);
+  const fetched=await loadCalendarFeed(passFeedKey(item),async()=>fetchCalendarFeed(await readPassCalendarUrl(config,item),config.timeoutMs));
+  await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,passItem:item.passItem,vault:item.vault}]}}));
+  return {service:'calendar',configured:true,name,route:'proton_pass',vault:item.vault,passItem:item.passItem,fetchedAt:fetched.fetchedAt,cacheMinutes:10,urlStored:false,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.',next:'Run waypost calendar agenda. The share link stays in Proton Pass and is not written to Waypost config or logs.'};
 }

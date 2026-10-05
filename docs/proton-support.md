@@ -24,7 +24,7 @@ Agent access exposes decrypted content to the agent and its inference provider. 
 
 Proton documents [ICS import](https://proton.me/support/how-to-import-calendar-to-proton-calendar), [read-only subscriptions](https://proton.me/support/subscribe-to-external-calendar), and [calendar sharing links](https://proton.me/support/share-calendar-via-link). CalDAV is unsupported. Full-view sharing URLs include decryption material and should be treated as secrets.
 
-Waypost reads approved local ICS files or fetches explicitly configured Proton share links. It reports file dates or fetch times and Proton’s potential eight-hour delay. It creates new ICS artifacts for deliberate import, without importing automatically or sending invitations. Links are read-only and cannot cover external calendars subscribed inside Proton. Verify the imported event, destination calendar, timezone, and alerts in Proton Calendar before describing it as saved. Duplicate imports can update existing events; Waypost generates a new UID for each prepared event.
+Waypost reads approved local ICS files or fetches Proton share links from an owner-only file or a Proton Pass item. It reports file dates or fetch times, reuses a successful link fetch for 10 minutes, and reports Proton’s potential eight-hour delay. The share URL is not written to logs or tool results. It creates new ICS artifacts for deliberate import, without importing automatically or sending invitations. Links are read-only and cannot cover external calendars subscribed inside Proton. Verify the imported event, destination calendar, timezone, and alerts in Proton Calendar before describing it as saved. Duplicate imports can update existing events; Waypost generates a new UID for each prepared event.
 
 ## Policy basis
 

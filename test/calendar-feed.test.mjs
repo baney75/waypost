@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,chmod,readFile,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {calendarFeedUrl,readFeedUrl,fetchCalendarFeed} from '../dist/calendar-feed.js';
+import {calendarFeedUrl,readFeedUrl,fetchCalendarFeed,clearCalendarFeedCache,setCalendarFeedClock,FEED_CACHE_MS} from '../dist/calendar-feed.js';
 import {calendarEvents} from '../dist/calendar.js';
-import {connectCalendarFeed} from '../dist/connect.js';
+import {connectCalendarFeed,connectCalendarPass} from '../dist/connect.js';
 import {initConfig,loadConfig} from '../dist/config.js';
 const url='https://calendar.proton.me/api/calendar/v1/url/synthetic/calendar.ics?CacheKey=synthetic-key&PassphraseKey=synthetic-secret';
 const ics='BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:feed-event\r\nDTSTART:20261005T140000Z\r\nDTEND:20261005T150000Z\r\nSUMMARY:Feed event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';
@@ -19,17 +19,40 @@ test('feed secrets require a bounded owner-only file without symlinks',async()=>
   const link=join(root,'alias');await symlink(file,link);await assert.rejects(readFeedUrl(link),{code:'CALENDAR_FEED_FILE'});
   await writeFile(file,'x'.repeat(8193));await assert.rejects(readFeedUrl(file),{code:'CALENDAR_FEED_FILE'});
 });
-test('configured feeds refresh per query and never return their secret URL',async(t)=>{
+test('configured feeds cache for 10 minutes and never return their secret URL',async(t)=>{
+  clearCalendarFeedCache();t.after(clearCalendarFeedCache);
   const root=await mkdtemp(join(tmpdir(),'waypost-feed-'));const path=join(root,'config.json');await initConfig(path);
   let calls=0;t.mock.method(globalThis,'fetch',async(target,options)=>{assert.equal(target,url);assert.equal(options.redirect,'error');assert.deepEqual(options.headers,{Accept:'text/calendar'});calls++;return new Response(ics);});
-  const connected=await connectCalendarFeed(path,'Personal',{url});assert.equal(connected.route,'proton_link');const config=await loadConfig(path);
+  const connected=await connectCalendarFeed(path,'Personal',{url});assert.equal(connected.route,'proton_link');assert.equal(connected.cached,false);const config=await loadConfig(path);
   assert.ok(!(await readFile(path,'utf8')).includes('synthetic-secret'));
-  for(let i=0;i<2;i++){
-    const result=await calendarEvents(config,{from:'2026-10-05T00:00:00Z',to:'2026-10-06T00:00:00Z'});
-    assert.equal(result.events[0].summary,'Feed event');assert.equal(result.sources[0].kind,'proton_link');assert.ok(result.sources[0].fetchedAt);assert.match(result.sources[0].upstreamDelay,/8 hours/);
-    assert.ok(!JSON.stringify(result).includes('synthetic-secret'));assert.equal(result.events[0].source,'feed:Personal');
-  }
-  assert.equal(calls,3);
+  const first=await calendarEvents(config,{from:'2026-10-05T00:00:00Z',to:'2026-10-06T00:00:00Z'});
+  const second=await calendarEvents(config,{from:'2026-10-05T00:00:00Z',to:'2026-10-06T00:00:00Z'});
+  assert.equal(first.sources[0].cached,true);assert.equal(second.sources[0].cached,true);
+  assert.equal(second.events[0].summary,'Feed event');assert.equal(second.sources[0].kind,'proton_link');assert.match(second.sources[0].upstreamDelay,/10 minutes/);
+  assert.ok(!JSON.stringify(second).includes('synthetic-secret'));assert.equal(calls,1);
+});
+test('a Pass item supplies the link at runtime and the cache expires',async(t)=>{
+  clearCalendarFeedCache();t.after(clearCalendarFeedCache);
+  const root=await mkdtemp(join(tmpdir(),'waypost-pass-feed-'));const path=join(root,'config.json');await initConfig(path);
+  const secret='super-secret-value';let views=0;let fetches=0;
+  const executable=join(root,'pass-cli');
+  await writeFile(executable,`#!/usr/bin/env node\nif(process.argv.includes('--show-secrets'))process.exit(3);\nif(!(process.argv.includes('view')&&process.argv.includes('--output')&&process.argv.includes('json')&&process.argv.includes('Waypost calendar Personal')&&process.argv.includes('Personal')))process.exit(4);\nprocess.stdout.write(${JSON.stringify(JSON.stringify({password:secret,urls:[url]}))});\n`,{mode:0o700});
+  const config=await loadConfig(path);
+  await writeFile(path,JSON.stringify({...config,pass:{executable}}),{mode:0o600});
+  let now=1_700_000_000_000;setCalendarFeedClock(()=>now);
+  t.mock.method(globalThis,'fetch',async()=>{fetches++;views++;return new Response(ics);});
+  const connected=await connectCalendarPass(path,'Personal',{passItem:'Waypost calendar Personal',vault:'Personal'});
+  assert.equal(connected.urlStored,false);assert.equal(connected.cacheMinutes,10);
+  const saved=await readFile(path,'utf8');
+  assert.ok(!saved.includes('synthetic-secret')&&!saved.includes(secret));
+  assert.match(saved,/Waypost calendar Personal/);
+  const loaded=await loadConfig(path);
+  await calendarEvents(loaded,{from:'2026-10-05T00:00:00Z',to:'2026-10-06T00:00:00Z'});
+  now+=FEED_CACHE_MS;
+  const refreshed=await calendarEvents(loaded,{from:'2026-10-05T00:00:00Z',to:'2026-10-06T00:00:00Z'});
+  assert.equal(refreshed.sources[0].cached,false);
+  assert.ok(!JSON.stringify(refreshed).includes(secret)&&!JSON.stringify(refreshed).includes('synthetic-secret'));
+  assert.equal(fetches,2);assert.equal(views,2);
 });
 test('feed failures expose no URL and no stale success; responses are bounded',async(t)=>{
   t.mock.method(globalThis,'fetch',async()=>{throw new Error(url);});

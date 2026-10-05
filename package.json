@@ -1,6 +1,6 @@
 {
   "name": "@baney75/waypost",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Local Proton Mail, Calendar and Drive tools for agents.",
   "type": "module",
   "license": "MIT",

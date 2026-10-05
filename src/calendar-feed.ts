@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import type { Config } from './config.js';
 import { WaypostError } from './errors.js';
+import { runExecutable } from './process.js';
 
 const MAX_BYTES=10*1024*1024;
 export function calendarFeedUrl(value:string):string {
@@ -46,9 +47,43 @@ export async function fetchCalendarFeed(url:string,timeoutMs:number):Promise<{co
     throw new WaypostError('CALENDAR_FEED_FAILED','Could not refresh the Proton calendar link. Check connectivity and whether the link was revoked. No stale fallback was used.');
   }
 }
+export const FEED_CACHE_MS=10*60*1000;
+type FeedCacheEntry={content:string;fetchedAt:string;expires:number};
+const feedCache=new Map<string,FeedCacheEntry>();
+let feedClock=():number=>Date.now();
+export function clearCalendarFeedCache(){feedCache.clear();feedClock=()=>Date.now();}
+export function setCalendarFeedClock(clock:()=>number){feedClock=clock;}
+function collectFeedUrls(value:unknown,found:string[]){
+  if(typeof value==='string'){try{found.push(calendarFeedUrl(value));}catch{/* Other item fields are not share links. */}return;}
+  if(Array.isArray(value)){for(const item of value)collectFeedUrls(item,found);return;}
+  if(value&&typeof value==='object'){for(const nested of Object.values(value))collectFeedUrls(nested,found);}
+}
+export async function readPassCalendarUrl(config:Config,feed:{passItem:string;vault:string}):Promise<string>{
+  const executable=config.pass?.executable;
+  if(!executable)throw new WaypostError('PASS_UNCONFIGURED','Set pass.executable to the official pass-cli before reading a calendar item.');
+  const output=await runExecutable(executable,['item','view','--vault-name',feed.vault,'--item-title',feed.passItem,'--output','json'],config.timeoutMs,256*1024);
+  let parsed:unknown;
+  try{parsed=JSON.parse(output);}catch{throw new WaypostError('CALENDAR_PASS_ITEM','Proton Pass did not return the calendar item as JSON. The response was not logged.');}
+  const found:string[]=[];
+  collectFeedUrls(parsed,found);
+  const unique=[...new Set(found)];
+  const link=unique.length===1?unique[0]:undefined;
+  if(!link)throw new WaypostError('CALENDAR_PASS_ITEM',unique.length?'The Proton Pass item contains more than one calendar share link. The links were not logged.':'The Proton Pass item has no Proton calendar share link. Add the full-view link as a URL on that item.');
+  return link;
+}
+export async function loadCalendarFeed(key:string,load:()=>Promise<{content:string;fetchedAt:string}>):Promise<{content:string;fetchedAt:string;cached:boolean}>{
+  const now=feedClock();
+  const hit=feedCache.get(key);
+  if(hit&&hit.expires>now)return{content:hit.content,fetchedAt:hit.fetchedAt,cached:true};
+  const fresh=await load();
+  feedCache.set(key,{content:fresh.content,fetchedAt:fresh.fetchedAt,expires:now+FEED_CACHE_MS});
+  return{...fresh,cached:false};
+}
+export function passFeedKey(feed:{vault:string;passItem:string}){return`pass:${feed.vault}:${feed.passItem}`;}
 export async function* calendarFeedSnapshots(config:Config) {
   for(const feed of config.calendar?.feeds??[]) {
-    const result=await fetchCalendarFeed(await readFeedUrl(feed.urlFile),config.timeoutMs);
-    yield {path:`feed:${feed.name}`,content:result.content,mtime:result.fetchedAt,fetchedAt:result.fetchedAt,kind:'proton_link' as const,upstreamDelay:'Proton share links can lag calendar changes by up to 8 hours.'};
+    const key='urlFile' in feed?`file:${feed.urlFile}`:passFeedKey(feed);
+    const result=await loadCalendarFeed(key,async()=>fetchCalendarFeed('urlFile' in feed?await readFeedUrl(feed.urlFile):await readPassCalendarUrl(config,feed),config.timeoutMs));
+    yield {path:`feed:${feed.name}`,content:result.content,mtime:result.fetchedAt,fetchedAt:result.fetchedAt,cached:result.cached,kind:'proton_link' as const,upstreamDelay:'Proton share links can lag calendar changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes and does not keep a failed fetch.'};
   }
 }

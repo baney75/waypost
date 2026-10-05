@@ -1,6 +1,3 @@
-- `mail_send` and `drive_upload` now require `confirm: true` on every call, in addition to the local send/write policy. A missing or false flag fails with `CONFIRMATION_REQUIRED` before any SMTP or Drive operation. CLI users pass `--confirm`.
-- README covers Claude Code (`claude mcp add`) and Claude Desktop setup.
-
-Mail and Calendar stay read-only by default. Calendar writes still produce import files only. Account passwords remain in Proton’s official tools.
-
-Release assets include SHA-256 checksums. GitHub Actions builds also attest the CLI and plugin archives.
+- Calendar share links can live in a Proton Pass item. Waypost reads the item with the official `pass-cli` when the cache misses, keeps a successful fetch for 10 minutes, and does not write the URL into config, logs, or tool results.
+- A private link file or stdin still works. An expired cache is not reused after a failed refresh.
+- `plugin.json` now matches the package version so the release workflow can tag `v0.4.1`.

@@ -11,6 +11,10 @@ Observed on October 2, 2026. Tests use synthetic data; live account checks are l
 | Calendar | UTC and declared-timezone fixtures cover recurrence, exceptions, DST, invalid dates, mixed endpoint types, and bounded hostile timezone rules. Unsupported spring-gap recurrence fails explicitly. |
 | MCP / CLI | Protocol initialization, tool schemas, error envelopes, configuration policies, and the bundled runtime are exercised. |
 
+## Version 0.4.1 checks
+
+Observed on October 4, 2026. Synthetic tests cover a Proton Pass item that holds a share link: the link and a planted password stay out of config and tool results, a second query inside 10 minutes does not fetch again, and the next query after 10 minutes does. A live Proton share link was not created in this release. The Mac still reads the previously connected ICS file until those Pass items exist.
+
 ## Version 0.3 checks
 
 Observed on October 4, 2026. The suite passed with new cases: `mail_send` and `drive_upload` reject a missing or false `confirm` before any SMTP submission or Drive call, and MCP advertises `confirm` in both input schemas. No live send or upload was performed.
