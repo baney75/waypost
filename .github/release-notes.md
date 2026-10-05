@@ -1,8 +1,6 @@
-- Reuse an authenticated read-only Mail helper without copying Bridge credentials.
-- Read Calendar exports or refresh protected Proton share links on each query, with retrieval times and upstream-delay reporting.
-- Use ordinary CLI flags and `calendar agenda`; JSON calls remain supported.
-- Reject unsafe artifact directories and downloaded symlinks before reading their contents.
+- `mail_send` and `drive_upload` now require `confirm: true` on every call, in addition to the local send/write policy. A missing or false flag fails with `CONFIRMATION_REQUIRED` before any SMTP or Drive operation. CLI users pass `--confirm`.
+- README covers Claude Code (`claude mcp add`) and Claude Desktop setup.
 
-Calendar writes still produce import files. Proton share links are read-only and can lag by up to eight hours. Direct Bridge is required for SMTP. Account passwords remain in Proton’s official tools.
+Mail and Calendar stay read-only by default. Calendar writes still produce import files only. Account passwords remain in Proton’s official tools.
 
-Release assets include SHA-256 checksums. GitHub Actions builds also attest the CLI and plugin archives. The installable Codex marketplace plugin is separate from OpenAI’s reviewed directory.
+Release assets include SHA-256 checksums. GitHub Actions builds also attest the CLI and plugin archives.

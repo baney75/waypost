@@ -15,6 +15,8 @@ test('bundled MCP negotiates, lists tools, reports config and rejects a forbidde
     await client.connect(transport);const listed=await client.listTools();assert.ok(listed.tools.length>=10);assert.equal(listed.tools.find(t=>t.name==='drive_upload').annotations.readOnlyHint,false);
     const status=await client.callTool({name:'waypost_status',arguments:{}});assert.equal(status.structuredContent.data.services.drive.configured,true);assert.equal(status.structuredContent.data.services.calendar.liveAPI,false);
     const denied=await client.callTool({name:'drive_upload',arguments:{file:'/tmp/private',parent:'/my-files'}});assert.equal(denied.isError,true);assert.equal(denied.structuredContent.error.code,'WRITE_DISABLED');
+    const upload=listed.tools.find(t=>t.name==='drive_upload');assert.equal(upload.inputSchema.properties.confirm.type,'boolean');
+    const send=listed.tools.find(t=>t.name==='mail_send');assert.equal(send.annotations.destructiveHint,true);assert.equal(send.inputSchema.properties.confirm.type,'boolean');
     const resources=await client.listResources();assert.ok(resources.resources.some(r=>r.uri==='waypost://capabilities'));
     const prompts=await client.listPrompts();assert.equal(prompts.prompts[0].name,'proton-triage');assert.equal(stderr,'');
   }finally{await client.close();}

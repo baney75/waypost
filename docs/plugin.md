@@ -5,7 +5,7 @@ The plugin uses the portable Agent Plugins format, with a bundled Node.js runtim
 Install the pinned release:
 
 ```sh
-codex plugin marketplace add baney75/waypost --ref v0.2.0
+codex plugin marketplace add baney75/waypost --ref v0.3.0
 codex plugin add waypost@waypost
 ```
 

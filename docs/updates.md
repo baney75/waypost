@@ -7,9 +7,9 @@
 Use a published release’s pinned tag. Review the changes before updating. Download the pinned release and verify its checksums before installing.
 
 ```sh
-gh release download v0.2.0 --repo baney75/waypost --pattern '*.tgz' --pattern '*.zip' --pattern 'SHA256SUMS'
+gh release download v0.3.0 --repo baney75/waypost --pattern '*.tgz' --pattern '*.zip' --pattern 'SHA256SUMS'
 shasum -a 256 -c SHA256SUMS
-npm install -g ./baney75-waypost-0.2.0.tgz
+npm install -g ./baney75-waypost-0.3.0.tgz
 waypost --version
 waypost doctor
 ```
@@ -19,5 +19,7 @@ A checksum verifies bytes against the release manifest. It does not prove author
 The Codex Git marketplace is pinned to a version tag in the recommended setup. Change the pin deliberately for an upgrade. Keep the prior package/tag available for rollback; configuration schema changes require release notes and migration instructions. Installing a prior package restores code without deleting your official Proton sessions or artifacts.
 
 GitHub CI checks Node.js compatibility, tests, dependency advisories, and the packaged runtime. Dependabot proposes dependency updates for review. Runtime dependencies are pinned in the lockfile. No remote installer is piped into a shell.
+
+Version 0.3 adds a required per-call `confirm: true` to `mail_send` and `drive_upload`; scripts that send or upload must pass it. Configuration is unchanged.
 
 Version 0.2 adds optional `mailHelper` and Calendar `feeds` settings to schema 1. Existing direct Bridge, Drive and ICS-file configurations still load. Before rolling back to 0.1, restore your earlier config or remove those new fields; an older runtime rejects them. Keep a private config backup before upgrading.

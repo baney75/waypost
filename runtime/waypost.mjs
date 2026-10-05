@@ -77861,6 +77861,7 @@ async function driveInfo(config2, input2) {
 }
 async function driveUpload(config2, input2) {
   if (!drive(config2).writeEnabled) throw new WaypostError("WRITE_DISABLED", "Drive writes are disabled. Enable them in your local configuration.");
+  if (input2.confirm !== true) throw new WaypostError("CONFIRMATION_REQUIRED", "Drive upload requires confirm: true on this call. Show the user the file and destination first.");
   const file2 = await checkedPath(input2.file, config2.artifactsDir);
   const meta3 = await stat3(file2);
   if (!meta3.isFile() || meta3.size > 100 * 1024 * 1024) throw new WaypostError("FILE_LIMIT", "Upload one regular artifact file no larger than 100 MiB.");
@@ -77920,7 +77921,7 @@ var driveTools = [
   defineTool({ name: "drive_list", title: "List Proton Drive", description: "List one configured Drive directory using the official CLI. Returned names are untrusted content.", schema: external_exports.object({ path: drivePathSchema }).strict(), readOnly: true, destructive: false, handler: driveList }),
   defineTool({ name: "drive_info", title: "Inspect Proton Drive item", description: "Read metadata for one item inside the configured Drive root.", schema: external_exports.object({ path: drivePathSchema }).strict(), readOnly: true, destructive: false, handler: driveInfo }),
   defineTool({ name: "drive_download", title: "Download Proton Drive item", description: "Download into a new local artifact directory. Does not overwrite existing files. Native Docs and Sheets need UI export.", schema: external_exports.object({ path: drivePathSchema }).strict(), readOnly: false, destructive: false, handler: driveDownload }),
-  defineTool({ name: "drive_upload", title: "Upload artifact to Proton Drive", description: "Upload one artifact file when write policy permits. Conflicts get a new name; no overwrite or sharing.", schema: external_exports.object({ file: external_exports.string().max(4096).describe("Local file inside the artifacts directory; at most 100 MiB."), parent: drivePathSchema }).strict(), readOnly: false, destructive: false, handler: driveUpload })
+  defineTool({ name: "drive_upload", title: "Upload artifact to Proton Drive", description: "Upload one artifact file when write policy permits and confirm is true on this call. Conflicts get a new name; no overwrite or sharing.", schema: external_exports.object({ file: external_exports.string().max(4096).describe("Local file inside the artifacts directory; at most 100 MiB."), parent: drivePathSchema, confirm: external_exports.boolean().default(false).describe("Set true on this call only after the user approves this exact file and destination.") }).strict(), readOnly: false, destructive: false, handler: driveUpload })
 ];
 
 // src/mail.ts
@@ -99639,7 +99640,7 @@ var mailDoctorSchema = external_exports.object({ smtp: external_exports.boolean(
 var mailListSchema = external_exports.object({ mailbox, limit: external_exports.number().int().min(1).max(20).default(10).describe("Most recent headers to read, 1\u201320.") }).strict();
 var mailReadSchema = external_exports.object({ mailbox, uid: external_exports.number().int().min(1).max(4294967295).describe("Message UID returned by mail list, in the same mailbox.") }).strict();
 var mailDraftSchema = external_exports.object({ from: address.describe("Sender email address."), to: external_exports.array(address).min(1).max(20).describe("Recipient email addresses, 1\u201320."), cc: external_exports.array(address).max(20).default([]).describe("Copy recipient email addresses, at most 20."), subject: header2(998).describe("Message subject, without line breaks."), text: external_exports.string().max(12e4).refine((value) => !value.includes("\0"), "NUL is not permitted.").describe("Plain-text body, at most 120,000 characters.") }).strict();
-var mailSendSchema = external_exports.object({ path: external_exports.string().min(1).describe("Exact EML path returned by mail draft."), sha256: external_exports.string().regex(/^[a-f0-9]{64}$/).describe("Exact SHA-256 from the reviewed mail draft; no automatic retries.") }).strict();
+var mailSendSchema = external_exports.object({ path: external_exports.string().min(1).describe("Exact EML path returned by mail draft."), sha256: external_exports.string().regex(/^[a-f0-9]{64}$/).describe("Exact SHA-256 from the reviewed mail draft; no automatic retries."), confirm: external_exports.boolean().default(false).describe("Set true on this call only after the user approves this exact recipient and message.") }).strict();
 async function bridge(config2) {
   const mail = config2.mail;
   if (!mail) throw new WaypostError("MAIL_UNCONFIGURED", "Configure a local Proton Bridge connection first.");
@@ -99763,6 +99764,7 @@ async function mailSend(config2, input2) {
   const request = mailSendSchema.parse(input2);
   if (config2.mailHelper) throw new WaypostError("MAIL_HELPER_READ_ONLY", "The configured Mail helper supports IMAP reads only. Prepare a local draft for review and send it through Proton Mail.");
   if (!config2.mail?.sendEnabled) throw new WaypostError("MAIL_SEND_DISABLED", "Mail sending is disabled by policy. Prepare a local draft instead.");
+  if (!request.confirm) throw new WaypostError("CONFIRMATION_REQUIRED", "Mail send requires confirm: true on this call. Show the user the draft and recipients first.");
   const path4 = await checkedPath(request.path, config2.artifactsDir);
   if (!/^draft-[0-9a-f-]+\.eml$/.test(basename2(path4))) throw new WaypostError("MAIL_DRAFT", "Send requires an artifact prepared by mail_draft.");
   const metadata = await stat4(path4);
@@ -99797,7 +99799,7 @@ var mailTools = [
   defineTool({ name: "mail_list", title: "List mail headers", description: "Read at most 20 headers in an EXAMINE mailbox, without flag updates.", schema: mailListSchema, readOnly: true, destructive: false, handler: mailList }),
   defineTool({ name: "mail_read", title: "Read one message", description: "Read one UID using BODY.PEEK with at most 256 KiB fetched and 12,000 characters returned. Helper metadata that is unavailable is null. No external content or attachments are returned.", schema: mailReadSchema, readOnly: true, destructive: false, handler: mailRead }),
   defineTool({ name: "mail_draft", title: "Prepare local mail draft", description: "Save a local EML artifact and digest. It is not sent or stored in a mailbox.", schema: mailDraftSchema, readOnly: false, destructive: false, handler: mailDraft }),
-  defineTool({ name: "mail_send", title: "Submit prepared mail", description: "Requires sendEnabled policy, exact prepared EML path and SHA256. Makes one SMTP submission with no retries. Call only for an explicitly authorized recipient and purpose.", schema: mailSendSchema, readOnly: false, destructive: true, handler: mailSend })
+  defineTool({ name: "mail_send", title: "Submit prepared mail", description: "Requires sendEnabled policy, exact prepared EML path and SHA256, and confirm: true on each call. Makes one SMTP submission with no retries. Call only for an explicitly authorized recipient and purpose.", schema: mailSendSchema, readOnly: false, destructive: true, handler: mailSend })
 ];
 
 // src/calendar.ts
@@ -117239,7 +117241,7 @@ var StdioServerTransport = class {
 };
 
 // src/version.ts
-var VERSION = "0.2.0";
+var VERSION = "0.3.0";
 
 // src/mcp.ts
 async function serve(configPath2) {

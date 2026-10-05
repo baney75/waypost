@@ -55,12 +55,18 @@ The bundled runtime needs Node.js and has no dependency-install step.
 }
 ```
 
-For a Codex TOML entry, run `node dist/cli.js agent-config codex`. For Cursor or Claude, run `node dist/cli.js agent-config generic` and copy the JSON output. MCP uses standard input/output and opens no network listener.
+For Claude Code, register the bundled runtime once for every project:
+
+```sh
+claude mcp add waypost --scope user -- node "$PWD/runtime/waypost.mjs" mcp
+```
+
+For Claude Desktop or Cursor, run `node dist/cli.js agent-config claude` and paste the JSON into the client’s MCP settings. For Codex, run `node dist/cli.js agent-config codex`. With direct Bridge, the client must pass `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from your secret manager; never paste them into a config file. MCP uses standard input/output and opens no network listener.
 
 The [Codex plugin](docs/plugin.md) bundles the runtime and a focused agent skill. Install from the pinned release:
 
 ```sh
-codex plugin marketplace add baney75/waypost --ref v0.2.0
+codex plugin marketplace add baney75/waypost --ref v0.3.0
 codex plugin add waypost@waypost
 ```
 
@@ -80,7 +86,7 @@ waypost calendar prepare --summary "Project review" \
 
 Use normal flags for terminal work, or retain `--input` JSON for scripts. Repeat array flags such as `--to` for each recipient. Commands return JSON. `waypost tools` lists every input schema; `waypost call <tool> --input '{}'` addresses the same tools as MCP.
 
-Mail sends and Drive uploads start disabled. A send requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
+Mail and Calendar are read-only by default. Mail sends and Drive uploads start disabled; when enabled in local config, each call must still pass `confirm: true` (`--confirm` on the CLI). A send also requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
 
 ## Maintain
 

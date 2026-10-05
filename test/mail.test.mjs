@@ -186,25 +186,27 @@ test('draft is a local round-trippable EML with exact digest; inputs reject head
   await assert.rejects(mailSend(f.config,{path:result.path,sha256:result.sha256}),{code:'MAIL_SEND_DISABLED'});
 });
 
-test('send requires exact prepared digest, submits once and prevents a repeated attempt', async t => {
+test('send requires per-call confirmation and exact prepared digest, submits once and prevents a repeated attempt', async t => {
   const f=await fixture(t), smtp=await listener(t,f,'smtp'); f.config.mail.sendEnabled=true;
   const draft=await mailDraft(f.config,{from:'sender@example.com',to:['recipient@example.com'],subject:'Synthetic send',text:'Synthetic only'});
-  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:'0'.repeat(64)}),{code:'MAIL_DIGEST'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256}),{code:'CONFIRMATION_REQUIRED'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:false}),{code:'CONFIRMATION_REQUIRED'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:'0'.repeat(64),confirm:true}),{code:'MAIL_DIGEST'});
   assert.equal(smtp.submissions,0);
-  const result=await mailSend(f.config,{path:draft.path,sha256:draft.sha256});
+  const result=await mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:true});
   assert.equal(result.submitted,true); assert.equal(result.delivered,false);
   assert.deepEqual(result.accepted,['recipient@example.com']); assert.equal(smtp.submissions,1);
-  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256}),{code:'MAIL_ALREADY_ATTEMPTED'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:true}),{code:'MAIL_ALREADY_ATTEMPTED'});
   assert.equal(smtp.submissions,1);
   await writeFile(draft.path,'tampered');
-  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256}),{code:'MAIL_DIGEST'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:true}),{code:'MAIL_DIGEST'});
 });
 
 test('uncertain SMTP outcome reserves the attempt and never retries', async t => {
   const f=await fixture(t), smtp=await listener(t,f,'smtp',{smtpDrop:true}); f.config.mail.sendEnabled=true;
   const draft=await mailDraft(f.config,{from:'sender@example.com',to:['recipient@example.com'],subject:'Synthetic uncertain',text:'Synthetic only'});
-  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256}),{code:'MAIL_SEND_UNCERTAIN'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:true}),{code:'MAIL_SEND_UNCERTAIN'});
   assert.equal(smtp.submissions,1);
-  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256}),{code:'MAIL_ALREADY_ATTEMPTED'});
+  await assert.rejects(mailSend(f.config,{path:draft.path,sha256:draft.sha256,confirm:true}),{code:'MAIL_ALREADY_ATTEMPTED'});
   assert.equal(smtp.submissions,1);
 });

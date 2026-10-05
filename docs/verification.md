@@ -6,10 +6,14 @@ Observed on October 2, 2026. Tests use synthetic data; live account checks are l
 | --- | --- |
 | Mail transport | Loopback IMAP/SMTP tests require STARTTLS, the pinned certificate, and generated client credentials. An alternate trusted certificate and missing SMTP authentication are rejected. |
 | Mail reads | EXAMINE and BODY.PEEK preserve flags. Header and body output is bounded; HTML and attachment content are excluded. |
-| Mail sends | Disabled by default. A local EML and exact digest are required. A persistent attempt marker prevents automatic resubmission after uncertainty. Synthetic SMTP tests exercise one submission. |
-| Drive | Fixed argument arrays, approved root paths, bounded process output and timeouts. Uploads require an approved local artifact. Downloads use a new directory and reject symlinks. |
+| Mail sends | Disabled by default. Each call needs `confirm: true`, a local EML, and its exact digest. A persistent attempt marker prevents automatic resubmission after uncertainty. Synthetic SMTP tests exercise one submission. |
+| Drive | Fixed argument arrays, approved root paths, bounded process output and timeouts. Uploads require write policy, `confirm: true`, and an approved local artifact. Downloads use a new directory and reject symlinks. |
 | Calendar | UTC and declared-timezone fixtures cover recurrence, exceptions, DST, invalid dates, mixed endpoint types, and bounded hostile timezone rules. Unsupported spring-gap recurrence fails explicitly. |
 | MCP / CLI | Protocol initialization, tool schemas, error envelopes, configuration policies, and the bundled runtime are exercised. |
+
+## Version 0.3 checks
+
+Observed on October 4, 2026. The suite passed with new cases: `mail_send` and `drive_upload` reject a missing or false `confirm` before any SMTP submission or Drive call, and MCP advertises `confirm` in both input schemas. No live send or upload was performed.
 
 ## Version 0.2 connection checks
 

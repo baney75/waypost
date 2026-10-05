@@ -31,7 +31,7 @@ test('Drive CLI gets an argv array, never a shell; error output stays private',a
   await assert.rejects(driveList(conf,{path:'/my-files'}),error=>!error.message.includes('PRIVATE_PASSWORD')&&error.code==='SERVICE_FAILED');
 });
 test('Drive upload rejects a symlink outside the configured artifacts directory',async()=>{
-  const root=await workspace();const conf={...config(root),drive:{executable:'/unused',root:'/my-files',writeEnabled:true}};await mkdir(conf.artifactsDir);const outside=join(root,'outside');await writeFile(outside,'private');const file=join(conf.artifactsDir,'link');await symlink(outside,file);await assert.rejects(driveUpload(conf,{file,parent:'/my-files'}),{code:'PATH_DENIED'});
+  const root=await workspace();const conf={...config(root),drive:{executable:'/unused',root:'/my-files',writeEnabled:true}};await mkdir(conf.artifactsDir);const outside=join(root,'outside');await writeFile(outside,'private');const file=join(conf.artifactsDir,'link');await symlink(outside,file);await assert.rejects(driveUpload(conf,{file,parent:'/my-files'}),{code:'CONFIRMATION_REQUIRED'});await assert.rejects(driveUpload(conf,{file,parent:'/my-files',confirm:true}),{code:'PATH_DENIED'});
 });
 test('executable output and duration are bounded',async()=>{
   const root=await workspace();const executable=join(root,'script');await writeFile(executable,'#!/usr/bin/env node\nprocess.stdout.write("x".repeat(10000));\n',{mode:0o700});await assert.rejects(runExecutable(executable,[],1000,1024),{code:'OUTPUT_LIMIT'});
