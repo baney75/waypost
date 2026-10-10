@@ -39881,7 +39881,7 @@ var require_addressparser = __commonJS({
         data.text = data.text.join(" ");
         let groupMembers = [];
         if (data.group.length) {
-          const parsedGroup = _parseAddressList(data.group.join(","), depth + 1);
+          const parsedGroup = _parseAddressList2(data.group.join(","), depth + 1);
           parsedGroup.forEach((member) => {
             if (member.group) {
               groupMembers = groupMembers.concat(member.group);
@@ -40089,7 +40089,7 @@ var require_addressparser = __commonJS({
       }
     };
     var MAX_NESTED_GROUP_DEPTH2 = 50;
-    function _parseAddressList(str, depth) {
+    function _parseAddressList2(str, depth) {
       if (depth > MAX_NESTED_GROUP_DEPTH2) {
         return [];
       }
@@ -40131,7 +40131,7 @@ var require_addressparser = __commonJS({
       return mergedAddresses;
     }
     function addressparser2(str, options) {
-      const parsedAddresses2 = _parseAddressList(str, 0);
+      const parsedAddresses2 = _parseAddressList2(str, 0);
       if (options?.flatten) {
         const flatAddresses = [];
         const walkAddressList = (list2) => {
@@ -93269,15 +93269,24 @@ var Cookies = class {
    */
   parse(cookieStr) {
     const cookie = {};
+    let hasNameValue = false;
     (cookieStr || "").toString().split(";").forEach((cookiePart) => {
-      const valueParts = cookiePart.split("=");
-      const key = valueParts.shift().trim().toLowerCase();
-      let value = valueParts.join("=").trim();
-      let domain2;
-      if (!key) {
+      if (!cookiePart.trim()) {
         return;
       }
-      switch (key) {
+      const valueParts = cookiePart.split("=");
+      const name4 = valueParts.shift().trim();
+      let value = valueParts.join("=").trim();
+      let domain2;
+      if (!hasNameValue) {
+        hasNameValue = true;
+        if (name4) {
+          cookie.name = name4;
+          cookie.value = value;
+        }
+        return;
+      }
+      switch (name4.toLowerCase()) {
         case "expires": {
           const expires = new Date(value);
           if (expires.toString() !== "Invalid Date") {
@@ -93304,11 +93313,6 @@ var Cookies = class {
         case "httponly":
           cookie.httponly = true;
           break;
-        default:
-          if (!cookie.name) {
-            cookie.name = key;
-            cookie.value = value;
-          }
       }
     });
     return cookie;
@@ -93401,7 +93405,7 @@ var cookies_default = Cookies;
 
 // node_modules/nodemailer/dist/esm/package-info.js
 var name2 = "nodemailer";
-var version3 = "10.0.13";
+var version3 = "10.0.16";
 var homepage = "https://nodemailer.com/";
 
 // node_modules/nodemailer/dist/esm/fetch/index.js
@@ -96677,7 +96681,7 @@ function buildHeaderValue(structured) {
           paramsArray.push(encodedParam.key + "=" + JSON.stringify(encodedParam.value));
         }
       });
-    } else if (/[\s'"\\;:/=(),<>@[\]?]|^-/.test(value2)) {
+    } else if (!value2.length || /[\s'"\\;:/=(),<>@[\]?]|^-/.test(value2)) {
       paramsArray.push(param + "=" + JSON.stringify(value2));
     } else {
       paramsArray.push(param + "=" + value2);
@@ -96785,107 +96789,150 @@ function buildHeaderParam(key, data, maxLength) {
     value: item.line
   }));
 }
+var TOKEN = /^[^\x00-\x20\x7f()<>@,;:\\"/[\]?=]+$/;
+function _isParamName(name4) {
+  return !!name4 && !isProtoKey(name4);
+}
 function parseHeaderValue(str) {
   const response = {
     value: "",
     params: {}
   };
   const setParam = (name4, value2) => {
-    if (!isProtoKey(name4)) {
+    name4 = name4.toLowerCase();
+    if (_isParamName(name4) && !Object.prototype.hasOwnProperty.call(response.params, name4)) {
       response.params[name4] = value2;
     }
   };
   let key = false;
   let value = "";
-  let type = "value";
+  let stage = "value";
   let quote = false;
   let escaped = false;
   let chr;
+  let pendingSpace = "";
+  let quoteClosed = false;
+  const flushSpace = () => {
+    if (value.length) {
+      value += pendingSpace;
+    }
+    pendingSpace = "";
+  };
+  const addChr = (c) => {
+    flushSpace();
+    value += c;
+  };
+  const takeValue = () => {
+    const taken = value;
+    value = "";
+    pendingSpace = "";
+    quoteClosed = false;
+    return taken;
+  };
+  const storeValue = () => {
+    const taken = takeValue();
+    if (key === false) {
+      response.value = taken;
+    } else {
+      setParam(key, taken);
+    }
+  };
+  const storeEmptyKey = () => {
+    setParam(takeValue().trim(), "");
+  };
   for (let i = 0, len = str.length; i < len; i++) {
     chr = str.charAt(i);
-    if (type === "key") {
+    if (stage === "key") {
       if (chr === "=") {
-        key = value.trim().toLowerCase();
-        type = "value";
-        value = "";
+        key = takeValue().trim();
+        stage = "value";
+        continue;
+      }
+      if (chr === ";") {
+        storeEmptyKey();
         continue;
       }
       value += chr;
     } else {
+      if (quoteClosed && chr !== ";") {
+        escaped = false;
+        continue;
+      }
       if (escaped) {
-        value += chr;
-      } else if (chr === "\\") {
+        addChr(chr);
+      } else if (quote && chr === "\\") {
         escaped = true;
         continue;
       } else if (quote && chr === quote) {
         quote = false;
+        quoteClosed = true;
       } else if (!quote && chr === '"') {
         quote = chr;
+        flushSpace();
       } else if (!quote && chr === ";") {
-        if (key === false) {
-          response.value = value.trim();
-        } else {
-          setParam(key, value.trim());
-        }
-        type = "key";
-        value = "";
+        storeValue();
+        stage = "key";
+      } else if (!quote && (chr === " " || chr === "	")) {
+        pendingSpace += chr;
       } else {
-        value += chr;
+        addChr(chr);
       }
       escaped = false;
     }
   }
-  if (type === "value") {
-    if (key === false) {
-      response.value = value.trim();
-    } else {
-      setParam(key, value.trim());
-    }
-  } else if (value.trim()) {
-    setParam(value.trim().toLowerCase(), "");
+  if (stage === "value") {
+    storeValue();
+  } else {
+    storeEmptyKey();
   }
+  const continuations = /* @__PURE__ */ new Map();
   Object.keys(response.params).forEach((key2) => {
-    let actualKey, nr, match, value2;
-    if (match = key2.match(/(\*(\d+)|\*(\d+)\*|\*)$/)) {
-      actualKey = key2.substr(0, match.index);
-      nr = Number(match[2] || match[3]) || 0;
-      if (isProtoKey(actualKey)) {
-        delete response.params[key2];
-        return;
-      }
-      if (!response.params[actualKey] || typeof response.params[actualKey] !== "object") {
-        response.params[actualKey] = {
-          charset: false,
-          values: []
-        };
-      }
-      value2 = response.params[key2];
-      if (nr === 0 && match[0].substr(-1) === "*" && (match = value2.match(/^([^']*)'[^']*'(.*)$/))) {
-        response.params[actualKey].charset = match[1] || "iso-8859-1";
-        value2 = match[2];
-      }
-      response.params[actualKey].values[nr] = value2;
-      delete response.params[key2];
+    const match = key2.match(/(\*(\d+)|\*(\d+)\*|\*)$/);
+    if (!match) {
+      return;
     }
+    const actualKey = key2.substr(0, match.index);
+    const nr = Number(match[2] || match[3]) || 0;
+    const encoded = match[0].substr(-1) === "*";
+    let value2 = response.params[key2];
+    delete response.params[key2];
+    if (!_isParamName(actualKey)) {
+      return;
+    }
+    let continuation = continuations.get(actualKey);
+    if (!continuation) {
+      continuation = { charset: false, sections: [] };
+      continuations.set(actualKey, continuation);
+    }
+    const charsetMatch = nr === 0 && encoded ? value2.match(/^([^']*)'[^']*'(.*)$/) : null;
+    if (charsetMatch) {
+      continuation.charset = TOKEN.test(charsetMatch[1]) ? charsetMatch[1] : "iso-8859-1";
+      value2 = charsetMatch[2];
+    }
+    continuation.sections.push({ nr, value: value2, encoded });
   });
-  Object.keys(response.params).forEach((key2) => {
-    let value2;
-    if (response.params[key2] && Array.isArray(response.params[key2].values)) {
-      value2 = response.params[key2].values.map((val) => val || "").join("");
-      if (response.params[key2].charset) {
-        response.params[key2] = "=?" + response.params[key2].charset + "?Q?" + value2.replace(/[=?_\s]/g, (s) => {
-          const c = s.charCodeAt(0).toString(16);
-          if (s === " ") {
-            return "_";
-          }
-          return "%" + (c.length < 2 ? "0" : "") + c;
-        }).replace(/%/g, "=") + "?=";
-      } else {
-        response.params[key2] = value2;
-      }
+  continuations.forEach((continuation, key2) => {
+    if (Object.prototype.hasOwnProperty.call(response.params, key2)) {
+      return;
     }
+    continuation.sections.sort((a, b) => a.nr - b.nr);
+    if (!continuation.charset) {
+      response.params[key2] = continuation.sections.map((section) => section.value).join("");
+      return;
+    }
+    response.params[key2] = "=?" + continuation.charset + "?Q?" + continuation.sections.map(_encodeContinuationSection).join("") + "?=";
   });
   return response;
+}
+function _encodeContinuationSection(section) {
+  const specials = section.encoded ? /[=?_\s]/g : /[=?_\s%]/g;
+  return section.value.replace(specials, (s) => {
+    const c = s.charCodeAt(0).toString(16);
+    if (s === " ") {
+      return "_";
+    }
+    return "%" + (c.length < 2 ? "0" : "") + c;
+  }).replace(/%/g, "=");
 }
 function detectExtension2(mimeType) {
   return detectExtension(mimeType);
@@ -97216,7 +97263,7 @@ function _handleAddress(tokens, depth) {
     data.text = data.text.join(" ");
     let groupMembers = [];
     if (data.group.length) {
-      const parsedGroup = addressparser(data.group.join(","), { _depth: depth + 1 });
+      const parsedGroup = _parseAddressList(data.group.join(","), depth + 1);
       parsedGroup.forEach((member) => {
         if (member.group) {
           groupMembers = groupMembers.concat(member.group);
@@ -97288,7 +97335,7 @@ function _handleAddress(tokens, depth) {
     const addressFromQuotedText = !data.address.length && data.textWasQuoted.some((wasQuoted) => wasQuoted);
     data.text = data.text.join(" ");
     data.address = data.address.join(" ");
-    if (addressFromQuotedText && data.text) {
+    if (addressFromQuotedText && data.text.indexOf("@") >= 0) {
       data.address = _quoteLocalPart(data.text);
       data.text = "";
     }
@@ -97319,6 +97366,7 @@ var Tokenizer = class {
     this.node = null;
     this.escaped = false;
     this.inDomainLiteral = false;
+    this.afterAt = false;
     this.list = [];
     this.operators = {
       '"': '"',
@@ -97359,10 +97407,11 @@ var Tokenizer = class {
    * Checks if a character is an operator or text and acts accordingly
    *
    * @param chr Character from the address field
+   * @param nextChr Character following chr, null at the end of the field
    */
   checkChar(chr, nextChr) {
     if (!this.escaped && !this.operatorExpecting) {
-      if (!this.inDomainLiteral && chr === "[") {
+      if (!this.inDomainLiteral && chr === "[" && this.afterAt) {
         this.inDomainLiteral = true;
       } else if (this.inDomainLiteral && (chr === "]" || chr === "," || chr === ";")) {
         this.inDomainLiteral = false;
@@ -97379,20 +97428,26 @@ var Tokenizer = class {
       }
       this.list.push(this.node);
       this.node = null;
+      if (chr !== ")") {
+        this.afterAt = false;
+      }
       this.operatorExpecting = "";
       this.escaped = false;
       return;
-    } else if (!this.operatorExpecting && !this.inDomainLiteral && chr in this.operators) {
+    } else if (!this.operatorExpecting && !(this.inDomainLiteral && chr === ":") && chr in this.operators) {
       this.node = {
         type: "operator",
         value: chr
       };
       this.list.push(this.node);
       this.node = null;
+      if (chr !== "(") {
+        this.afterAt = false;
+      }
       this.operatorExpecting = this.operators[chr];
       this.escaped = false;
       return;
-    } else if (['"', "'"].includes(this.operatorExpecting) && chr === "\\") {
+    } else if (['"', "'", ")"].includes(this.operatorExpecting) && chr === "\\") {
       this.escaped = true;
       return;
     }
@@ -97408,14 +97463,15 @@ var Tokenizer = class {
     }
     if (chr.charCodeAt(0) >= 33 || [" ", "	"].includes(chr)) {
       this.node.value += chr;
+      if (!this.operatorExpecting && chr !== " " && chr !== "	") {
+        this.afterAt = chr === "@";
+      }
     }
     this.escaped = false;
   }
 };
 var MAX_NESTED_GROUP_DEPTH = 50;
-function addressparser(str, options) {
-  options = options || {};
-  const depth = options._depth || 0;
+function _parseAddressList(str, depth) {
   if (depth > MAX_NESTED_GROUP_DEPTH) {
     return [];
   }
@@ -97423,7 +97479,7 @@ function addressparser(str, options) {
   const tokens = tokenizer.tokenize();
   const addresses = [];
   let address2 = [];
-  let parsedAddresses2 = [];
+  const parsedAddresses2 = [];
   tokens.forEach((token2) => {
     if (token2.type === "operator" && (token2.value === "," || token2.value === ";")) {
       if (address2.length) {
@@ -97454,8 +97510,11 @@ function addressparser(str, options) {
     }
   }
   mergedAddresses.reverse();
-  parsedAddresses2 = mergedAddresses;
-  if (options.flatten) {
+  return mergedAddresses;
+}
+function addressparser(str, options) {
+  const parsedAddresses2 = _parseAddressList(str, 0);
+  if (options?.flatten) {
     const flatAddresses = [];
     const walkAddressList = (list2) => {
       list2.forEach((entry) => {
@@ -98536,6 +98595,7 @@ var MimeNode = class _MimeNode {
    *
    * @param addresses An array of address objects
    * @param [uniqueList] An array to be populated with addresses
+   * @param [seenAddresses] Addresses already added to uniqueList, shared with recursive calls to keep deduplication linear
    * @return address string
    * @internal
    */
@@ -98647,7 +98707,7 @@ var MimeNode = class _MimeNode {
   /**
    * If needed, mime encodes the name part
    *
-   * @param name Name part of an address
+   * @param value Name part of an address
    * @returns Mime word encoded string if needed
    * @internal
    */
@@ -99183,6 +99243,17 @@ var mail_composer_default = MailComposer;
 
 // node_modules/nodemailer/dist/esm/dkim/message-parser.js
 import { Transform as Transform9 } from "node:stream";
+function _trimFieldName(str) {
+  let start = 0;
+  let end = str.length;
+  while (start < end && (str.charCodeAt(start) === 32 || str.charCodeAt(start) === 9)) {
+    start++;
+  }
+  while (end > start && (str.charCodeAt(end - 1) === 32 || str.charCodeAt(end - 1) === 9)) {
+    end--;
+  }
+  return str.slice(start, end);
+}
 var MessageParser = class extends Transform9 {
   constructor(options) {
     super(options);
@@ -99301,7 +99372,7 @@ var MessageParser = class extends Transform9 {
       }
     }
     return lines.filter((line) => /[^ \t\r]/.test(line)).map((line) => ({
-      key: line.substr(0, line.indexOf(":")).replace(/^[ \t]+|[ \t]+$/g, "").toLowerCase(),
+      key: _trimFieldName(line.substr(0, line.indexOf(":"))).toLowerCase(),
       line
     }));
   }
@@ -99776,18 +99847,25 @@ function httpProxyClient(proxyUrl, destinationPort, destinationHost, tlsOptions,
       Object.keys(reqHeaders).map((key) => key + ": " + reqHeaders[key]).join("\r\n") + // End request
       "\r\n\r\n"
     );
-    let headers2 = "";
+    const chunks = [];
+    let received = 0;
+    let tail = "";
     const onSocketData = (chunk) => {
       let match;
-      let remainder;
       if (finished) {
         return;
       }
-      headers2 += chunk.toString("binary");
-      if (match = headers2.match(/\r\n\r\n/)) {
+      const window = tail + chunk.toString("binary");
+      const windowEnd = window.indexOf("\r\n\r\n");
+      chunks.push(chunk);
+      received += chunk.length;
+      tail = window.slice(-3);
+      if (windowEnd >= 0) {
         socket.removeListener("data", onSocketData);
-        remainder = headers2.substr(match.index + match[0].length);
-        headers2 = headers2.substr(0, match.index);
+        const headerEnd = received - window.length + windowEnd;
+        const response = Buffer.concat(chunks, received).toString("binary");
+        const headers2 = response.substr(0, headerEnd);
+        const remainder = response.substr(headerEnd + 4);
         if (remainder) {
           socket.unshift(Buffer.from(remainder, "binary"));
         }
@@ -99807,7 +99885,7 @@ function httpProxyClient(proxyUrl, destinationPort, destinationHost, tlsOptions,
         socket.setTimeout(0);
         return done(null, socket);
       }
-      if (headers2.length > MAX_RESPONSE_HEADER_BYTES2) {
+      if (received > MAX_RESPONSE_HEADER_BYTES2) {
         socket.removeListener("data", onSocketData);
         const err = new Error("Proxy response headers too large");
         err.code = EPROXY;
@@ -100966,7 +101044,7 @@ var SMTPConnection = class extends EventEmitter4 {
    *
    * @param envelope Envelope object, {from: addr, to: [addr]}
    * @param message String, Buffer or a Stream
-   * @param callback Callback to return once sending is completed
+   * @param done Callback to return once sending is completed
    */
   send(envelope, message, done) {
     let returned = false;
@@ -101154,6 +101232,8 @@ var SMTPConnection = class extends EventEmitter4 {
    * @event
    * @param err Error object
    * @param type Error name
+   * @param data Server response that triggered the error, false if there is none
+   * @param command SMTP command that was in flight
    * @internal
    */
   _onError(err, type, data, command2) {
@@ -101381,6 +101461,7 @@ var SMTPConnection = class extends EventEmitter4 {
    *        {from:'...', to:['...']}
    *        or
    *        {from:{address:'...',name:'...'}, to:[address:'...',name:'...']}
+   * @param callback Callback to run once the envelope is processed
    * @internal
    */
   _setEnvelope(envelope, callback) {
@@ -101725,6 +101806,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * hosts invalidly use a longer message than VXNlcm5hbWU6
    *
    * @param str Message from the server
+   * @param callback Callback to run once the authentication sequence completes
    * @internal
    */
   _actionAUTH_LOGIN_USER(str, callback) {
@@ -101745,6 +101827,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * base64 encoded again.
    *
    * @param str Message from the server
+   * @param callback Callback to run once the authentication sequence completes
    * @internal
    */
   _actionAUTH_CRAM_MD5(str, callback) {
@@ -101770,6 +101853,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * the user can be considered logged in. Start waiting for a message to send
    *
    * @param str Message from the server
+   * @param callback Callback to run once the authentication sequence completes
    * @internal
    */
   _actionAUTH_CRAM_MD5_PASS(str, callback) {
@@ -101791,6 +101875,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * response needs to be base64 encoded password.
    *
    * @param str Message from the server
+   * @param callback Callback to run once the authentication sequence completes
    * @internal
    */
   _actionAUTH_LOGIN_PASS(str, callback) {
@@ -101811,6 +101896,8 @@ var SMTPConnection = class extends EventEmitter4 {
    * the user can be considered logged in. Start waiting for a message to send
    *
    * @param str Message from the server
+   * @param isRetry True if this is a retry after a failed login, or the callback itself
+   * @param [callback] Callback to run once the authentication sequence completes
    * @internal
    */
   _actionAUTHComplete(str, isRetry, callback) {
@@ -101851,6 +101938,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * Handle response for a MAIL FROM: command
    *
    * @param str Message from the server
+   * @param callback Callback to run once the envelope is processed
    * @internal
    */
   _actionMAIL(str, callback) {
@@ -101877,6 +101965,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * Handle response for a RCPT TO: command
    *
    * @param str Message from the server
+   * @param callback Callback to run once the envelope is processed
    * @internal
    */
   _actionRCPT(str, callback) {
@@ -101919,6 +102008,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * Handle response for a DATA command
    *
    * @param str Message from the server
+   * @param callback Callback to run once the envelope is processed
    * @internal
    */
   _actionDATA(str, callback) {
@@ -101943,6 +102033,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * We expect a single response that defines if the sending succeeded or failed
    *
    * @param str Message from the server
+   * @param callback Callback to run with the final send result
    * @internal
    */
   _actionSMTPStream(str, callback) {
@@ -101959,6 +102050,7 @@ var SMTPConnection = class extends EventEmitter4 {
    * @param recipient The recipient this response applies to
    * @param final Is this the final recipient?
    * @param str Message from the server
+   * @param callback Callback to run with the final send result
    * @internal
    */
   _actionLMTPStream(recipient, final, str, callback) {
@@ -102876,6 +102968,12 @@ var services = {
     "description": "Mailosaur (email testing service)",
     "host": "mailosaur.io",
     "port": 25
+  },
+  "MailSenpai": {
+    "description": "MailSenpai (SMTP Senpai, EU)",
+    "host": "relay.mailsenpai.com",
+    "port": 2525,
+    "secure": false
   },
   "Mailtrap": {
     "description": "Mailtrap",
@@ -119294,7 +119392,7 @@ var MONTHS = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.
 function normalize2(text3) {
   return text3.replace(/ /g, " ").replace(/[​-‍﻿]/g, "").replace(/\r\n?/g, "\n");
 }
-var TOKEN = /(?<![\w.$€£¥+\/:,-])(?:[A-Z]{1,3}-)?(?:\d(?: \d){3,7}|\d{2,4}(?:[ -]\d{2,4}){1,3}|\d{4,8}|(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9]{2,5}-?[A-Za-z0-9]{2,5})(?![\w$€£%]|[.,:\/-]\d)/g;
+var TOKEN2 = /(?<![\w.$€£¥+\/:,-])(?:[A-Z]{1,3}-)?(?:\d(?: \d){3,7}|\d{2,4}(?:[ -]\d{2,4}){1,3}|\d{4,8}|(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9]{2,5}-?[A-Za-z0-9]{2,5})(?![\w$€£%]|[.,:\/-]\d)/g;
 function digitsOnly(token2) {
   return token2.replace(/[ -]/g, "");
 }
@@ -119334,7 +119432,7 @@ function codeCandidates(subject, body) {
   const found = /* @__PURE__ */ new Map();
   for (const [where, raw] of [["subject", subject], ["body", body]]) {
     const text3 = normalize2(raw).slice(0, 6e4);
-    for (const match of text3.matchAll(TOKEN)) {
+    for (const match of text3.matchAll(TOKEN2)) {
       const token2 = match[0];
       const score = scoreAt(text3, match.index, token2, subject);
       if (score < 3) continue;
