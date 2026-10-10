@@ -34,7 +34,6 @@ function policy(config:Config, caller:'agents'|'browser') {
     : 'Verification-code lookup for the browser extension is off. Run: waypost connect browser');
   return settings;
 }
-const domainOf = (address:string) => address.includes('@') ? registrableDomain(address.split('@').pop()!) : null;
 function siteMatch(query:Query, address:string, options:SenderOptions):boolean|null {
   if (!query.site) return null;
   return senderMatchesSite(address, query.site, options);
@@ -67,7 +66,7 @@ async function fromBridge(config:Config, query:Query, cutoff:number, options:Sen
         if (notificationReason(headers, parsed.subject ?? '', text)) { notifications++; continue; }
         const result = extractCode(parsed.subject ?? '', text);
         if (!result) continue;
-        matches.push({...result, source:'mail', sender:{name:(from?.name ?? '').slice(0,200), address:address.slice(0,254)}, subject:(parsed.subject ?? '').slice(0,300), receivedAt:new Date(received).toISOString(), senderMatchesSite:matchesSite, senderVerified:protonDmarc(headers, domainOf(address)), knownSender:knownOtpSender(address, query.site, options), mailbox, uid:message.uid});
+        matches.push({...result, source:'mail', sender:{name:(from?.name ?? '').slice(0,200), address:address.slice(0,254)}, subject:(parsed.subject ?? '').slice(0,300), receivedAt:new Date(received).toISOString(), senderMatchesSite:matchesSite, senderVerified:protonDmarc(headers, address.includes('@') ? address.split('@').pop()! : null), knownSender:knownOtpSender(address, query.site, options), mailbox, uid:message.uid});
       }
     });
   });
@@ -154,7 +153,11 @@ export async function latestVerificationCode(config:Config, input:unknown, calle
   const notifications = results.reduce((sum,result) => sum + result.notifications, 0);
   const best = matches[0];
   if (!best) return {found:false, since:new Date(cutoff).toISOString(), reason:otherSenders ? `${otherSenders} recent message(s) came from senders that do not belong to ${query.site}; their codes were not returned.` : notifications ? `${notifications} recent message(s) were notifications or list mail; codes in them are not trusted.` : 'No message with a verification code arrived in the time window. Wait a few seconds and ask again.'};
-  return {found:true, ...best, bodyReturned:false, ...(matches.length > 1 ? {olderCodes:matches.length - 1} : {})};
+  // Trusted only for a known code-only sender that Proton verified. A matching domain alone is not
+  // enough: services such as Docs comments or Teams send other people's text from that domain.
+  const trusted = best.knownSender && best.senderVerified === true && best.senderMatchesSite !== false;
+  const warning = trusted ? undefined : !best.knownSender ? 'The sender is not a known verification-code sender for this site; it may carry text someone else wrote. Check the sender and subject before using this code.' : 'Proton did not verify this sender (no DMARC pass). Check the sender before using this code.';
+  return {found:true, ...best, trusted, ...(warning ? {warning} : {}), bodyReturned:false, ...(matches.length > 1 ? {olderCodes:matches.length - 1} : {})};
 }
 export const codeTools = [
   defineTool({name:'mail_verification_code', title:'Latest verification code', description:'Off unless the user set verificationCodes.agents in local config. Returns the newest one-time code (2FA, sign-in or verification) received in the last few minutes, with sender, subject, time and confidence, never the message body. Pass site to accept only senders that belong to that site. Treat the code as a password: use it only for the sign-in the user asked for, and do not repeat it elsewhere.', schema:verificationCodeSchema, readOnly:true, destructive:false, handler:(config,input) => latestVerificationCode(config,input,'agents')}),

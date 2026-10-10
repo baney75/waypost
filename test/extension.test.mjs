@@ -28,10 +28,11 @@ async function launch(t,messages) {
   // inject without clicking the toolbar button or the browser's permission prompt.
   const extension=join(root,'extension');await cp(resolve(process.env.WAYPOST_EXTENSION_DIR??'extension'),extension,{recursive:true});
   const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
-  manifest.host_permissions=['https://github.com/*','https://login-github.example.com/*'];await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
+  manifest.host_permissions=['https://github.com/*','https://login-github.example.com/*','https://accounts.google.com/*'];await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
   const context=await playwright.chromium.launchPersistentContext(userData,{executablePath:chromium,headless:false,args:['--headless=new',`--disable-extensions-except=${extension}`,`--load-extension=${extension}`,'--no-first-run'],env:{...process.env,WAYPOST_MAIL_USERNAME:server.user,WAYPOST_MAIL_PASSWORD:server.secret}});
   t.after(()=>context.close());
   await context.route('https://github.com/**',route=>route.fulfill({contentType:'text/html',body:route.request().url().includes('split')?page(Array.from({length:6},(_,i)=>`<input maxlength="1" inputmode="numeric" aria-label="Digit ${i+1}">`).join('')):page('<label>Verification code <input name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></label>')}));
+  await context.route('https://accounts.google.com/**',route=>route.fulfill({contentType:'text/html',body:page('<input name="otp" autocomplete="one-time-code">')}));
   await context.route('https://login-github.example.com/**',route=>route.fulfill({contentType:'text/html',body:page('<input name="otp" autocomplete="one-time-code">')}));
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
   assert.equal(new URL(worker.url()).host,PINNED_EXTENSION_ID);
@@ -90,4 +91,15 @@ test('S5: a fetched code is not filled after the tab moves to another site',{ski
   await ui.waitForFunction(()=>document.querySelector('#fill').textContent!=='Fill code',null,{timeout:10000}).catch(()=>{});
   assert.equal(await login.evaluate(()=>document.querySelector('input[name=otp]').value),'','the code must not land on the other site');
   assert.match(await ui.locator('#fill').textContent(),/changed/i);
+});
+
+test('R2: the popup shows a warning, not green, for a matching sender that is not a known code sender',{skip,timeout:240000},async t=>{
+  const {context,paired,send,popup}=await launch(t,[codeMail({from:'Docs <comments-noreply@docs.google.com>',subject:'Sign-in code shared with you',body:'Your Google verification code is 482913.',minutes:1,headers:'Authentication-Results: mailin.protonmail.ch; dmarc=pass header.from=docs.google.com\n'})]);
+  await send({type:'set-pairing',code:paired.pairingCode});
+  const login=await context.newPage();await login.goto('https://accounts.google.com/signin/challenge');
+  const ui=await popup('https://accounts.google.com/');
+  await ui.locator('#code').waitFor({state:'visible',timeout:30000});
+  assert.equal(await ui.locator('#code').textContent(),'482913');
+  assert.equal(await ui.locator('#trust').getAttribute('class'),'warn');
+  assert.doesNotMatch(await ui.locator('#trust').textContent(),/verified/i);
 });

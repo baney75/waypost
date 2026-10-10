@@ -130,6 +130,16 @@ export function registrableDomain(host: string): string | null {
 export const FREE_MAIL = new Set(['gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','msn.com','passport.com','outlook.de','outlook.fr','hotmail.co.uk','hotmail.fr','live.co.uk','yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.co.jp','yahoo.fr','yahoo.de','aol.com','aim.com','icloud.com','me.com','mac.com','proton.me','protonmail.com','protonmail.ch','pm.me','gmx.com','gmx.net','gmx.de','web.de','mail.com','yandex.com','yandex.ru','mail.ru','zoho.com','zohomail.com','fastmail.com','fastmail.fm','hey.com','tutanota.com','tutanota.de','tuta.io','tuta.com','qq.com','163.com','126.com','naver.com','hushmail.com','mailfence.com','posteo.de','posteo.net','mailbox.org','duck.com','skiff.com']);
 // Hosts that serve pages anyone can publish under a big brand's domain. Codes are never offered there.
 const USER_CONTENT_HOSTS = ['sites.google.com','docs.google.com','drive.google.com','script.google.com','script.googleusercontent.com','sheets.google.com','slides.google.com','forms.google.com','groups.google.com','storage.googleapis.com','storage.cloud.google.com','gist.github.com','raw.githubusercontent.com','gist.githubusercontent.com','onedrive.live.com','1drv.ms','forms.office.com','sway.office.com','dl.dropboxusercontent.com','notion.site'];
+// Big-brand domains host many services, some with user content (calendar.google.com, lookerstudio.google.com,
+// gist.github.com). For these, codes go only to the listed sign-in hosts rather than to a blocklist's gaps.
+const SIGN_IN_HOSTS: Record<string, string[]> = {
+  'google.com':['accounts.google.com','myaccount.google.com'],
+  'microsoft.com':['login.microsoft.com','account.microsoft.com'],
+  'microsoftonline.com':['login.microsoftonline.com'],
+  'live.com':['login.live.com','account.live.com'],
+  'apple.com':['appleid.apple.com','account.apple.com','idmsa.apple.com'],
+  'github.com':['github.com','www.github.com'],
+};
 // Sites whose codes come from another company domain. Site → sender domains, one direction only.
 export const SITE_SENDERS: Record<string, string[]> = {
   'youtube.com':['google.com'], 'gmail.com':['google.com'], 'android.com':['google.com'],
@@ -162,6 +172,8 @@ export function senderMatchesSite(address: string, site: string, options: Sender
   const siteDomain = registrableDomain(host);
   const sender = splitAddress(address);
   if (!siteDomain || !sender) return false;
+  const signIn = SIGN_IN_HOSTS[siteDomain];
+  if (signIn && !signIn.includes(host)) return false;
   if (verifiedFor(siteDomain, sender.address, options)) return true;
   const senderDomain = registrableDomain(sender.host);
   if (!senderDomain) return false;
@@ -188,24 +200,38 @@ export function notificationReason(headers: string, subject: string, body = ''):
   if (/^\s*>/m.test(body) || /(?:^|\n)\s*@[a-z0-9][\w-]*\b/i.test(body) || /\b(?:reply to this email directly|view it on github|you are receiving this because|mentioned you|commented on|wrote:)/i.test(body)) return 'quotes user content';
   return null;
 }
-/**
- * DMARC result from the topmost Authentication-Results header added by Proton.
- * true: dmarc=pass for the From domain. false: Proton recorded a DMARC failure.
- * null: no Proton result header was present, so the sender is unverified.
- */
-export function protonDmarc(headers: string, fromDomain: string | null): boolean | null {
-  const unfolded = headers.replace(/\r?\n[ \t]+/g, ' ');
-  for (const line of unfolded.split(/\r?\n/)) {
-    const match = /^authentication-results:\s*([^;\s]+)\s*;(.*)$/i.exec(line);
-    if (!match) continue;
-    if (!/(?:^|\.)(?:protonmail\.ch|proton\.me|protonmail\.com)$/i.test(match[1]!)) continue;
-    const dmarc = /\bdmarc=(\w+)(?:[^;]*?header\.from=([^\s;]+))?/i.exec(match[2]!);
-    if (!dmarc) return null;
-    if (dmarc[1]!.toLowerCase() !== 'pass') return false;
-    const domain = dmarc[2] ? registrableDomain(dmarc[2]) : null;
-    return !fromDomain || !domain || domain === registrableDomain(fromDomain);
+/** Remove RFC 5322 comments, including nested ones and escaped parentheses. */
+function stripComments(value: string): string {
+  let out = '', depth = 0;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]!;
+    if (character === '\\') { if (depth === 0) out += character + (value[index + 1] ?? ''); index++; continue; }
+    if (character === '(') { depth++; continue; }
+    if (character === ')' && depth > 0) { depth--; continue; }
+    if (depth === 0) out += character;
   }
-  return null;
+  return out;
+}
+/**
+ * DMARC result from the topmost Authentication-Results header, used only when Proton added it.
+ * true: exactly one clause starting with dmarc=pass whose header.from equals the From domain.
+ * false: that clause reports a failure, or names another domain.
+ * null: no such header, no dmarc clause, two dmarc clauses, or no header.from. Unknown is not verified.
+ */
+export function protonDmarc(headers: string, fromHost: string | null): boolean | null {
+  const unfolded = headers.replace(/\r?\n[ \t]+/g, ' ');
+  const line = unfolded.split(/\r?\n/).find(item => /^authentication-results:/i.test(item));
+  if (!line || !fromHost) return null;
+  // Proton prepends its result; anything lower in the list came with the message and may be forged.
+  const [authserv = '', ...clauses] = stripComments(line.replace(/^authentication-results:/i, '')).split(';').map(part => part.trim());
+  if (!/^(?:[a-z0-9-]+\.)*(?:protonmail\.ch|proton\.me|protonmail\.com)(?:\s+\d+)?$/i.test(authserv)) return null;
+  const dmarc = clauses.filter(clause => /^dmarc\s*=/i.test(clause));
+  if (dmarc.length !== 1) return null;
+  const result = /^dmarc\s*=\s*([a-z]+)/i.exec(dmarc[0]!)?.[1]?.toLowerCase();
+  const headerFrom = [...dmarc[0]!.matchAll(/(?:^|\s)header\.from\s*=\s*("?)([^\s";]+)\1/gi)].map(match => match[2]!.toLowerCase().replace(/\.$/, ''));
+  if (!result || headerFrom.length !== 1) return null;
+  if (headerFrom[0] !== fromHost.toLowerCase().replace(/\.$/, '')) return false;
+  return result === 'pass';
 }
 /** Whether an origin-bound SMS domain names this site: same registrable domain, never a user-content host. */
 export function originBoundMatchesSite(domain: string, site: string): boolean {

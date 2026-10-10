@@ -26,8 +26,9 @@ if (!answer?.ok) {
   $('result').hidden = false;
   $('code').textContent = data.code;
   $('meta').textContent = `${data.sender.name || data.sender.address} · ${ago(data.receivedAt)}${data.subject ? ` · ${data.subject}` : ''}`;
-  const trusted = data.senderMatchesSite === true && data.senderVerified === true;
-  $('trust').textContent = trusted ? 'Sender verified by Proton (DMARC pass) and matches this site.' : data.senderMatchesSite === true ? 'Sender matches this site, but Proton did not verify it. Check the sender before you fill.' : 'Check the sender before you use this code.';
+  // Green only when Waypost reports the sender as trusted: a known code sender that Proton verified.
+  const trusted = data.trusted === true;
+  $('trust').textContent = trusted ? 'Known code sender, verified by Proton (DMARC pass), matches this site.' : (data.warning ?? 'Check the sender before you use this code.');
   $('trust').className = trusted ? 'ok' : 'warn';
   $('fill').addEventListener('click', async () => {
     $('fill').disabled = true;

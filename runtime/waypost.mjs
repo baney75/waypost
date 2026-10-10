@@ -33354,7 +33354,7 @@ var require_mime_node = __commonJS({
       /** @type {any} */
       libmime3.Libmime
     );
-    function stripComments(value) {
+    function stripComments2(value) {
       if (value.indexOf("(") < 0) {
         return value;
       }
@@ -33460,7 +33460,7 @@ var require_mime_node = __commonJS({
           /** @type {StructuredHeader} */
           this._parsedContentType
         );
-        this.encoding = stripComments(headers2.getFirst("Content-Transfer-Encoding")).toLowerCase().trim();
+        this.encoding = stripComments2(headers2.getFirst("Content-Transfer-Encoding")).toLowerCase().trim();
         this.contentType = (parsedContentType.value || "").toLowerCase().trim() || false;
         this.charset = parsedContentType.params.charset || false;
         this.disposition = (parsedContentDisposition.value || "").toLowerCase().trim() || false;
@@ -114387,6 +114387,14 @@ function registrableDomain(host) {
 }
 var FREE_MAIL = /* @__PURE__ */ new Set(["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com", "outlook.de", "outlook.fr", "hotmail.co.uk", "hotmail.fr", "live.co.uk", "yahoo.com", "ymail.com", "rocketmail.com", "yahoo.co.uk", "yahoo.co.jp", "yahoo.fr", "yahoo.de", "aol.com", "aim.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "protonmail.ch", "pm.me", "gmx.com", "gmx.net", "gmx.de", "web.de", "mail.com", "yandex.com", "yandex.ru", "mail.ru", "zoho.com", "zohomail.com", "fastmail.com", "fastmail.fm", "hey.com", "tutanota.com", "tutanota.de", "tuta.io", "tuta.com", "qq.com", "163.com", "126.com", "naver.com", "hushmail.com", "mailfence.com", "posteo.de", "posteo.net", "mailbox.org", "duck.com", "skiff.com"]);
 var USER_CONTENT_HOSTS = ["sites.google.com", "docs.google.com", "drive.google.com", "script.google.com", "script.googleusercontent.com", "sheets.google.com", "slides.google.com", "forms.google.com", "groups.google.com", "storage.googleapis.com", "storage.cloud.google.com", "gist.github.com", "raw.githubusercontent.com", "gist.githubusercontent.com", "onedrive.live.com", "1drv.ms", "forms.office.com", "sway.office.com", "dl.dropboxusercontent.com", "notion.site"];
+var SIGN_IN_HOSTS = {
+  "google.com": ["accounts.google.com", "myaccount.google.com"],
+  "microsoft.com": ["login.microsoft.com", "account.microsoft.com"],
+  "microsoftonline.com": ["login.microsoftonline.com"],
+  "live.com": ["login.live.com", "account.live.com"],
+  "apple.com": ["appleid.apple.com", "account.apple.com", "idmsa.apple.com"],
+  "github.com": ["github.com", "www.github.com"]
+};
 var SITE_SENDERS = {
   "youtube.com": ["google.com"],
   "gmail.com": ["google.com"],
@@ -114431,6 +114439,8 @@ function senderMatchesSite(address2, site, options = {}) {
   const siteDomain = registrableDomain(host);
   const sender = splitAddress(address2);
   if (!siteDomain || !sender) return false;
+  const signIn = SIGN_IN_HOSTS[siteDomain];
+  if (signIn && !signIn.includes(host)) return false;
   if (verifiedFor(siteDomain, sender.address, options)) return true;
   const senderDomain = registrableDomain(sender.host);
   if (!senderDomain) return false;
@@ -114452,19 +114462,40 @@ function notificationReason(headers2, subject, body = "") {
   if (/^\s*>/m.test(body) || /(?:^|\n)\s*@[a-z0-9][\w-]*\b/i.test(body) || /\b(?:reply to this email directly|view it on github|you are receiving this because|mentioned you|commented on|wrote:)/i.test(body)) return "quotes user content";
   return null;
 }
-function protonDmarc(headers2, fromDomain) {
-  const unfolded = headers2.replace(/\r?\n[ \t]+/g, " ");
-  for (const line of unfolded.split(/\r?\n/)) {
-    const match = /^authentication-results:\s*([^;\s]+)\s*;(.*)$/i.exec(line);
-    if (!match) continue;
-    if (!/(?:^|\.)(?:protonmail\.ch|proton\.me|protonmail\.com)$/i.test(match[1])) continue;
-    const dmarc = /\bdmarc=(\w+)(?:[^;]*?header\.from=([^\s;]+))?/i.exec(match[2]);
-    if (!dmarc) return null;
-    if (dmarc[1].toLowerCase() !== "pass") return false;
-    const domain2 = dmarc[2] ? registrableDomain(dmarc[2]) : null;
-    return !fromDomain || !domain2 || domain2 === registrableDomain(fromDomain);
+function stripComments(value) {
+  let out = "", depth = 0;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (character === "\\") {
+      if (depth === 0) out += character + (value[index + 1] ?? "");
+      index++;
+      continue;
+    }
+    if (character === "(") {
+      depth++;
+      continue;
+    }
+    if (character === ")" && depth > 0) {
+      depth--;
+      continue;
+    }
+    if (depth === 0) out += character;
   }
-  return null;
+  return out;
+}
+function protonDmarc(headers2, fromHost) {
+  const unfolded = headers2.replace(/\r?\n[ \t]+/g, " ");
+  const line = unfolded.split(/\r?\n/).find((item) => /^authentication-results:/i.test(item));
+  if (!line || !fromHost) return null;
+  const [authserv = "", ...clauses] = stripComments(line.replace(/^authentication-results:/i, "")).split(";").map((part) => part.trim());
+  if (!/^(?:[a-z0-9-]+\.)*(?:protonmail\.ch|proton\.me|protonmail\.com)(?:\s+\d+)?$/i.test(authserv)) return null;
+  const dmarc = clauses.filter((clause) => /^dmarc\s*=/i.test(clause));
+  if (dmarc.length !== 1) return null;
+  const result = /^dmarc\s*=\s*([a-z]+)/i.exec(dmarc[0])?.[1]?.toLowerCase();
+  const headerFrom = [...dmarc[0].matchAll(/(?:^|\s)header\.from\s*=\s*("?)([^\s";]+)\1/gi)].map((match) => match[2].toLowerCase().replace(/\.$/, ""));
+  if (!result || headerFrom.length !== 1) return null;
+  if (headerFrom[0] !== fromHost.toLowerCase().replace(/\.$/, "")) return false;
+  return result === "pass";
 }
 function originBoundMatchesSite(domain2, site) {
   const host = siteHost(site), bound = normalizeHost(domain2);
@@ -114504,7 +114535,6 @@ function policy(config2, caller) {
   if (!settings?.[caller]) throw new WaypostError("VERIFICATION_CODES_DISABLED", caller === "agents" ? 'Verification-code lookup for agents is off. The user can turn it on by setting "verificationCodes": {"agents": true} in the Waypost config. Codes are credentials; leave it off unless the user asked for it.' : "Verification-code lookup for the browser extension is off. Run: waypost connect browser");
   return settings;
 }
-var domainOf = (address2) => address2.includes("@") ? registrableDomain(address2.split("@").pop()) : null;
 function siteMatch(query, address2, options) {
   if (!query.site) return null;
   return senderMatchesSite(address2, query.site, options);
@@ -114543,7 +114573,7 @@ async function fromBridge(config2, query, cutoff, options, mailboxes) {
         }
         const result = extractCode(parsed.subject ?? "", text3);
         if (!result) continue;
-        matches.push({ ...result, source: "mail", sender: { name: (from?.name ?? "").slice(0, 200), address: address2.slice(0, 254) }, subject: (parsed.subject ?? "").slice(0, 300), receivedAt: new Date(received).toISOString(), senderMatchesSite: matchesSite, senderVerified: protonDmarc(headers2, domainOf(address2)), knownSender: knownOtpSender(address2, query.site, options), mailbox: mailbox2, uid: message.uid });
+        matches.push({ ...result, source: "mail", sender: { name: (from?.name ?? "").slice(0, 200), address: address2.slice(0, 254) }, subject: (parsed.subject ?? "").slice(0, 300), receivedAt: new Date(received).toISOString(), senderMatchesSite: matchesSite, senderVerified: protonDmarc(headers2, address2.includes("@") ? address2.split("@").pop() : null), knownSender: knownOtpSender(address2, query.site, options), mailbox: mailbox2, uid: message.uid });
       }
     });
   });
@@ -114651,7 +114681,9 @@ async function latestVerificationCode(config2, input2, caller = "agents") {
   const notifications = results.reduce((sum, result) => sum + result.notifications, 0);
   const best = matches[0];
   if (!best) return { found: false, since: new Date(cutoff).toISOString(), reason: otherSenders ? `${otherSenders} recent message(s) came from senders that do not belong to ${query.site}; their codes were not returned.` : notifications ? `${notifications} recent message(s) were notifications or list mail; codes in them are not trusted.` : "No message with a verification code arrived in the time window. Wait a few seconds and ask again." };
-  return { found: true, ...best, bodyReturned: false, ...matches.length > 1 ? { olderCodes: matches.length - 1 } : {} };
+  const trusted = best.knownSender && best.senderVerified === true && best.senderMatchesSite !== false;
+  const warning = trusted ? void 0 : !best.knownSender ? "The sender is not a known verification-code sender for this site; it may carry text someone else wrote. Check the sender and subject before using this code." : "Proton did not verify this sender (no DMARC pass). Check the sender before using this code.";
+  return { found: true, ...best, trusted, ...warning ? { warning } : {}, bodyReturned: false, ...matches.length > 1 ? { olderCodes: matches.length - 1 } : {} };
 }
 var codeTools = [
   defineTool({ name: "mail_verification_code", title: "Latest verification code", description: "Off unless the user set verificationCodes.agents in local config. Returns the newest one-time code (2FA, sign-in or verification) received in the last few minutes, with sender, subject, time and confidence, never the message body. Pass site to accept only senders that belong to that site. Treat the code as a password: use it only for the sign-in the user asked for, and do not repeat it elsewhere.", schema: verificationCodeSchema, readOnly: true, destructive: false, handler: (config2, input2) => latestVerificationCode(config2, input2, "agents") })
