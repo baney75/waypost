@@ -21,3 +21,31 @@ test('bundled MCP negotiates, lists tools, reports config and rejects a forbidde
     const prompts=await client.listPrompts();assert.equal(prompts.prompts[0].name,'proton-triage');assert.equal(stderr,'');
   }finally{await client.close();}
 });
+
+test('MCP status works before setup and errors name the fix',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'waypost-mcp-empty-'));const config=join(root,'missing.json');
+  const client=new Client({name:'waypost-check',version:'1.0.0'});
+  await client.connect(new StdioClientTransport({command:process.execPath,args:[resolve('runtime/waypost.mjs'),'--config',config,'mcp'],stderr:'pipe'}));
+  try {
+    const status=await client.callTool({name:'waypost_status',arguments:{}});
+    assert.equal(status.isError,undefined);assert.equal(status.structuredContent.data.configured,false);assert.match(status.structuredContent.data.next,/waypost init/);
+    const list=await client.callTool({name:'mail_list',arguments:{}});
+    assert.equal(list.structuredContent.error.code,'CONFIG_MISSING');assert.match(list.structuredContent.error.message,/waypost init/);
+  }finally{await client.close();}
+});
+
+test('MCP calendar tools prepare a local-time event and read it back with local times',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'waypost-mcp-cal-'));const config=join(root,'config.json');
+  await writeFile(config,JSON.stringify({version:1,artifactsDir:join(root,'artifacts')}),{mode:0o600});
+  const client=new Client({name:'waypost-check',version:'1.0.0'});
+  await client.connect(new StdioClientTransport({command:process.execPath,args:[resolve('runtime/waypost.mjs'),'--config',config,'mcp'],stderr:'pipe'}));
+  try {
+    const prepared=await client.callTool({name:'calendar_prepare',arguments:{summary:'Dentist',start:'2026-11-02T08:30:00',end:'2026-11-02T09:15:00',timezone:'America/New_York'}});
+    assert.equal(prepared.structuredContent.data.start,'2026-11-02T13:30:00Z');
+    const bad=await client.callTool({name:'calendar_prepare',arguments:{summary:'Bad',start:'2026-11-02T08:30:00'}});
+    assert.equal(bad.structuredContent.error.code,'INPUT_INVALID');assert.match(bad.structuredContent.error.message,/timezone/);
+    await writeFile(config,JSON.stringify({version:1,artifactsDir:join(root,'artifacts'),calendar:{files:[prepared.structuredContent.data.path]}}),{mode:0o600});
+    const events=await client.callTool({name:'calendar_events',arguments:{from:'2026-11-01T00:00:00Z',to:'2026-11-03T00:00:00Z',timezone:'America/New_York'}});
+    assert.deepEqual(events.structuredContent.data.events.map(event=>[event.summary,event.startLocal]),[['Dentist','2026-11-02T08:30:00-05:00']]);
+  }finally{await client.close();}
+});

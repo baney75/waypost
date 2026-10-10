@@ -1,6 +1,6 @@
 {
   "name": "@baney75/waypost",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Local Proton Mail, Calendar and Drive tools for agents.",
   "type": "module",
   "license": "MIT",
@@ -21,6 +21,7 @@
     "assets",
     "skills",
     "README.md",
+    "extension",
     "SECURITY.md",
     "LICENSE",
     "runtime",
@@ -40,6 +41,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
     "commander": "15.0.0",
+    "html-to-text": "10.0.1",
     "ical.js": "2.2.1",
     "imapflow": "2.2.1",
     "mailparser": "3.9.33",
@@ -47,10 +49,12 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/html-to-text": "9.0.4",
     "@types/mailparser": "3.9.0",
     "@types/node": "26.6.4",
     "@types/nodemailer": "8.0.2",
     "esbuild": "0.28.2",
+    "playwright-core": "1.63.0",
     "typescript": "7.0.2"
   }
 }

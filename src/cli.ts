@@ -11,12 +11,15 @@ import { VERSION } from './version.js';
 import { runExecutable } from './process.js';
 import { connectDrive, connectMail, connectMailHelper, connectCalendar, connectCalendarFeed, connectCalendarPass } from './connect.js';
 import { checkUpdate } from './update.js';
+import { runNativeHost } from './native-host.js';
+import { connectBrowser } from './browser.js';
 
 const program=new Command().name('waypost').description('Proton Mail, Calendar and Drive for your terminal and agents.').version(VERSION).option('--config <path>','Configuration file',defaultConfigPath()).showHelpAfterError();
 const configPath=()=>resolve(program.opts<{config:string}>().config);
 const output=(value:unknown):void=>{process.stdout.write(JSON.stringify({ok:true,data:value},null,2)+'\n');};
 const parseInput=(value:string):unknown=>{try{if(Buffer.byteLength(value)>65536)throw new Error();return JSON.parse(value);}catch{throw new WaypostError('INPUT_INVALID','Supply a JSON object no larger than 64 KiB.');}};
-const invoke=async(name:string,input:unknown)=>output(await callTool(await loadConfig(configPath()),name,input));
+// Check arguments before reading configuration, so input mistakes are reported first.
+const invoke=async(name:string,input:unknown)=>{tools.find(tool=>tool.name===name)?.schema.parse(input);output(await callTool(await loadConfig(configPath()),name,input));};
 async function stdinLink():Promise<string> {
   if(process.stdin.isTTY)throw new WaypostError('INPUT_INVALID','Pipe the share link on standard input, or use --url-file with an owner-only file. Do not place the link in command arguments.');
   const chunks:Buffer[]=[];let bytes=0;
@@ -36,6 +39,7 @@ connect.command('calendar [file]').description('Connect an ICS export or a refre
   }
   output(file?await connectCalendar(configPath(),file):await connectCalendarFeed(configPath(),options.name,options.urlFile?{file:options.urlFile}:{url:await stdinLink()}));
 });
+connect.command('browser').description('Pair the Waypost browser extension so it can fill verification codes. Off until you run this.').option('--extension-id <id>','Extension ID shown on chrome://extensions (defaults to the ID pinned in extension/manifest.json)').option('--browser <name>','chrome, chromium, brave, edge, or helium','chrome').option('--hosts-dir <path>','NativeMessagingHosts directory for another Chromium browser').action(async(options:{extensionId?:string;browser:string;hostsDir?:string})=>output(await connectBrowser(configPath(),options)));
 connect.command('mail').description('Connect local Bridge or an authenticated read-only Mail helper.').option('--certificate <path>','Bridge public PEM; also inject WAYPOST_MAIL_USERNAME and WAYPOST_MAIL_PASSWORD').option('--helper <path>','Authenticated read-only helper executable').option('--imap-port <port>','IMAP STARTTLS port','1143').option('--smtp-port <port>','SMTP STARTTLS port','1025').action(async(options:{certificate?:string;helper?:string;imapPort:string;smtpPort:string})=>{
   if(Number(!!options.certificate)+Number(!!options.helper)!==1)throw new WaypostError('INPUT_INVALID','Choose --certificate for local Bridge or --helper for an existing authenticated helper.');
   output(options.helper?await connectMailHelper(configPath(),options.helper):await connectMail(configPath(),options.certificate!,Number(options.imapPort),Number(options.smtpPort)));
@@ -44,10 +48,10 @@ program.command('tools').description('List all CLI/MCP tools and JSON input sche
 program.command('call <tool>').description('Run the same tool exposed through MCP.').option('--input <json>','Input object','{}').action(async(name:string,options:{input:string})=>invoke(name,parseInput(options.input)));
 for(const service of ['mail','drive','calendar']) {
   const group=program.command(service).description(`Use ${service} tools.`);
-  if(service==='calendar')group.command('agenda').description('Read the upcoming calendar window (seven days by default).').option('--days <count>','Days from now','7').option('--limit <count>','Maximum events','50').action(async(options:{days:string;limit:string})=>{
+  if(service==='calendar')group.command('agenda').description('Read the upcoming calendar window (seven days by default) with local times.').option('--days <count>','Days from now','7').option('--limit <count>','Maximum events','50').option('--timezone <zone>','IANA timezone for local times',Intl.DateTimeFormat().resolvedOptions().timeZone).action(async(options:{days:string;limit:string;timezone:string})=>{
     const days=Number(options.days);if(!Number.isInteger(days)||days<1||days>366)throw new WaypostError('INPUT_INVALID','Choose 1–366 days.');
     const from=new Date();const utc=(d:Date)=>d.toISOString().replace(/\.\d{3}Z$/,'Z');
-    await invoke('calendar_events',{from:utc(from),to:utc(new Date(from.getTime()+days*86400000)),limit:Number(options.limit)});
+    await invoke('calendar_events',{from:utc(from),to:utc(new Date(from.getTime()+days*86400000)),limit:Number(options.limit),...(options.timezone&&options.timezone!=='UTC'?{timezone:options.timezone}:{})});
   });
   for(const tool of tools.filter(t=>t.name.startsWith(service+'_'))) {
     const command=group.command(tool.name.slice(service.length+1)).description(tool.description).option('--input <json>','JSON arguments, as an alternative to flags');
@@ -90,16 +94,21 @@ program.command('login <service>').description('Sign into the official Drive CLI
   const config=await loadConfig(configPath());if(!config.drive)throw new WaypostError('NOT_CONFIGURED','Run waypost connect drive first.');
   await runExecutable(config.drive.executable,['auth','login'],120000);output({service:'drive',status:'signin_command_completed',next:'Run waypost doctor to verify a Drive read.'});
 });
-program.command('agent-config [client]').description('Print a working MCP connection for codex, cursor, claude or generic clients.').action(async(client='generic')=>{
+program.command('agent-config [client]').description('Print a working MCP connection: claude-code (a claude mcp add command), codex, claude (Claude Desktop JSON), cursor or generic.').action(async(client='generic')=>{
   const entry=fileURLToPath(new URL('../runtime/waypost.mjs',import.meta.url));
   const args=[entry,'--config',configPath(),'mcp'];
   if(client==='codex') {
     const config=await loadConfig(configPath());
     const env=config.mail?[config.mail.usernameEnv,config.mail.passwordEnv]:[];
     process.stdout.write(`[mcp_servers.waypost]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(args)}\n${env.length?`env_vars = ${JSON.stringify(env)}\n`:''}`);
+  } else if(client==='claude-code') {
+    const quote=(value:string)=>/^[\w@%+=:,./-]+$/.test(value)?value:`'${value.replace(/'/g,`'\\''`)}'`;
+    process.stdout.write(`claude mcp add waypost --scope user -- ${[process.execPath,...args].map(quote).join(' ')}\n`);
   } else if(['generic','cursor','claude'].includes(client))process.stdout.write(JSON.stringify({mcpServers:{waypost:{command:process.execPath,args}}},null,2)+'\n');
-  else throw new WaypostError('CLIENT_INVALID','Choose codex, generic, cursor or claude.');
+  else throw new WaypostError('CLIENT_INVALID','Choose claude-code, codex, claude, cursor or generic.');
 });
 program.command('update').description('Check releases; never install silently.').action(async()=>output(await checkUpdate()));
+// Started by the browser through native messaging; Chrome passes the extension origin as the first argument.
+program.command('native-host [origin]',{hidden:true}).allowUnknownOption().description('Native messaging host for the browser extension.').action(async(origin?:string)=>runNativeHost(configPath(),origin));
 program.command('mcp').description('Start the MCP server over standard input/output.').action(async()=>serve(configPath()));
 try {await program.parseAsync();}catch(error){process.stderr.write(JSON.stringify({ok:false,error:publicError(error)})+'\n');process.exitCode=1;}

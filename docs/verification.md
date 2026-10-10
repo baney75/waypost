@@ -8,8 +8,20 @@ Observed on October 2, 2026. Tests use synthetic data; live account checks are l
 | Mail reads | EXAMINE and BODY.PEEK preserve flags. Header and body output is bounded; HTML and attachment content are excluded. |
 | Mail sends | Disabled by default. Each call needs `confirm: true`, a local EML, and its exact digest. A persistent attempt marker prevents automatic resubmission after uncertainty. Synthetic SMTP tests exercise one submission. |
 | Drive | Fixed argument arrays, approved root paths, bounded process output and timeouts. Uploads require write policy, `confirm: true`, and an approved local artifact. Downloads use a new directory and reject symlinks. |
-| Calendar | UTC and declared-timezone fixtures cover recurrence, exceptions, DST, invalid dates, mixed endpoint types, and bounded hostile timezone rules. Unsupported spring-gap recurrence fails explicitly. |
-| MCP / CLI | Protocol initialization, tool schemas, error envelopes, configuration policies, and the bundled runtime are exercised. |
+| Calendar | UTC and declared-timezone fixtures cover recurrence, exceptions, DST, invalid dates, mixed endpoint types, and bounded hostile timezone rules. Unsupported spring-gap recurrence is skipped and reported per event. |
+| MCP / CLI | Protocol initialization, tool schemas, error envelopes, configuration policies, and the bundled runtime are exercised, including over stdio against a real IMAP server. |
+| Verification codes | Extraction fixtures for common sender layouts and false positives (orders, dates, phone numbers), site matching, DMARC parsing, the native host's extension check, and the extension in Chromium. |
+
+## Version 0.5.0 checks
+
+Observed on October 9, 2026, on Arch Linux with Node.js 26.8.
+
+- **Suite:** `npm run verify` passed 103 tests, including two end-to-end tests that need no Proton account:
+  - The bundled MCP server, started over stdio by the MCP SDK client, read a real IMAP server ([pymap](https://pypi.org/project/pymap/) 0.36.7, in-memory) through STARTTLS with a pinned certificate. It listed folders, paged 30 messages with no gaps or repeats, searched, decoded RFC 2047 and ISO-8859-1 quoted-printable text, converted HTML-only mail without scripts or tracking images, followed a three-message thread, saved a PDF attachment with a matching SHA-256, and left every message unread. Wrong passwords returned `MAIL_AUTH`, missing folders `MAIL_MAILBOX_NOT_FOUND`.
+  - The extension, loaded in Chromium 152, reached Waypost through native messaging and filled a GitHub code from the IMAP server into a single field and into six split fields. A lookalike site got no code. With automatic filling turned on for the site, a code that arrived after the field appeared was filled with no click.
+- **Claude Code:** `claude mcp add` (into a throwaway home directory) followed by `claude mcp list` reported `✔ Connected`.
+- **Live Drive (read-only):** through MCP, `drive_list` returned normalized entries from a real account, `drive_info` on a missing path returned `DRIVE_NOT_FOUND`, and `drive_download` of a 9 MB file matched the SHA-1 stored with its Drive revision. Nothing was uploaded, moved or deleted.
+- **Not checked live:** Proton Mail Bridge was not installed on the test machine, so no live Bridge mailbox was read in this release. SMTP was covered only by the synthetic tests. The verification-code DMARC check and SMS source were tested with synthetic headers and a fixture `chat.db`; neither has been run against a live Proton message or a Mac's Messages database.
 
 ## Version 0.4.1 checks
 
@@ -41,7 +53,7 @@ npm run verify
 node scripts/package-plugin.mjs
 ```
 
-CI checks Node.js 22 and 24 on Linux and macOS. Windows execution is not verified. Account-level checks require your own configured official services and are not part of public CI.
+CI checks Node.js 22 and 24 on Linux and macOS and installs pymap for the end-to-end test. The Chromium extension test runs where Chromium is installed (`WAYPOST_CHROMIUM` picks a binary); hosted CI skips it. Windows execution is not verified. Account-level checks require your own configured official services and are not part of public CI.
 
 The release archive includes the runtime and dependency licenses. Release assets include SHA-256 manifests and GitHub build attestations. Keep the version pin when installing; see [Updates](updates.md).
 

@@ -15,7 +15,7 @@ async function workspace(t) {
 }
 async function fakeDrive(root,body) {
   const executable=join(root,'fake-drive');
-  await writeFile(executable,'#!/usr/bin/env node\nconst fs=require("node:fs");const path=require("node:path");const target=process.argv.at(-2);\n'+body+'\nprocess.stdout.write("{}");\n',{mode:0o700});
+  await writeFile(executable,'#!/usr/bin/env node\nconst fs=require("node:fs");const path=require("node:path");const target=process.argv.at(-2);\nif(process.argv.includes("info")){process.stdout.write(JSON.stringify({type:"folder",name:{ok:true,value:"item"}}));process.exit(0);}\n'+body+'\nprocess.stdout.write("{}");\n',{mode:0o700});
   return {version:1,artifactsDir:join(root,'artifacts'),timeoutMs:2000,drive:{executable,root:'/my-files',writeEnabled:false}};
 }
 
@@ -81,5 +81,5 @@ test('Drive checksums nested regular files and preserves private download storag
   assert.equal((await lstat(config.artifactsDir)).mode&0o777,0o700);
   assert.equal((await lstat(result.directory)).mode&0o777,0o700);
   assert.deepEqual(result.files,[{file:join(result.directory,'nested','item.txt'),bytes:Buffer.byteLength(content),sha256:createHash('sha256').update(content).digest('hex')}]);
-  assert.equal(result.localChecksums,true);assert.equal(result.remoteChecksumsVerified,false);assert.equal(result.empty,false);
+  assert.equal(result.claimedSha1Match,null);assert.equal(result.empty,false);
 });

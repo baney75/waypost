@@ -18,6 +18,16 @@ async function fixture(t,content) {
   return {version:1, artifactsDir:join(root,'artifacts'), calendar:{files:[file]}, timeoutMs:1000};
 }
 const query = {from:'2026-03-06T00:00:00Z',to:'2026-03-12T00:00:00Z'};
+// Event-level failures skip that event, return no partial occurrences, and are disclosed.
+async function skippedWith(config,window,code,pattern) {
+  const result=await calendarEvents(config,window);
+  assert.equal(result.events.length,0);
+  assert.equal(result.partial,true);
+  assert.equal(result.skippedCount,1);
+  assert.ok(Array.isArray(code)?code.includes(result.skipped[0].code):result.skipped[0].code===code,result.skipped[0].code);
+  if(pattern)assert.match(result.skipped[0].message,pattern);
+  return result;
+}
 
 test('snapshot recurrence stays at 9am local across DST and excludes EXDATE', async t => {
   const config = await fixture(t,`${zone}\nBEGIN:VEVENT\nUID:dst-synthetic\nDTSTART;TZID=America/New_York:20260306T090000\nDTEND;TZID=America/New_York:20260306T100000\nRRULE:FREQ=DAILY;COUNT=5\nEXDATE;TZID=America/New_York:20260307T090000\nSUMMARY:Synthetic daily event\nEND:VEVENT`);
@@ -34,7 +44,7 @@ test('spring-gap recurrence fails explicitly instead of shifting a nonexistent o
   const config=await fixture(t,`${zone}\nBEGIN:VEVENT\nUID:spring-gap\nDTSTART;TZID=America/New_York:20260306T023000\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=5\nSUMMARY:Gap recurrence\nEND:VEVENT`);
   // RFC 5545 §3.3.10 requires March 8 to be ignored without consuming COUNT.
   // Until the recurrence engine supports that accounting, the adapter must reject the series.
-  await assert.rejects(calendarEvents(config,query),error => error.code==='CALENDAR_RECURRENCE' && /nonexistent local time/i.test(error.message));
+  await skippedWith(config,query,'CALENDAR_RECURRENCE',/nonexistent local time/i);
 });
 
 test('timezone recurrence expansion fails fast in a heap-limited child before hostile subdaily rules can run', async t => {
@@ -68,7 +78,7 @@ test('impossible UNTIL is rejected before recurrence normalization; valid inclus
   const window={from:'2026-02-27T00:00:00Z',to:'2026-03-04T00:00:00Z'};
   const content=until => `BEGIN:VEVENT\nUID:until-validation\nDTSTART:20260227T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY;UNTIL=${until}\nSUMMARY:UNTIL validation\nEND:VEVENT`;
   const invalid=await fixture(t,content('20260230T090000Z'));
-  await assert.rejects(calendarEvents(invalid,window),{code:'CALENDAR_DATE'});
+  await skippedWith(invalid,window,'CALENDAR_DATE');
   const valid=await fixture(t,content('20260228T090000Z'));
   const result=await calendarEvents(valid,window);
   assert.deepEqual(result.events.map(event => event.start),['2026-02-27T09:00:00Z','2026-02-28T09:00:00Z']);
@@ -82,10 +92,10 @@ test('DTSTART and DTEND must use matching DATE or DATE-TIME types, including exc
     'DTSTART;VALUE=DATE:20260306\nDTEND:20260307T090000Z\nRRULE:FREQ=DAILY;COUNT=2',
   ]) {
     const config=await fixture(t,`BEGIN:VEVENT\nUID:date-type-mismatch\n${pair}\nSUMMARY:Invalid date types\nEND:VEVENT`);
-    await assert.rejects(calendarEvents(config,query),{code:'CALENDAR_DATE'});
+    await skippedWith(config,query,'CALENDAR_DATE');
   }
   const exception=await fixture(t,`BEGIN:VEVENT\nUID:mismatched-exception\nDTSTART:20260306T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=2\nEND:VEVENT\nBEGIN:VEVENT\nUID:mismatched-exception\nRECURRENCE-ID:20260307T090000Z\nDTSTART;VALUE=DATE:20260307\nDTEND:20260308T090000Z\nEND:VEVENT`);
-  await assert.rejects(calendarEvents(exception,query),{code:'CALENDAR_DATE'});
+  await skippedWith(exception,query,'CALENDAR_DATE');
 });
 
 test('recurrence overrides replace occurrences; cancelled override is omitted', async t => {
@@ -94,11 +104,31 @@ test('recurrence overrides replace occurrences; cancelled override is omitted', 
   assert.deepEqual(result.events.map(event => [event.start,event.summary]),[['2026-03-06T09:00:00Z','Original'],['2026-03-07T11:00:00Z','Moved']]);
 });
 
-test('floating and undeclared timezones fail without host timezone assumptions', async t => {
-  for (const date of ['DTSTART:20260306T090000','DTSTART;TZID=America/New_York:20260306T090000']) {
+test('floating and unknown timezones are skipped without host timezone assumptions', async t => {
+  for (const date of ['DTSTART:20260306T090000','DTSTART;TZID=Not/A_Zone:20260306T090000']) {
     const config = await fixture(t,`BEGIN:VEVENT\nUID:floating-synthetic\n${date}\nDURATION:PT1H\nSUMMARY:Unsupported\nEND:VEVENT`);
-    await assert.rejects(calendarEvents(config,query),{code:'CALENDAR_TIMEZONE'});
+    await skippedWith(config,query,'CALENDAR_TIMEZONE');
   }
+});
+
+test('an IANA TZID without a VTIMEZONE block uses runtime timezone data, including DST', async t => {
+  const config = await fixture(t,`BEGIN:VEVENT\nUID:iana-no-vtimezone\nDTSTART;TZID=America/Chicago:20260306T090000\nDTEND;TZID=America/Chicago:20260306T093000\nRRULE:FREQ=DAILY;COUNT=4\nSUMMARY:Standup\nEND:VEVENT`);
+  const result = await calendarEvents(config,{...query,timezone:'America/Chicago'});
+  assert.deepEqual(result.events.map(event => event.start),['2026-03-06T15:00:00Z','2026-03-07T15:00:00Z','2026-03-08T14:00:00Z','2026-03-09T14:00:00Z']);
+  assert.equal(result.events[2].startLocal,'2026-03-08T09:00:00-05:00');
+  assert.equal(result.events[0].startLocal,'2026-03-06T09:00:00-06:00');
+  assert.equal(result.events[0].timezone,'America/Chicago');
+  assert.deepEqual(result.sources[0].timezonesFromRuntime,['America/Chicago']);
+  assert.equal(result.partial,false);
+});
+
+test('one unreadable event is skipped and the rest of the calendar is still returned', async t => {
+  const config = await fixture(t,`BEGIN:VEVENT\nUID:good\nDTSTART:20260306T090000Z\nDURATION:PT1H\nSUMMARY:Good\nEND:VEVENT\nBEGIN:VEVENT\nUID:bad\nDTSTART:20260230T090000Z\nDURATION:PT1H\nSUMMARY:Bad\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART:20260306T090000Z\nSUMMARY:No UID\nEND:VEVENT`);
+  const result = await calendarEvents(config,query);
+  assert.deepEqual(result.events.map(event => event.uid),['good']);
+  assert.equal(result.skippedCount,2);
+  assert.deepEqual(result.skipped.map(item => item.code).sort(),['CALENDAR_DATE','CALENDAR_INVALID']);
+  assert.match(result.reason,/skipped/);
 });
 
 test('malformed dates and incomplete declared zones fail rather than inventing dates', async t => {
@@ -107,7 +137,8 @@ test('malformed dates and incomplete declared zones fail rather than inventing d
     'BEGIN:VTIMEZONE\nTZID:EmptyZone\nEND:VTIMEZONE\nBEGIN:VEVENT\nUID:empty-zone\nDTSTART;TZID=EmptyZone:20260306T090000\nDURATION:PT1H\nEND:VEVENT',
   ]) {
     const config=await fixture(t,content);
-    await assert.rejects(calendarEvents(config,query),error => ['CALENDAR_DATE','CALENDAR_TIMEZONE'].includes(error.code));
+    if(content.includes('EmptyZone'))await assert.rejects(calendarEvents(config,query),{code:'CALENDAR_TIMEZONE'});
+    else await skippedWith(config,query,'CALENDAR_DATE');
   }
 });
 
@@ -129,7 +160,7 @@ test('all-day dates remain dates and retain exclusive end', async t => {
 
 test('bounded query rejects invalid ranges, dates and subdaily recurrence', async t => {
   const config = await fixture(t,`BEGIN:VEVENT\nUID:bounded-synthetic\nDTSTART:20260306T090000Z\nDURATION:PT1H\nRRULE:FREQ=SECONDLY\nSUMMARY:Unsupported\nEND:VEVENT`);
-  await assert.rejects(calendarEvents(config,query),{code:'CALENDAR_RECURRENCE'});
+  await skippedWith(config,query,'CALENDAR_RECURRENCE');
   for (const input of [{...query,limit:201},{from:'2026-02-30T00:00:00Z',to:query.to},{from:'2025-01-01T00:00:00Z',to:'2027-01-01T00:00:00Z'},{from:query.to,to:query.from}]) await assert.rejects(calendarEvents(config,input));
 });
 
@@ -181,4 +212,61 @@ test('prepare rejects invitations and invalid event duration', async t => {
   const config = await fixture(t,'');
   const valid = {start:'2026-03-09T13:00:00Z',end:'2026-03-09T14:00:00Z',summary:'Synthetic'};
   for (const input of [{...valid,end:valid.start},{...valid,start:'2026-02-30T13:00:00Z'},{...valid,attendees:['synthetic@example.com']},{...valid,summary:'NUL\0'}]) await assert.rejects(calendarPrepare(config,input));
+});
+
+test('a VTIMEZONE with a multi-value RDATE applies every listed transition', async t => {
+  const zone2=`BEGIN:VTIMEZONE\nTZID:Synthetic/Rdate\nBEGIN:STANDARD\nDTSTART:20250101T000000\nTZOFFSETFROM:-0600\nTZOFFSETTO:-0600\nEND:STANDARD\nBEGIN:DAYLIGHT\nDTSTART:20250309T020000\nRDATE:20260308T020000,20270314T020000\nTZOFFSETFROM:-0600\nTZOFFSETTO:-0500\nEND:DAYLIGHT\nBEGIN:STANDARD\nDTSTART:20251102T020000\nRDATE:20261101T020000,20271107T020000\nTZOFFSETFROM:-0500\nTZOFFSETTO:-0600\nEND:STANDARD\nEND:VTIMEZONE`;
+  const config=await fixture(t,`${zone2}\nBEGIN:VEVENT\nUID:rdate-zone\nDTSTART;TZID=Synthetic/Rdate:20270315T090000\nDURATION:PT1H\nSUMMARY:After third transition\nEND:VEVENT`);
+  const result=await calendarEvents(config,{from:'2027-03-15T00:00:00Z',to:'2027-03-16T00:00:00Z'});
+  assert.equal(result.events[0].start,'2027-03-15T14:00:00Z');
+});
+
+async function prepared(t,input){
+  const config=await fixture(t,'');
+  const result=await calendarPrepare(config,input);
+  const content=await readFile(result.path,'utf8');
+  for (const line of content.split('\r\n')) assert.ok(Buffer.byteLength(line)<=75);
+  return {result,content,reader:{...config,calendar:{files:[result.path]}}};
+}
+
+test('prepare writes all-day events with exclusive end dates that read back as dates', async t => {
+  const {result,content,reader}=await prepared(t,{summary:'Conference',start:'2026-10-12',end:'2026-10-14',allDay:true});
+  assert.match(content,/DTSTART;VALUE=DATE:20261012\r\nDTEND;VALUE=DATE:20261014/);
+  assert.equal(result.start,'2026-10-12');
+  const read=await calendarEvents(reader,{from:'2026-10-11T00:00:00Z',to:'2026-10-20T00:00:00Z'});
+  assert.deepEqual(read.events.map(event=>[event.start,event.end,event.allDay]),[['2026-10-12','2026-10-14',true]]);
+  const single=await prepared(t,{summary:'Holiday',start:'2026-12-25',allDay:true});
+  assert.equal(single.result.end,'2026-12-26');
+  assert.equal(single.result.endDefaulted,true);
+});
+
+test('prepare keeps local wall-clock time with a timezone and weekly RRULE across DST', async t => {
+  const {result,content,reader}=await prepared(t,{summary:'Team sync',start:'2026-10-27T09:00:00',end:'2026-10-27T09:30:00',timezone:'America/Chicago',rrule:'FREQ=WEEKLY;BYDAY=TU;COUNT=3'});
+  assert.match(content,/BEGIN:VTIMEZONE\r\nTZID:America\/Chicago/);
+  assert.match(content,/DTSTART;TZID=America\/Chicago:20261027T090000/);
+  assert.match(content,/RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=3/);
+  assert.equal(result.start,'2026-10-27T14:00:00Z');
+  assert.equal(result.startLocal,'2026-10-27T09:00:00-05:00');
+  const read=await calendarEvents(reader,{from:'2026-10-26T00:00:00Z',to:'2026-11-30T00:00:00Z',timezone:'America/Chicago'});
+  // Chicago leaves DST on November 1, 2026: same 9:00 local time, one hour later in UTC.
+  assert.deepEqual(read.events.map(event=>event.start),['2026-10-27T14:00:00Z','2026-11-03T15:00:00Z','2026-11-10T15:00:00Z']);
+  assert.ok(read.events.every(event=>event.startLocal.slice(11,19)==='09:00:00'));
+  assert.equal(read.sources[0].timezonesFromRuntime,undefined,'the prepared file carries its own VTIMEZONE');
+});
+
+test('prepare rejects nonexistent local times, bad rules and mismatched UNTIL with actionable messages', async t => {
+  const config=await fixture(t,'');
+  const cases=[
+    [{summary:'Gap',start:'2026-03-08T02:30:00',end:'2026-03-08T03:30:00',timezone:'America/Chicago'},/daylight saving gap/],
+    [{summary:'Z with zone',start:'2026-03-09T13:00:00Z',timezone:'America/Chicago'},/local time/],
+    [{summary:'Local without zone',start:'2026-03-09T13:00:00'},/UTC/],
+    [{summary:'Hourly',start:'2026-03-09T13:00:00Z',rrule:'FREQ=HOURLY'},/rrule supports/],
+    [{summary:'Both',start:'2026-03-09T13:00:00Z',rrule:'FREQ=DAILY;COUNT=2;UNTIL=20260320T000000Z'},/COUNT or UNTIL/],
+    [{summary:'Until day',start:'2026-03-09T13:00:00Z',rrule:'FREQ=DAILY;UNTIL=20260320'},/UNTIL must be UTC/],
+    [{summary:'Day end',start:'2026-03-09',end:'2026-03-09',allDay:true},/exclusive/],
+    [{summary:'Bad day',start:'2026-02-30',allDay:true},/real date/],
+  ];
+  for (const [input,pattern] of cases) await assert.rejects(calendarPrepare(config,input),error=>error.code==='INPUT_INVALID'&&pattern.test(error.message),JSON.stringify(input));
+  const ok=await calendarPrepare(config,{summary:'Default hour',start:'2026-03-09T13:00:00Z'});
+  assert.equal(ok.end,'2026-03-09T14:00:00Z');
 });

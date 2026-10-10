@@ -1,10 +1,10 @@
 import { readFile, realpath, stat, mkdir, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { constants } from 'node:fs';
 import { ensureArtifactsDirectory } from './artifacts.js';
-import { WaypostError } from './errors.js';
+import { WaypostError, inputIssues } from './errors.js';
 
 const absolutePath = z.string().refine(isAbsolute, 'Use an absolute path.');
 export const configSchema = z.object({
@@ -30,6 +30,17 @@ export const configSchema = z.object({
     z.object({name:z.string().min(1).max(80),passItem:z.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u),vault:z.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u)}).strict(),
   ])).max(10).default([])}).strict().optional(),
   pass: z.object({executable:absolutePath}).strict().optional(),
+  verificationCodes: z.object({
+    agents: z.boolean().default(false),
+    browser: z.boolean().default(false),
+    maxAgeMinutes: z.number().int().min(1).max(60).default(10),
+    mailboxes: z.array(z.string().min(1).max(256)).min(1).max(5).default(['INBOX']),
+    siteAliases: z.record(z.string().max(253), z.array(z.string().max(253)).max(20)).default({}),
+    verifiedSenders: z.record(z.string().max(253), z.array(z.string().max(254)).max(20)).default({}),
+    pairingHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    extensionIds: z.array(z.string().regex(/^[a-p]{32}$/)).max(5).default([]),
+    messagesDatabase: absolutePath.optional(),
+  }).strict().optional(),
   timeoutMs: z.number().int().min(1000).max(120000).default(45000),
 }).strict().refine(value => !(value.mail && value.mailHelper), 'Choose either local Bridge or a Mail helper.');
 export type Config = z.infer<typeof configSchema>;
@@ -37,12 +48,17 @@ export const defaultConfigPath = () => process.env.WAYPOST_CONFIG ?? join(homedi
 export async function loadConfig(path = defaultConfigPath()): Promise<Config> {
   try {
     const file = await stat(path);
-    if (process.platform !== 'win32' && (file.mode & 0o022)) throw new WaypostError('CONFIG_PERMISSIONS', 'Configuration must not be writable by other users. Run chmod 600 on your config file.');
+    if (process.platform !== 'win32' && (file.mode & 0o022)) throw new WaypostError('CONFIG_PERMISSIONS', `Configuration must not be writable by other users. Run: chmod 600 ${path}`);
     if(file.size > 65536) throw new WaypostError('CONFIG_INVALID','Configuration exceeds 64 KiB.');
     return configSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   } catch (error) {
     if(error instanceof WaypostError) throw error;
-    throw new WaypostError('CONFIG_INVALID', 'Configuration is missing or invalid. Run waypost init, then waypost connect --help.');
+    if(error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new WaypostError('CONFIG_MISSING', `No Waypost configuration at ${path}. Run: waypost init (or node runtime/waypost.mjs init), then waypost connect --help.`, {configPath:path});
+    if(error instanceof ZodError) {
+      const issues = inputIssues(error);
+      throw new WaypostError('CONFIG_INVALID', `Configuration at ${path} is invalid: ${issues.map(issue => `${issue.path}: ${issue.message}`).join('; ')}.`, {configPath:path, issues});
+    }
+    throw new WaypostError('CONFIG_INVALID', `Configuration at ${path} is not valid JSON. Fix it or move it aside and run waypost init.`, {configPath:path});
   }
 }
 export async function initConfig(path = defaultConfigPath()): Promise<string> {
