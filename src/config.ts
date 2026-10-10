@@ -1,10 +1,10 @@
 import { readFile, realpath, stat, mkdir, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { constants } from 'node:fs';
 import { ensureArtifactsDirectory } from './artifacts.js';
-import { WaypostError } from './errors.js';
+import { WaypostError, inputIssues } from './errors.js';
 
 const absolutePath = z.string().refine(isAbsolute, 'Use an absolute path.');
 export const configSchema = z.object({
@@ -37,12 +37,17 @@ export const defaultConfigPath = () => process.env.WAYPOST_CONFIG ?? join(homedi
 export async function loadConfig(path = defaultConfigPath()): Promise<Config> {
   try {
     const file = await stat(path);
-    if (process.platform !== 'win32' && (file.mode & 0o022)) throw new WaypostError('CONFIG_PERMISSIONS', 'Configuration must not be writable by other users. Run chmod 600 on your config file.');
+    if (process.platform !== 'win32' && (file.mode & 0o022)) throw new WaypostError('CONFIG_PERMISSIONS', `Configuration must not be writable by other users. Run: chmod 600 ${path}`);
     if(file.size > 65536) throw new WaypostError('CONFIG_INVALID','Configuration exceeds 64 KiB.');
     return configSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   } catch (error) {
     if(error instanceof WaypostError) throw error;
-    throw new WaypostError('CONFIG_INVALID', 'Configuration is missing or invalid. Run waypost init, then waypost connect --help.');
+    if(error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new WaypostError('CONFIG_MISSING', `No Waypost configuration at ${path}. Run: waypost init (or node runtime/waypost.mjs init), then waypost connect --help.`, {configPath:path});
+    if(error instanceof ZodError) {
+      const issues = inputIssues(error);
+      throw new WaypostError('CONFIG_INVALID', `Configuration at ${path} is invalid: ${issues.map(issue => `${issue.path}: ${issue.message}`).join('; ')}.`, {configPath:path, issues});
+    }
+    throw new WaypostError('CONFIG_INVALID', `Configuration at ${path} is not valid JSON. Fix it or move it aside and run waypost init.`, {configPath:path});
   }
 }
 export async function initConfig(path = defaultConfigPath()): Promise<string> {

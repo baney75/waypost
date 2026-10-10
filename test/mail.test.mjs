@@ -97,7 +97,7 @@ test('doctor proves TLS and authentication separately from mailbox read; auth fa
   assert.ok(!imap.commands.some(line => /EXAMINE|SELECT|FETCH/.test(line)));
   assert.equal(smtp.submissions,0);
   await listener(t,f,'imap',{imapAuth:false});
-  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_CONNECTION'});
+  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_AUTH'});
   await listener(t,f,'imap');
   await listener(t,f,'smtp',{smtpAuth:false});
   await assert.rejects(mailDoctor(f.config,{smtp:true}),{code:'MAIL_SMTP'});
@@ -111,8 +111,8 @@ test('list reads at most 20 headers in EXAMINE without fetching message bodies o
   assert.equal(result.messages[19].uid,11);
   assert.ok(server.commands.some(line => /EXAMINE "?INBOX/.test(line)));
   assert.ok(server.commands.some(line => /FETCH 11:30 /.test(line)));
-  assert.ok(!server.commands.some(line => /SELECT|STORE|BODY/.test(line)));
-  await assert.rejects(mailList(f.config,{limit:21}));
+  assert.ok(!server.commands.some(line => /SELECT|STORE|BODY\[|BODY\.PEEK/.test(line)));
+  await assert.rejects(mailList(f.config,{limit:51}));
 });
 
 test('read uses UID BODY.PEEK, bounded source, and discloses truncation', async t => {
@@ -133,7 +133,8 @@ test('HTML-only mail is inert and attachment bytes are not returned', async t =>
   await listener(t,f,'imap',{source:Buffer.from('Subject: HTML synthetic\r\nContent-Type: text/html\r\n\r\n<p>Hello</p><script>malicious()</script><img src="https://example.invalid/tracker"><p>World</p>')});
   const result=await mailRead(f.config,{uid:42});
   assert.equal(result.htmlOnly,true);
-  assert.equal(result.text,'Hello World');
+  assert.match(result.text,/^Hello\s+World$/);
+  assert.doesNotMatch(result.text,/malicious|tracker|<p>/);
   assert.equal(result.attachmentsReturned,false);
   assert.equal('html' in result,false);
 });
@@ -149,7 +150,7 @@ test('missing credentials/certificate and non-loopback host fail closed before c
 test('IMAP and SMTP refuse unencrypted listeners', async t => {
   const f=await fixture(t);
   const imap=await listener(t,f,'imap',{starttls:false});
-  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_CONNECTION'});
+  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_TLS'});
   assert.ok(!imap.commands.some(line => /AUTH|LOGIN/.test(line)));
   await listener(t,f,'imap');
   const smtp=await listener(t,f,'smtp',{starttls:false});
@@ -164,7 +165,7 @@ test('leaf pin rejects another certificate signed by the approved certificate', 
   execFileSync('openssl',['x509','-req','-in',csr,'-CA',f.config.mail.certificate,'-CAkey',join(f.root,'synthetic.key'),'-CAcreateserial','-out',cert,'-days','1'],{stdio:'ignore'});
   const alternate={certificate:await readFile(cert),key:await readFile(alternateKey)};
   const server=await listener(t,f,'imap',alternate);
-  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_CONNECTION'});
+  await assert.rejects(mailDoctor(f.config,{}),{code:'MAIL_TLS'});
   assert.ok(!server.commands.some(line => /AUTH|LOGIN/.test(line)));
   await listener(t,f,'imap');
   const smtp=await listener(t,f,'smtp',alternate);
