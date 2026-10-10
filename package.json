@@ -39,7 +39,7 @@
     "bundle": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=runtime/waypost.mjs --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\""
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "commander": "15.0.0",
     "html-to-text": "10.0.1",
     "ical.js": "2.2.1",
