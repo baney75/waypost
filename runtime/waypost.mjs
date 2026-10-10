@@ -113880,7 +113880,7 @@ function exactEnd(item, start, end) {
   nominal.addDuration(ICALmodule.Duration.fromData({ weeks: duration3.weeks, days: duration3.days, isNegative: duration3.isNegative }));
   return timestamp(nominal) + sign2 * (duration3.hours * 3600 + duration3.minutes * 60 + duration3.seconds) * 1e3;
 }
-async function calendarEvents(config2, input2) {
+async function calendarEvents(config2, input2, options = {}) {
   const query = calendarEventsSchema.parse(input2);
   if (!config2.calendar || !(config2.calendar.files.length || config2.calendar.feeds?.length)) throw new WaypostError("CALENDAR_UNCONFIGURED", "Connect a local ICS export or Proton calendar share link first.");
   const from = Date.parse(query.from), to = Date.parse(query.to);
@@ -114072,7 +114072,7 @@ async function calendarEvents(config2, input2) {
           cutoff = Math.max(cutoff, recurrenceMs + 1, to + Math.max(0, recurrenceMs - timestamp(item.startDate)));
         }
         const iterator = event.iterator();
-        const deadline = Date.now() + EVENT_BUDGET_MS;
+        const deadline = Date.now() + (options.eventBudgetMs ?? EVENT_BUDGET_MS);
         while (true) {
           if (++examined > MAX_OCCURRENCES) {
             partial2 = true;

@@ -6,7 +6,7 @@ Local tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP
 
 Built with TypeScript and Node.js.
 
-[Get started](#get-started) · [Setup](docs/setup.md) · [Proton support](docs/proton-support.md) · [Security](SECURITY.md)
+[Get started](#get-started) · [Add to an agent](#add-to-an-agent) · [Mail with Bridge](#mail-with-proton-bridge) · [Setup](docs/setup.md) · [Proton support](docs/proton-support.md) · [Security](SECURITY.md)
 
 | Service | Connection | What works |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ claude mcp list
 
 `claude mcp list` should show `waypost: ... ✔ Connected`. In a session, ask Claude to run `waypost_status`. If you keep the config somewhere other than `~/.config/waypost/config.json`, run `node dist/cli.js --config /path/to/config.json agent-config claude-code` and paste the command it prints.
 
-For other MCP clients, run `node dist/cli.js agent-config claude` (Claude Desktop JSON), `agent-config cursor`, `agent-config codex` or `agent-config generic`, and paste the result into the client’s MCP settings. A generic stdio entry looks like this:
+For Claude Desktop, add this to `claude_desktop_config.json` (Settings, Developer, Edit Config) with the absolute path to your clone, then restart the app. `node dist/cli.js agent-config claude` prints the same entry.
 
 ```json
 {
@@ -69,7 +69,7 @@ For other MCP clients, run `node dist/cli.js agent-config claude` (Claude Deskto
 }
 ```
 
-Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from the environment of the process that starts Waypost. Start your agent under your secret manager, for example `pass-cli run --env-file bridge.references.env -- claude`, so the values never sit in a config file. See [Setup](docs/setup.md#mail). MCP uses standard input/output and opens no network listener.
+Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from the environment of the process that starts Waypost. See [Mail with Proton Bridge](#mail-with-proton-bridge) and [Setup](docs/setup.md#mail). MCP uses standard input/output and opens no network listener.
 
 ### Tools
 
@@ -89,14 +89,44 @@ Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from the
 
 Errors come back as `{ok:false, error:{code, message}}`, and the message says what to run or change, for example `MAIL_AUTH`, `MAIL_MAILBOX_NOT_FOUND`, `DRIVE_NOT_FOUND` or `CONFIG_MISSING`.
 
-The [Codex plugin](docs/plugin.md) bundles the runtime and a focused agent skill. Install from the pinned release:
+## Mail with Proton Bridge
+
+[Proton Mail Bridge](https://proton.me/mail/bridge) is Proton's desktop app. It runs on your computer, decrypts your mailbox locally, and serves it on `127.0.0.1` over IMAP and SMTP. Proton Mail has no public mail API, so Waypost reads mail through Bridge. Bridge needs a paid Proton plan that includes Mail.
+
+1. Install Bridge, sign in with your Proton account, and leave it running.
+2. In Bridge, open your account and choose **Configure email client** (the account page that lists the hostname, IMAP and SMTP ports, username and password). Bridge generates this username and password for mail clients. Your Proton account password does not work here.
+3. In **Settings, Advanced settings, Export TLS certificates**, export to a private folder. Give Waypost only the public certificate PEM, never the private key. Set Bridge's connection mode to STARTTLS.
+4. Connect and check:
 
 ```sh
-codex plugin marketplace add baney75/waypost --ref v0.3.0
+node dist/cli.js connect mail --certificate /absolute/path/to/bridge-certificate.pem
+WAYPOST_MAIL_USERNAME="bridge-generated-username" \
+WAYPOST_MAIL_PASSWORD="bridge-generated-password" \
+  node dist/cli.js mail doctor
+```
+
+Those two values are placeholders. For daily use, supply them from a secret manager rather than typing them in a shell, for example `pass-cli run --env-file bridge.references.env -- claude`; [Setup](docs/setup.md#mail) shows the pattern. The default ports are IMAP 1143 and SMTP 1025; use whatever Bridge shows.
+
+Without Bridge, these still work:
+
+- **Drive** needs only Proton's [official Drive CLI](https://proton.me/support/drive-cli) and its browser sign-in.
+- **Calendar** needs only an exported `.ics` file, or a Proton share link you create yourself. `calendar_prepare` writes import files with no connection at all.
+- `waypost_status` and `waypost doctor` run before any setup and report each service as `ready`, `not_configured`, or `failed`.
+
+Mail is the only service that needs Bridge (or an existing read-only helper, see [Setup](docs/setup.md#reuse-an-authenticated-mail-helper)).
+
+## Other agents
+
+`node dist/cli.js agent-config cursor` and `agent-config generic` print entries for other MCP clients; the stdio entry above works in any client that launches a local command.
+
+The [Codex plugin](docs/plugin.md) bundles the runtime and a focused agent skill. Pin it to a release tag from the [releases page](https://github.com/baney75/waypost/releases), replacing `<tag>`:
+
+```sh
+codex plugin marketplace add baney75/waypost --ref <tag>
 codex plugin add waypost@waypost
 ```
 
-Service setup is still required after installing the plugin. The GitHub marketplace is separate from OpenAI’s reviewed universal directory.
+Service setup is still required after installing the plugin. The GitHub marketplace is separate from OpenAI's reviewed universal directory. Codex filters the environment it passes to MCP servers; see [Setup](docs/setup.md#mail) for the Bridge variables.
 
 ## Use the CLI
 
@@ -107,9 +137,9 @@ waypost drive list --path /my-files
 waypost mail mailboxes
 waypost mail list --subject invoice --since 2026-09-01 --limit 20
 waypost mail read --uid 123
-waypost calendar agenda --days 7 --timezone America/Chicago
+waypost calendar agenda --days 7 --timezone Europe/London
 waypost calendar prepare --summary "Project review" \
-  --start 2026-10-05T09:00:00 --end 2026-10-05T09:30:00 --timezone America/Chicago \
+  --start 2026-10-05T09:00:00 --end 2026-10-05T09:30:00 --timezone Europe/London \
   --rrule "FREQ=WEEKLY;COUNT=4"
 waypost calendar prepare --summary "Vacation" --start 2026-12-21 --end 2026-12-24 --all-day
 ```

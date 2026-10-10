@@ -23,6 +23,9 @@ jobs:
       - run: npm run verify
         env:
           WAYPOST_REQUIRE_E2E: '1'
+      # Pull requests only: Dependabot cannot rebuild the bundle, and on main the merge
+      # commit is checked before rebuild-runtime.yml commits the fresh bundle.
       - name: Check committed runtime matches source
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         run: git diff --exit-code -- runtime/waypost.mjs
       - run: npm pack --dry-run

@@ -4,12 +4,12 @@
 
 ## Install a release
 
-Use a published release’s pinned tag. Review the changes before updating. Download the pinned release and verify its checksums before installing.
+Use a published release’s pinned tag (for example `v1.2.3`; substitute it for `<tag>`, and the matching number for `<version>`). The latest is on the [releases page](https://github.com/baney75/waypost/releases). Review the changes before updating. Download the pinned release and verify its checksums before installing.
 
 ```sh
-gh release download v0.3.0 --repo baney75/waypost --pattern '*.tgz' --pattern '*.zip' --pattern 'SHA256SUMS'
+gh release download <tag> --repo baney75/waypost --pattern '*.tgz' --pattern '*.zip' --pattern 'SHA256SUMS'
 shasum -a 256 -c SHA256SUMS
-npm install -g ./baney75-waypost-0.3.0.tgz
+npm install -g ./baney75-waypost-<version>.tgz
 waypost --version
 waypost doctor
 ```
