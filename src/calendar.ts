@@ -7,7 +7,7 @@ import { saveArtifact, type Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { defineTool } from './tool.js';
 import { calendarFeedSnapshots } from './calendar-feed.js';
-import { isIanaZone, localIso, localToUtc, vtimezone } from './tz.js';
+import { isIanaZone, localIso, localToUtcDetail, vtimezone } from './tz.js';
 
 const MAX_SNAPSHOT = 10 * 1024 * 1024;
 const MAX_OCCURRENCES = 20000;
@@ -73,6 +73,24 @@ function validateRawUntil(property:ICAL.Property) {
     if (typeof value === 'object' && value !== null && 'until' in value) validateRawDate(value.until);
   }
 }
+const MONTH_DAYS = [31,29,31,30,31,30,31,31,30,31,30,31];
+const MIN_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
+/**
+ * Rules ical.js cannot expand correctly: it loops forever on a rule with no possible date
+ * (FREQ=DAILY;BYMONTH=2;BYMONTHDAY=31), crashes on WEEKLY with BYMONTHDAY, and moves YEARLY
+ * dates that do not exist every year (February 29) to the next month.
+ */
+export function recurrenceProblem(rule:ICAL.Recur):string | null {
+  const days = (rule.parts.BYMONTHDAY ?? []).map(Number);
+  if (!days.length) return null;
+  if (rule.freq === 'WEEKLY') return 'BYMONTHDAY cannot be used with FREQ=WEEKLY.';
+  const months = (rule.parts.BYMONTH ?? [1,2,3,4,5,6,7,8,9,10,11,12]).map(Number);
+  const exists = (table:number[]) => months.some(month => days.some(day => day !== 0 && Math.abs(day) <= (table[month-1] ?? 0)));
+  if (!exists(MONTH_DAYS)) return 'This rule never produces a date: no selected month has that day.';
+  if (rule.freq === 'YEARLY' && months.some(month => days.some(day => Math.abs(day) > (MIN_MONTH_DAYS[month-1] ?? 0)))) return 'A yearly rule on a day that some years lack (such as February 29) cannot be expanded correctly.';
+  return null;
+}
+const EVENT_BUDGET_MS = 2000;
 type TimezoneGap = {start:number; end:number};
 function localClock(time:ICAL.Time) { return Date.UTC(time.year,time.month-1,time.day,time.hour,time.minute,time.second); }
 function validateRecurrenceLocalTime(time:ICAL.Time, gaps:Map<string,TimezoneGap[]>) {
@@ -105,6 +123,16 @@ function timestamp(time: ICAL.Time) {
   validateTime(time);
   // DATE values describe calendar days. They are returned as dates, without an invented timezone.
   return time.isDate ? Date.parse(time.toString() + 'T00:00:00Z') : time.toUnixTime() * 1000;
+}
+// RFC 5545 §3.3.6: DURATION weeks and days are nominal (calendar days), hours, minutes and seconds are
+// exact elapsed time. ical.js adds all of it on the local wall clock, which is wrong across a DST change.
+function exactEnd(item:ICAL.Event, start:ICAL.Time, end:ICAL.Time):number {
+  const duration = item.component.getFirstPropertyValue('duration');
+  if (start.isDate || item.component.hasProperty('dtend') || !(duration instanceof ICAL.Duration)) return timestamp(end);
+  const sign = duration.isNegative ? -1 : 1;
+  const nominal = start.clone();
+  nominal.addDuration(ICAL.Duration.fromData({weeks:duration.weeks, days:duration.days, isNegative:duration.isNegative}));
+  return timestamp(nominal) + sign * (duration.hours * 3600 + duration.minutes * 60 + duration.seconds) * 1000;
 }
 type SnapshotEvent = {uid:string; summary:string; description:string; location:string; start:string; end:string; allDay:boolean; timezone?:string; startLocal?:string; endLocal?:string; source:string; recurrence:boolean};
 export async function calendarEvents(config: Config, input: unknown) {
@@ -260,17 +288,19 @@ export async function calendarEvents(config: Config, input: unknown) {
       const event = new ICAL.Event(component,{exceptions,strictExceptions:true});
       const add = (item: ICAL.Event, start: ICAL.Time, end: ICAL.Time, recurrence: boolean) => {
         if (item.component.getFirstPropertyValue('status') === 'CANCELLED') return;
-        const startMs = timestamp(start), endMs = timestamp(end);
+        const startMs = timestamp(start), endMs = exactEnd(item, start, end);
         if (endMs < startMs) throw new WaypostError('CALENDAR_INVALID', 'An event ends before it starts.');
         if (startMs < to && (endMs > from || (endMs === startMs && startMs >= from))) {
           const tzid = start.isDate || start.zone === ICAL.Timezone.utcTimezone ? null : start.zone?.tzid ?? null;
-          events.push({uid:item.uid, summary:(item.summary ?? '').slice(0,500), description:(item.description ?? '').slice(0,12000), location:(item.location ?? '').slice(0,1000), start:displayTime(start), end:displayTime(end), allDay:start.isDate, ...(tzid ? {timezone:tzid} : {}), ...(query.timezone && !start.isDate ? {startLocal:localIso(query.timezone,startMs), endLocal:localIso(query.timezone,endMs)} : {}), source:path, recurrence});
+          events.push({uid:item.uid, summary:(item.summary ?? '').slice(0,500), description:(item.description ?? '').slice(0,12000), location:(item.location ?? '').slice(0,1000), start:displayTime(start), end:start.isDate ? displayTime(end) : new Date(endMs).toISOString().replace(/\.\d{3}Z$/,'Z'), allDay:start.isDate, ...(tzid ? {timezone:tzid} : {}), ...(query.timezone && !start.isDate ? {startLocal:localIso(query.timezone,startMs), endLocal:localIso(query.timezone,endMs)} : {}), source:path, recurrence});
         }
       };
       if (!event.isRecurring()) { add(event, event.startDate, event.endDate, false); continue; }
       for (const rule of component.getAllProperties('rrule')) {
         const recurrence = rule.getFirstValue();
         if (!(recurrence instanceof ICAL.Recur) || !['DAILY','WEEKLY','MONTHLY','YEARLY'].includes(recurrence.freq) || !Number.isInteger(recurrence.interval) || recurrence.interval < 1 || Object.values(recurrence.parts).some(part => part && part.length > 366)) throw new WaypostError('CALENDAR_RECURRENCE', 'Unsupported or excessive recurrence; export expanded events instead.');
+        const problem = recurrenceProblem(recurrence);
+        if (problem) throw new WaypostError('CALENDAR_RECURRENCE', problem);
         if (recurrence.until) validateTime(recurrence.until);
       }
       // Include moved exceptions even when their original recurrence ID is beyond the query.
@@ -281,8 +311,10 @@ export async function calendarEvents(config: Config, input: unknown) {
         cutoff = Math.max(cutoff, recurrenceMs + 1, to + Math.max(0, recurrenceMs - timestamp(item.startDate)));
       }
       const iterator = event.iterator();
+      const deadline = Date.now() + EVENT_BUDGET_MS;
       while (true) {
         if (++examined > MAX_OCCURRENCES) { partial = true; break; }
+        if (Date.now() > deadline) throw new WaypostError('CALENDAR_RECURRENCE', 'Expanding this recurrence took too long; it was skipped. Export expanded events instead.');
         const occurrence = iterator.next();
         if (!occurrence) break;
         // ICAL's iterator counts spring-gap times and maps them to a different local clock time.
@@ -294,8 +326,10 @@ export async function calendarEvents(config: Config, input: unknown) {
         add(details.item, details.startDate, details.endDate, true);
         if (timestamp(occurrence) >= cutoff) break;
       }
-      } catch (error) {
-        if (!(error instanceof WaypostError) || !['CALENDAR_DATE','CALENDAR_TIMEZONE','CALENDAR_RECURRENCE','CALENDAR_INVALID'].includes(error.code)) throw error;
+      } catch (caught) {
+        // ical.js can throw plain errors (such as "Invalid array length") on odd rules; skip that event.
+        const error = caught instanceof WaypostError ? caught : new WaypostError('CALENDAR_RECURRENCE', 'This event could not be expanded and was skipped.');
+        if (!['CALENDAR_DATE','CALENDAR_TIMEZONE','CALENDAR_RECURRENCE','CALENDAR_INVALID'].includes(error.code)) throw error;
         events.length = before;
         skip(uid, path, error);
         continue;
@@ -335,9 +369,15 @@ function localParts(value:string, field:string, zone:string) {
   const clock = {year:Number(match[1]), month:Number(match[2]), day:Number(match[3]), hour:Number(match[4]), minute:Number(match[5]), second:Number(match[6] ?? 0)};
   dayParts(value.slice(0,10), field);
   if (clock.hour > 23 || clock.minute > 59 || clock.second > 59) return invalid(`${field} has an invalid time of day.`);
-  const ms = localToUtc(zone, clock);
+  return zonedClock(zone, clock, field);
+}
+function zonedClock(zone:string, clock:{year:number; month:number; day:number; hour:number; minute:number; second:number}, field:string) {
+  const {ms, ambiguous} = localToUtcDetail(zone, clock);
   if (ms === null) return invalid(`${field} falls in a daylight saving gap in ${zone} and does not exist. Choose another time.`);
-  return {ms, ics:value.replace(/[-:]/g,'').padEnd(15,'0').slice(0,15)};
+  // Writers and readers disagree on which of two identical wall-clock times is meant, so refuse to guess.
+  if (ambiguous) return invalid(`${field} occurs twice in ${zone} because clocks fall back that night. Give it in UTC with Z to pick one.`);
+  const pad = (n:number, width = 2) => String(n).padStart(width,'0');
+  return {ms, clock, ics:`${pad(clock.year,4)}${pad(clock.month)}${pad(clock.day)}T${pad(clock.hour)}${pad(clock.minute)}${pad(clock.second)}`};
 }
 function utcParts(value:string, field:string) {
   if (!utc.safeParse(value).success) return invalid(`${field} must be UTC, YYYY-MM-DDTHH:MM:SSZ. For local wall-clock times pass timezone and omit the Z.`);
@@ -356,8 +396,11 @@ function recurrenceRule(value:string, allDay:boolean, startMs:number) {
   if (until) {
     if (allDay && until[2]) return invalid('UNTIL must be a day, YYYYMMDD, for an all-day event.');
     if (!allDay && !until[2]) return invalid('UNTIL must be UTC, YYYYMMDDTHHMMSSZ, for a timed event.');
-    if (!recur.until || recur.until.toUnixTime() * 1000 < startMs - 86400000) return invalid('UNTIL must not be before the start.');
+    // Timed events: UNTIL must not precede DTSTART. All-day UNTIL is a day, compared at midnight UTC.
+    if (!recur.until || recur.until.toUnixTime() * 1000 < startMs - (allDay ? 86400000 : 0)) return invalid('UNTIL must not be before the start.');
   }
+  const problem = recurrenceProblem(recur);
+  if (problem) return invalid(`rrule: ${problem}`);
   for (const value of recur.parts.BYMONTHDAY ?? []) if (value === 0 || Math.abs(Number(value)) > 31) return invalid('BYMONTHDAY values must be 1–31 or -1 to -31.');
   for (const value of recur.parts.BYMONTH ?? []) if (Number(value) < 1 || Number(value) > 12) return invalid('BYMONTH values must be 1–12.');
   return {rule, untilYear:recur.until?.year ?? null, bounded:Boolean(recur.until || recur.count)};
@@ -377,8 +420,9 @@ export async function calendarPrepare(config: Config, input: unknown) {
     const start = localParts(event.start,'start',event.timezone);
     startMs = start.ms; startLine = `DTSTART;TZID=${event.timezone}:${start.ics}`;
     if (event.end === undefined) {
-      endMs = startMs + 3600000;
-      endLine = `DTEND;TZID=${event.timezone}:${localIso(event.timezone,endMs).slice(0,19).replace(/[-:]/g,'')}`;
+      // Exactly one hour of elapsed time. DURATION avoids writing a wall-clock end that may fall
+      // in a repeated or skipped hour, so every reader computes the same instant.
+      endMs = startMs + 3600000; endLine = 'DURATION:PT1H';
     } else { const end = localParts(event.end,'end',event.timezone); endMs = end.ms; endLine = `DTEND;TZID=${event.timezone}:${end.ics}`; }
   } else {
     startMs = utcParts(event.start,'start');

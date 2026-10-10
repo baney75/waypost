@@ -3,7 +3,7 @@
 import { mkdir, open, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { amendConfig } from './connect.js';
 import { WaypostError } from './errors.js';
@@ -43,6 +43,9 @@ export async function connectBrowser(configPath:string, options:{extensionId?:st
   await mkdir(directory, {recursive:true, mode:0o700});
   const manifest = join(directory, `${HOST_NAME}.json`);
   await writePrivate(manifest, JSON.stringify({name:HOST_NAME, description:'Waypost verification codes', path:launcher, type:'stdio', allowed_origins:[`chrome-extension://${id}/`]}, null, 2) + '\n', 0o600);
-  await amendConfig(configPath, config => ({...config, verificationCodes:{agents:false, maxAgeMinutes:10, mailboxes:['INBOX'], siteAliases:{}, ...config.verificationCodes, browser:true, extensionIds:[...new Set([...(config.verificationCodes?.extensionIds ?? []), id])]}}));
-  return {service:'browser', paired:true, extensionId:id, hostManifest:manifest, launcher, next:'Load the extension folder from chrome://extensions (Developer mode → Load unpacked → the extension/ folder), then click the Waypost button on a page that asks for a code.'};
+  // The pairing code goes to the user once; the config keeps only its SHA-256.
+  const pairingCode = randomBytes(32).toString('base64url');
+  const pairingHash = createHash('sha256').update(pairingCode).digest('hex');
+  await amendConfig(configPath, config => ({...config, verificationCodes:{agents:false, maxAgeMinutes:10, mailboxes:['INBOX'], siteAliases:{}, verifiedSenders:{}, ...config.verificationCodes, browser:true, pairingHash, extensionIds:[...new Set([...(config.verificationCodes?.extensionIds ?? []), id])]}}));
+  return {service:'browser', paired:true, extensionId:id, pairingCode, hostManifest:manifest, launcher, next:'Load the extension folder from chrome://extensions (Developer mode → Load unpacked → the extension/ folder). Click the Waypost button and paste the pairing code when it asks. Running connect browser again replaces the code.'};
 }

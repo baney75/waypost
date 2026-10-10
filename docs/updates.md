@@ -20,7 +20,14 @@ The Codex Git marketplace is pinned to a version tag in the recommended setup. C
 
 GitHub CI checks Node.js compatibility, tests, dependency advisories, and the packaged runtime. Dependabot proposes dependency updates for review. Runtime dependencies are pinned in the lockfile. No remote installer is piped into a shell.
 
-Version 0.5 changes some tool output. `mail_read` returns `attachments` as a list of `{part, filename, contentType, bytes, inline}` instead of a count. `drive_list` returns `{path, entries, total, truncated}` with plain `name` strings instead of the CLI's raw objects, and `drive_info` returns the same entry shape. `drive_download` replaces `localChecksums`/`remoteChecksumsVerified` with `claimedSha1Match`. `calendar_events` skips an unreadable event and lists it in `skipped[]` instead of failing the whole request. `mail_list` accepts up to 50 rows. Configuration gains an optional `verificationCodes` block; earlier versions reject a config that contains it.
+Version 0.5 changes some tool output:
+
+- `mail_read` returns `attachments` as a list of `{part, filename, contentType, bytes, inline}` instead of a count. A forwarded message is one `message/rfc822` entry. Through the read-only helper, `attachments: null` (the helper reports no attachment data).
+- `mail_list` returns `total`, `nextBeforeUid` and `uidValidity`, and accepts up to 50 rows. `total` always counts every message in the mailbox that matches the filters, on every page. To page, pass `nextBeforeUid` as `beforeUid` and `uidValidity` unchanged; a changed `uidValidity` (Bridge rebuilt the mailbox) returns `MAIL_CURSOR_STALE`.
+- `drive_list` returns `{path, entries, total, truncated}` with plain `name` strings instead of the CLI's raw objects, and `drive_info` returns the same entry shape. `drive_download` replaces `localChecksums`/`remoteChecksumsVerified` with `claimedSha1Match`.
+- `calendar_events` skips an unreadable event and lists it in `skipped[]` with `skippedCount`; the response then has `partial: true` and a `reason`, where 0.4 failed the whole request. Events with a time zone carry `timezone`, and `startLocal`/`endLocal` when you pass `timezone`.
+- `calendar_prepare` returns `start` and `end` normalized to UTC (`…Z`), or to days for all-day events, plus `allDay`, and `timezone`, `startLocal`, `endLocal` and `rrule` when used. `end` is optional: it defaults to one hour later on the wall clock, or one day for all-day events, and the result then includes `endDefaulted: true`.
+- Configuration gains an optional `verificationCodes` block; earlier versions reject a config that contains it.
 
 Version 0.3 adds a required per-call `confirm: true` to `mail_send` and `drive_upload`; scripts that send or upload must pass it. Configuration is unchanged.
 

@@ -74,10 +74,11 @@ test('MCP over stdio reads a real IMAP server: mailboxes, paging, search, encodi
   assert.deepEqual(boxes.find(box=>box.path==='Folders/Work'),{path:'Folders/Work',name:'Work',specialUse:null,selectable:true,messages:1,unseen:1});
 
   // Paging walks the whole mailbox newest first with no gaps or repeats.
-  const seen=[];let cursor;
+  const seen=[];let cursor,validity;
   do {
-    const page=(await call('mail_list',{limit:7,...(cursor?{beforeUid:cursor}:{})})).data;
-    assert.equal(page.total,cursor?page.total:30);
+    const page=(await call('mail_list',{limit:7,...(cursor?{beforeUid:cursor,uidValidity:validity}:{})})).data;
+    validity=page.uidValidity;
+    assert.equal(page.total,30);
     seen.push(...page.messages.map(message=>message.messageId));cursor=page.nextBeforeUid;
   } while (cursor);
   assert.equal(seen.length,30);assert.equal(new Set(seen).size,30);

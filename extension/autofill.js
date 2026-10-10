@@ -5,7 +5,7 @@
   async function attempt() {
     if (done || Date.now() - started > 120000) return;
     const response = await chrome.runtime.sendMessage({ type: 'auto-code', notBefore: new Date(started - 60000).toISOString() }).catch(() => null);
-    if (response?.code) {
+    if (response?.code && response.origin === location.origin) {
       const result = globalThis.__waypost.fill(response.code);
       if (result.filled) { done = true; return; }
     }

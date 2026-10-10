@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractCode, registrableDomain, senderDomainsFor, protonDmarc, originBoundCode } from '../dist/otp.js';
+import { extractCode, registrableDomain, senderMatchesSite, protonDmarc, originBoundCode } from '../dist/otp.js';
 import { htmlText } from '../dist/mail.js';
 
 // Synthetic messages modeled on common sender layouts. No real account data.
@@ -44,14 +44,15 @@ test('two different strong codes in one message give low confidence', () => {
   assert.equal(extractCode('Codes', 'Your verification code is 111234. Your backup code is 998877.').confidence, 'low');
 });
 
-test('domains: registrable domains, built-in aliases and user aliases', () => {
+test('domains: registrable domains, built-in site senders and user aliases', () => {
   assert.equal(registrableDomain('accounts.google.com'), 'google.com');
   assert.equal(registrableDomain('login.bank.co.uk'), 'bank.co.uk');
   assert.equal(registrableDomain('127.0.0.1'), null);
-  assert.ok(senderDomainsFor('https://www.youtube.com'.replace(/^https:\/\//,'')).has('google.com'));
-  assert.ok(senderDomainsFor('login.live.com').has('microsoft.com'));
-  assert.ok(!senderDomainsFor('evil-google.com').has('google.com'));
-  assert.ok(senderDomainsFor('app.example.test',{'example.test':['examplemail.test']}).has('examplemail.test'));
+  assert.ok(senderMatchesSite('no-reply@accounts.google.com','https://www.youtube.com/'));
+  assert.ok(senderMatchesSite('account-security-noreply@accountprotection.microsoft.com','login.live.com'));
+  assert.ok(!senderMatchesSite('no-reply@accounts.google.com','evil-google.com'));
+  assert.ok(senderMatchesSite('alerts@examplemail.test','app.example.test',{aliases:{'example.test':['examplemail.test']}}));
+  assert.ok(!senderMatchesSite('alerts@example.test','app.examplemail.test',{aliases:{'example.test':['examplemail.test']}}),'aliases work in one direction only');
 });
 
 test('Proton DMARC result: topmost Proton header decides; spoofed or missing headers do not verify', () => {

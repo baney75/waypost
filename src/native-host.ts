@@ -2,6 +2,7 @@
 // The browser starts this process and talks over stdin/stdout only: no port, no network listener.
 // Chrome passes the calling extension's origin as the first argument; only configured IDs are served.
 import { z } from 'zod';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { loadConfig } from './config.js';
 import { publicError, WaypostError } from './errors.js';
 import { latestVerificationCode } from './codes.js';
@@ -11,6 +12,7 @@ const requestSchema = z.object({
   type:z.literal('verification_code'),
   site:z.string().min(1).max(2048),
   notBefore:z.string().datetime().optional(),
+  pairing:z.string().max(128).optional(),
 }).strict();
 
 export function encode(value:unknown):Buffer {
@@ -40,6 +42,12 @@ export async function handleNativeMessage(configPath:string, origin:string | und
     const id = callerId(origin);
     if (!id || !config.verificationCodes?.extensionIds.includes(id)) throw new WaypostError('EXTENSION_NOT_ALLOWED', 'This extension is not paired with Waypost. Run: waypost connect browser --extension-id <id>');
     const request = requestSchema.parse(message);
+    // The origin argument comes from whoever started this process, so it cannot authenticate the
+    // caller. The pairing code, shown once by connect browser and kept in extension storage, does.
+    const expected = config.verificationCodes?.pairingHash;
+    if (!expected || !request.pairing) throw new WaypostError('PAIRING_REQUIRED', 'Paste the pairing code from `waypost connect browser` into the Waypost extension.');
+    const given = createHash('sha256').update(request.pairing).digest();
+    if (!timingSafeEqual(given, Buffer.from(expected, 'hex'))) throw new WaypostError('PAIRING_INVALID', 'The pairing code does not match. Run `waypost connect browser` again and paste the new code into the extension.');
     const data = await latestVerificationCode(config, {site:request.site, ...(request.notBefore ? {notBefore:request.notBefore} : {})}, 'browser');
     return {ok:true, data};
   } catch (error) { return {ok:false, error:publicError(error)}; }

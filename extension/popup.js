@@ -10,6 +10,14 @@ function ago(iso) {
 }
 if (!answer?.ok) {
   $('status').textContent = answer?.error?.message ?? 'Waypost did not answer.';
+  if (['PAIRING_REQUIRED', 'PAIRING_INVALID'].includes(answer?.error?.code)) {
+    $('pair').hidden = false;
+    $('pair').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const saved = await chrome.runtime.sendMessage({ type: 'set-pairing', code: $('pair-code').value });
+      if (saved?.ok) location.reload(); else $('status').textContent = saved?.error?.message ?? 'Pairing failed.';
+    });
+  }
 } else if (!answer.data.found) {
   $('status').textContent = answer.data.reason;
 } else {
@@ -18,13 +26,13 @@ if (!answer?.ok) {
   $('result').hidden = false;
   $('code').textContent = data.code;
   $('meta').textContent = `${data.sender.name || data.sender.address} · ${ago(data.receivedAt)}${data.subject ? ` · ${data.subject}` : ''}`;
-  const trusted = data.senderMatchesSite === true && data.senderVerified !== false;
-  $('trust').textContent = data.senderVerified === true ? 'Sender verified by Proton (DMARC pass) and matches this site.' : trusted ? 'Sender matches this site. Proton did not report a DMARC result.' : 'Check the sender before you use this code.';
+  const trusted = data.senderMatchesSite === true && data.senderVerified === true;
+  $('trust').textContent = trusted ? 'Sender verified by Proton (DMARC pass) and matches this site.' : data.senderMatchesSite === true ? 'Sender matches this site, but Proton did not verify it. Check the sender before you fill.' : 'Check the sender before you use this code.';
   $('trust').className = trusted ? 'ok' : 'warn';
   $('fill').addEventListener('click', async () => {
     $('fill').disabled = true;
-    const filled = await chrome.runtime.sendMessage({ type: 'popup-fill', tabId: tab.id, code: data.code });
-    $('fill').textContent = filled?.result?.filled ? 'Filled' : (filled?.result?.reason ?? 'No code field found. Select the code and paste it.');
+    const filled = await chrome.runtime.sendMessage({ type: 'popup-fill', tabId: tab.id, ticket: answer.ticket });
+    $('fill').textContent = filled?.result?.filled ? 'Filled' : (filled?.error?.message ?? filled?.result?.reason ?? 'No code field found. Select the code and paste it.');
     if (filled?.result?.filled) setTimeout(() => window.close(), 600);
   });
 }

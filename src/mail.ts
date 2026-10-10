@@ -36,7 +36,8 @@ export const mailListSchema = z.object({
   since:day.optional().describe('Only messages received on or after this day, YYYY-MM-DD.'),
   before:day.optional().describe('Only messages received before this day, YYYY-MM-DD.'),
   beforeUid:uidSchema.optional().describe('Page cursor: pass nextBeforeUid from the previous result to get older messages.'),
-}).strict();
+  uidValidity:z.string().regex(/^\d{1,20}$/).optional().describe('Required with beforeUid: the uidValidity from the previous page. A changed value means the mailbox was rebuilt and the cursor is stale.'),
+}).strict().refine(value => !value.beforeUid || value.uidValidity !== undefined, {message:'Pass uidValidity from the previous page together with beforeUid.', path:['uidValidity']});
 export const mailMailboxesSchema = z.object({counts:z.boolean().default(false).describe('Also return message and unread counts. Slower on large accounts.')}).strict();
 export const mailReadSchema = z.object({
   mailbox,
@@ -151,8 +152,9 @@ export function attachmentsOf(node:MessageStructureObject | undefined):Attachmen
   const found:Attachment[] = [];
   const walk = (current:MessageStructureObject) => {
     if (found.length >= 100) return;
-    if (current.childNodes?.length) { for (const child of current.childNodes) walk(child); return; }
     const type = (current.type ?? 'application/octet-stream').toLowerCase();
+    // A forwarded message is one attachment, even though BODYSTRUCTURE also describes its parts.
+    if (current.childNodes?.length && type !== 'message/rfc822') { for (const child of current.childNodes) walk(child); return; }
     const filename = current.dispositionParameters?.filename ?? current.parameters?.name ?? null;
     const disposition = (current.disposition ?? '').toLowerCase();
     if ((type === 'text/plain' || type === 'text/html') && disposition !== 'attachment' && !filename) return;
@@ -180,7 +182,7 @@ const searched = (query:z.output<typeof mailListSchema>) => Boolean(query.from |
 export async function mailList(config:Config, input:unknown) {
   const query = mailListSchema.parse(input);
   if (config.mailHelper) {
-    if (query.to || query.subject || query.text || query.unseen !== undefined || query.beforeUid || query.limit > 20) throw new WaypostError('MAIL_HELPER_UNSUPPORTED', 'The Mail helper supports only mailbox, limit (at most 20), from, since and before. Use direct Bridge for other filters and paging.');
+    if (query.to || query.subject || query.text || query.unseen !== undefined || query.beforeUid || query.uidValidity || query.limit > 20) throw new WaypostError('MAIL_HELPER_UNSUPPORTED', 'The Mail helper supports only mailbox, limit (at most 20), from, since and before. Use direct Bridge for other filters and paging.');
     const helperQuery: {mailbox:string; limit:number; from?:string; since?:string; before?:string} = {mailbox:query.mailbox, limit:query.limit};
     if (query.from) helperQuery.from = query.from;
     if (query.since) helperQuery.since = query.since;
@@ -189,14 +191,17 @@ export async function mailList(config:Config, input:unknown) {
   }
   const filtered = searched(query);
   return imap(config, client => examine(client, query.mailbox, async () => {
-    let total:number;
+    const uidValidity = client.mailbox && client.mailbox.uidValidity !== undefined ? String(client.mailbox.uidValidity) : null;
+    if (query.beforeUid && query.uidValidity !== uidValidity) throw new WaypostError('MAIL_CURSOR_STALE', 'The mailbox changed since the previous page (UIDVALIDITY differs), so beforeUid no longer points to the same message. Start again without beforeUid.');
+    const page = (rows:ReturnType<typeof headerRow>[], total:number, oldest:number | null) => ({mailbox:query.mailbox, messages:rows, total, nextBeforeUid:oldest, uidValidity, readOnly:true, bodyFetched:false, searched:filtered});
+    // total always counts every message in the mailbox that matches the filters, ignoring the cursor.
     if (!filtered && !query.beforeUid) {
       // Fast path: newest messages by sequence number, no SEARCH of the whole mailbox.
-      total = client.mailbox ? client.mailbox.exists : 0;
+      const total = client.mailbox ? client.mailbox.exists : 0;
       const rows = [];
       if (total) for await (const message of client.fetch(`${Math.max(1,total-query.limit+1)}:${total}`,headerQuery)) rows.push(headerRow(message));
       rows.sort((a,b) => b.uid-a.uid);
-      return {mailbox:query.mailbox, messages:rows, total, nextBeforeUid:total > rows.length && rows.length ? rows[rows.length-1]!.uid : null, readOnly:true, bodyFetched:false, searched:false};
+      return page(rows, total, total > rows.length && rows.length ? rows[rows.length-1]!.uid : null);
     }
     const criteria:SearchObject = {};
     if (query.from) criteria.from = query.from;
@@ -206,20 +211,15 @@ export async function mailList(config:Config, input:unknown) {
     if (query.unseen !== undefined) criteria.seen = !query.unseen;
     if (query.since) criteria.since = new Date(`${query.since}T00:00:00Z`);
     if (query.before) criteria.before = new Date(`${query.before}T00:00:00Z`);
-    if (query.beforeUid) {
-      if (query.beforeUid <= 1) return {mailbox:query.mailbox, messages:[], total:0, nextBeforeUid:null, readOnly:true, bodyFetched:false, searched:filtered};
-      criteria.uid = `1:${query.beforeUid-1}`;
-    }
     if (!Object.keys(criteria).length) criteria.all = true;
     const found = await client.search(criteria,{uid:true});
     if (!found) throw new WaypostError('MAIL_SEARCH','Bridge rejected the mailbox search. Simplify the filters and retry.');
-    // Some servers answer UID ranges loosely; enforce the cursor locally.
-    const matches = [...new Set(found)].filter(uid => !query.beforeUid || uid < query.beforeUid).sort((a,b) => a-b);
-    total = matches.length;
-    const uids = matches.slice(-query.limit);
+    const matches = [...new Set(found)].sort((a,b) => a-b);
+    const older = query.beforeUid ? matches.filter(uid => uid < query.beforeUid!) : matches;
+    const uids = older.slice(-query.limit);
     const rows = await fetchRows(client, uids);
     rows.sort((a,b) => b.uid-a.uid);
-    return {mailbox:query.mailbox, messages:rows, total, nextBeforeUid:total > uids.length && uids.length ? uids[0]! : null, readOnly:true, bodyFetched:false, searched:filtered};
+    return page(rows, matches.length, older.length > uids.length && uids.length ? uids[0]! : null);
   }));
 }
 export async function mailMailboxes(config:Config, input:unknown) {
@@ -372,7 +372,7 @@ export async function mailSend(config:Config, input:unknown) {
 export const mailTools = [
   defineTool({name:'mail_doctor', title:'Check Bridge authentication', description:'Authenticate to Bridge directly or through a configured read-only helper without reading messages. SMTP checks require the direct Bridge route.', schema:mailDoctorSchema, readOnly:true, destructive:false, handler:mailDoctor}),
   defineTool({name:'mail_mailboxes', title:'List mail folders and labels', description:'List mailbox names to use with other mail tools. Proton folders appear as "Folders/<name>", labels as "Labels/<name>". Direct Bridge only.', schema:mailMailboxesSchema, readOnly:true, destructive:false, handler:mailMailboxes}),
-  defineTool({name:'mail_list', title:'Search and list mail headers', description:'Return up to 50 headers, newest first, from one mailbox opened read-only. Filter by from, to, subject, text, unseen, since and before. When nextBeforeUid is not null, pass it as beforeUid for the next older page. Does not fetch bodies or change flags.', schema:mailListSchema, readOnly:true, destructive:false, handler:mailList}),
+  defineTool({name:'mail_list', title:'Search and list mail headers', description:'Return up to 50 headers, newest first, from one mailbox opened read-only. Filter by from, to, subject, text, unseen, since and before. When nextBeforeUid is not null, pass it as beforeUid, with uidValidity, for the next older page. Does not fetch bodies or change flags.', schema:mailListSchema, readOnly:true, destructive:false, handler:mailList}),
   defineTool({name:'mail_read', title:'Read one message', description:'Read one message by UID without marking it read. Returns sender, recipients, threading IDs, plain text (HTML converted to text), and attachment metadata with part numbers. Long bodies page with textOffset. Attachment bytes are not returned; use mail_attachment.', schema:mailReadSchema, readOnly:true, destructive:false, handler:mailRead}),
   defineTool({name:'mail_thread', title:'Read a conversation', description:'Find messages in the same conversation as one UID using Message-ID, In-Reply-To and References. Searches one mailbox; use "All Mail" to include sent replies. Returns headers only.', schema:mailThreadSchema, readOnly:true, destructive:false, handler:mailThread}),
   defineTool({name:'mail_attachment', title:'Save one attachment locally', description:'Save one attachment (part number from mail_read) as a new file in the local artifacts directory, up to 25 MiB, and return its path and SHA-256. Does not change the message.', schema:mailAttachmentSchema, readOnly:false, destructive:false, handler:mailAttachment}),

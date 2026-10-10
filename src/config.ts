@@ -36,6 +36,8 @@ export const configSchema = z.object({
     maxAgeMinutes: z.number().int().min(1).max(60).default(10),
     mailboxes: z.array(z.string().min(1).max(256)).min(1).max(5).default(['INBOX']),
     siteAliases: z.record(z.string().max(253), z.array(z.string().max(253)).max(20)).default({}),
+    verifiedSenders: z.record(z.string().max(253), z.array(z.string().max(254)).max(20)).default({}),
+    pairingHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     extensionIds: z.array(z.string().regex(/^[a-p]{32}$/)).max(5).default([]),
     messagesDatabase: absolutePath.optional(),
   }).strict().optional(),

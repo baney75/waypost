@@ -1,9 +1,16 @@
+import { domainToASCII } from 'node:url';
+import { PSL_RULES } from './psl-data.js';
 // Find one-time verification codes in message text. Pure functions: no I/O, no logging.
 // A code is a credential, so callers must never log what these functions return.
 
 const KEYWORDS = /\b(?:verification|verify|one[- ]?time|otp|passcode|pass code|security code|login code|log[- ]?in code|sign[- ]?in|signin|2fa|two[- ]?factor|two[- ]?step|multi[- ]?factor|mfa|authenticat\w*|confirmation code|confirm|access code|auth code|code|pin)\b/i;
 // Phrases that put a code right next to its label: "code is 123456", "code: 123456", "123456 is your code".
 const BEFORE_STRONG = /(?:code|passcode|pin|otp|password)(?:\s+(?:is|was))?\s*(?:[:\-–—]|is)?\s*$/i;
+// A label a few words before a colon: "Steam Guard code you need to log in to account name:".
+const LABEL_COLON = /\b(?:code|passcode|otp)\b[^.\n:]{0,60}:\s*$/i;
+// A code needs a verification word nearby or in the subject; a bare "code" label is not enough.
+const VERIFY = /\b(?:verif\w*|one[- ]?time|otp|passcode|pass code|security code|log ?in|log-in|sign[- ]?in|signin|2fa|two[- ]?(?:factor|step)|multi[- ]?factor|mfa|authenticat\w*|confirm\w*|access code|auth code|guard|activation|activate)\b/i;
+const PROMO = /\b(?:promo\w*|coupon|discount|gift|voucher|referral|reward|rebate|offer|sale|save|savings|redeem|checkout)\b/i;
 const AFTER_STRONG = /^\s*(?:is|as)\s+(?:your|the)\b[^.\n]{0,60}?\b(?:code|passcode|pin|otp)\b/i;
 const NEGATIVE_BEFORE = /(?:order|invoice|receipt|ref(?:erence)?|ticket|case|tracking|account|acct|card|member(?:ship)?|customer|confirmation\s+(?:number|no\.?)|transaction|booking|reservation|flight|policy|claim|serial|model|item|sku|po|zip|postal|ending\s+in|last\s+(?:4|four)(?:\s+digits)?|phone|call|tel|fax|text|sms\s+to|ext\.?|suite|apt|unit|room|#)\s*(?:number|no\.?|num|id)?\s*[:#]?\s*$/i;
 const MONTHS = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*$/i;
@@ -15,7 +22,7 @@ function normalize(text: string): string {
 }
 // Tokens: 4–8 digits, digits split by one space or hyphen into 2–4 groups ("123 456", "482-193"),
 // spaced single digits from HTML layouts ("8 4 2 9 1 7"), or 4–10 letter/digit codes with a digit ("G-482913", "AB12CD").
-const TOKEN = /(?<![\w.$€£¥+\/:,-])(?:[A-Z]{1,3}-)?(?:\d(?: \d){3,7}|\d{2,4}(?:[ -]\d{2,4}){1,3}|\d{4,8}|(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,5}-?[A-Z0-9]{2,5})(?![\w$€£%]|[.,:\/-]\d)/g;
+const TOKEN = /(?<![\w.$€£¥+\/:,-])(?:[A-Z]{1,3}-)?(?:\d(?: \d){3,7}|\d{2,4}(?:[ -]\d{2,4}){1,3}|\d{4,8}|(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9]{2,5}-?[A-Za-z0-9]{2,5})(?![\w$€£%]|[.,:\/-]\d)/g;
 
 function digitsOnly(token: string): string { return token.replace(/[ -]/g, ''); }
 function plausible(token: string, before: string, after: string): boolean {
@@ -32,19 +39,23 @@ function plausible(token: string, before: string, after: string): boolean {
   if (/^\s*(?:x|×|px|kb|mb|gb|items?|points?|miles?|usd|eur|dollars?|%)\b/i.test(after)) return false;
   return true;
 }
-function scoreAt(text: string, index: number, token: string): number {
+function scoreAt(text: string, index: number, token: string, subject: string): number {
   const before = text.slice(Math.max(0, index - 120), index);
   const after = text.slice(index + token.length, index + token.length + 120);
   if (!plausible(token, before, after)) return 0;
+  if (PROMO.test(before.slice(-60)) || PROMO.test(after.slice(0, 40)) || /^\s*(?:for\s+)?\d+\s*%|^\s*off\b/i.test(after)) return 0; // promo and coupon codes
+  if (!VERIFY.test(subject) && !VERIFY.test(text.slice(Math.max(0, index - 200), index + token.length + 120))) return 0;
+  const labeled = BEFORE_STRONG.test(before.slice(-40)) || LABEL_COLON.test(before.slice(-90)) || AFTER_STRONG.test(after);
+  if (/[a-z]/.test(token) && !labeled) return 0; // lowercase codes only directly after a code label
   let score = 0;
   const near = before.slice(-70) + ' ' + after.slice(0, 50);
   if (KEYWORDS.test(near)) score += 3;
-  if (BEFORE_STRONG.test(before.slice(-40)) || AFTER_STRONG.test(after)) score += 4;
+  if (labeled) score += 4;
   if (/\b(?:expire|valid for|do not share|don't share|never share|enter|use this|type this)\b/i.test(before.slice(-160) + after.slice(0, 120))) score += 1;
   // A code alone on its own line is how most HTML templates present it.
   if (/(?:^|\n)\s*$/.test(before) && /^\s*(?:\n|$)/.test(after)) score += 2;
   if (/^\d{6}$/.test(digitsOnly(token))) score += 1;
-  if (/[a-z]/i.test(token) && !/^[A-Z]{1,3}-\d+$/.test(token)) score -= 1; // alphanumerics are rarer than digits
+  if (/[a-z]/i.test(token) && !/^[A-Z]{1,3}-\d+$/.test(token) && !labeled) score -= 1; // alphanumerics are rarer than digits
   return score;
 }
 export function codeCandidates(subject: string, body: string): CodeCandidate[] {
@@ -53,7 +64,7 @@ export function codeCandidates(subject: string, body: string): CodeCandidate[] {
     const text = normalize(raw).slice(0, 60000);
     for (const match of text.matchAll(TOKEN)) {
       const token = match[0];
-      const score = scoreAt(text, match.index, token);
+      const score = scoreAt(text, match.index, token, subject);
       if (score < 3) continue;
       const code = token.replace(/^[A-Z]{1,3}-(?=\d+$)/, '').replace(/[ -]/g, ''); // separators are formatting, not part of the code
       const confidence = score >= 7 ? 'high' : score >= 5 ? 'medium' : 'low';
@@ -74,36 +85,108 @@ export function extractCode(subject: string, body: string): { code: string; conf
   return { code: best.code, confidence: best.confidence };
 }
 
-// Domains. Registrable domain = the label before a public suffix. A small built-in list
-// covers common multi-part suffixes; it is not the full Public Suffix List.
-const MULTI_PART_SUFFIXES = new Set(['co.uk','org.uk','ac.uk','gov.uk','me.uk','com.au','net.au','org.au','co.nz','co.jp','ne.jp','or.jp','co.kr','com.br','com.mx','com.ar','co.in','net.in','com.cn','com.hk','com.sg','com.tw','co.za','com.tr','co.il']);
-export function registrableDomain(host: string): string | null {
-  const clean = host.trim().toLowerCase().replace(/\.$/, '');
-  if (!/^[a-z0-9.-]+$/.test(clean) || !clean.includes('.') || /^\d+(?:\.\d+){3}$/.test(clean)) return null;
-  const labels = clean.split('.');
-  const lastTwo = labels.slice(-2).join('.');
-  return MULTI_PART_SUFFIXES.has(lastTwo) && labels.length >= 3 ? labels.slice(-3).join('.') : lastTwo;
-}
-// Companies that send codes from a different domain than the sign-in page.
-export const BUILT_IN_ALIASES: Record<string, string[]> = {
-  'google.com': ['youtube.com', 'gmail.com', 'android.com'],
-  'microsoft.com': ['live.com', 'outlook.com', 'office.com', 'microsoftonline.com', 'microsoft365.com', 'xbox.com', 'bing.com', 'skype.com', 'azure.com'],
-  'apple.com': ['icloud.com'],
-  'proton.me': ['protonmail.com', 'protonmail.ch', 'pm.me'],
-  'github.com': ['githubusercontent.com'],
-  'amazon.com': ['aws.amazon.com', 'amazonaws.com'],
-};
-/** Every registrable domain whose mail may carry codes for this site. */
-export function senderDomainsFor(site: string, extra: Record<string, string[]> = {}): Set<string> {
-  const base = registrableDomain(site);
-  const domains = new Set<string>();
-  if (!base) return domains;
-  domains.add(base);
-  for (const table of [BUILT_IN_ALIASES, extra]) for (const [owner, aliases] of Object.entries(table)) {
-    const group = [owner, ...aliases].map(registrableDomain).filter((value): value is string => !!value);
-    if (group.includes(base)) for (const domain of group) domains.add(domain);
+// Domains use the bundled Public Suffix List (ICANN and private sections), so
+// shop.com.vn and bucket.s3.amazonaws.com are registrable domains of their own.
+let suffixRules: {exact:Set<string>; wildcard:Set<string>; exception:Set<string>} | undefined;
+function rules() {
+  if (!suffixRules) {
+    suffixRules = {exact:new Set(), wildcard:new Set(), exception:new Set()};
+    for (const rule of PSL_RULES.split(' ')) {
+      if (rule.startsWith('!')) suffixRules.exception.add(rule.slice(1));
+      else if (rule.startsWith('*.')) suffixRules.wildcard.add(rule.slice(2));
+      else suffixRules.exact.add(rule);
+    }
   }
-  return domains;
+  return suffixRules;
+}
+function normalizeHost(host: string): string | null {
+  const ascii = domainToASCII(host.trim().replace(/\.$/, '').toLowerCase());
+  if (!ascii || !/^[a-z0-9.-]+$/.test(ascii) || !ascii.includes('.') || /^\d+(?:\.\d+){3}$/.test(ascii) || ascii.split('.').some(label => !label)) return null;
+  return ascii;
+}
+/** The public suffix of a host per the PSL algorithm (the "*" default rule applies when nothing matches). */
+export function publicSuffix(host: string): string | null {
+  const clean = normalizeHost(host);
+  if (!clean) return null;
+  const {exact, wildcard, exception} = rules();
+  const labels = clean.split('.');
+  for (let index = 0; index < labels.length; index++) {
+    const candidate = labels.slice(index).join('.');
+    if (exception.has(candidate)) return labels.slice(index + 1).join('.');
+    if (exact.has(candidate)) return candidate;
+    if (index + 1 < labels.length && wildcard.has(labels.slice(index + 1).join('.'))) return candidate;
+  }
+  return labels.at(-1)!;
+}
+export function registrableDomain(host: string): string | null {
+  const clean = normalizeHost(host);
+  const suffix = clean && publicSuffix(clean);
+  if (!clean || !suffix || clean === suffix) return null;
+  const labels = clean.split('.');
+  return labels.slice(-(suffix.split('.').length + 1)).join('.');
+}
+// Consumer mailbox providers: anyone can get an address at the bare domain, so such an
+// address never authorizes a code. Their own transactional mail comes from subdomains.
+export const FREE_MAIL = new Set(['gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','msn.com','passport.com','outlook.de','outlook.fr','hotmail.co.uk','hotmail.fr','live.co.uk','yahoo.com','ymail.com','rocketmail.com','yahoo.co.uk','yahoo.co.jp','yahoo.fr','yahoo.de','aol.com','aim.com','icloud.com','me.com','mac.com','proton.me','protonmail.com','protonmail.ch','pm.me','gmx.com','gmx.net','gmx.de','web.de','mail.com','yandex.com','yandex.ru','mail.ru','zoho.com','zohomail.com','fastmail.com','fastmail.fm','hey.com','tutanota.com','tutanota.de','tuta.io','tuta.com','qq.com','163.com','126.com','naver.com','hushmail.com','mailfence.com','posteo.de','posteo.net','mailbox.org','duck.com','skiff.com']);
+// Hosts that serve pages anyone can publish under a big brand's domain. Codes are never offered there.
+const USER_CONTENT_HOSTS = ['sites.google.com','docs.google.com','drive.google.com','script.google.com','script.googleusercontent.com','sheets.google.com','slides.google.com','forms.google.com','groups.google.com','storage.googleapis.com','storage.cloud.google.com','gist.github.com','raw.githubusercontent.com','gist.githubusercontent.com','onedrive.live.com','1drv.ms','forms.office.com','sway.office.com','dl.dropboxusercontent.com','notion.site'];
+// Sites whose codes come from another company domain. Site → sender domains, one direction only.
+export const SITE_SENDERS: Record<string, string[]> = {
+  'youtube.com':['google.com'], 'gmail.com':['google.com'], 'android.com':['google.com'],
+  'live.com':['microsoft.com'], 'outlook.com':['microsoft.com'], 'hotmail.com':['microsoft.com'], 'office.com':['microsoft.com'], 'microsoftonline.com':['microsoft.com'], 'microsoft365.com':['microsoft.com'], 'xbox.com':['microsoft.com'], 'bing.com':['microsoft.com'], 'skype.com':['microsoft.com'], 'azure.com':['microsoft.com'],
+  'icloud.com':['apple.com'],
+  'protonmail.com':['proton.me'], 'pm.me':['proton.me'],
+};
+// Addresses known to send only one-time codes. Automatic fill accepts only these, plus verifiedSenders from config.
+const KNOWN_OTP_SENDERS: RegExp[] = [/^noreply@github\.com$/, /@accounts\.google\.com$/, /@accountprotection\.microsoft\.com$/, /@(?:id|email)\.apple\.com$/];
+export type SenderOptions = {aliases?: Record<string, string[]>; verifiedSenders?: Record<string, string[]>};
+function siteHost(site: string): string | null {
+  let host = site.trim();
+  try { if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) host = new URL(host).hostname; } catch { return null; }
+  return normalizeHost(host);
+}
+function splitAddress(address: string): {address:string; host:string} | null {
+  const clean = address.trim().toLowerCase();
+  const at = clean.lastIndexOf('@');
+  if (at < 1) return null;
+  const host = normalizeHost(clean.slice(at + 1));
+  return host ? {address:`${clean.slice(0, at)}@${host}`, host} : null;
+}
+function verifiedFor(siteDomain: string, address: string, options: SenderOptions): boolean {
+  return (options.verifiedSenders?.[siteDomain] ?? []).some(item => item.trim().toLowerCase() === address);
+}
+/** Whether mail from this address may carry codes for this site. */
+export function senderMatchesSite(address: string, site: string, options: SenderOptions = {}): boolean {
+  const host = siteHost(site);
+  if (!host || USER_CONTENT_HOSTS.some(blocked => host === blocked || host.endsWith(`.${blocked}`))) return false;
+  const siteDomain = registrableDomain(host);
+  const sender = splitAddress(address);
+  if (!siteDomain || !sender) return false;
+  if (verifiedFor(siteDomain, sender.address, options)) return true;
+  const senderDomain = registrableDomain(sender.host);
+  if (!senderDomain) return false;
+  const allowed = new Set([siteDomain, ...(SITE_SENDERS[siteDomain] ?? []), ...(options.aliases?.[siteDomain] ?? []).map(registrableDomain).filter((value): value is string => !!value)]);
+  if (!allowed.has(senderDomain)) return false;
+  return !(FREE_MAIL.has(senderDomain) && sender.host === senderDomain);
+}
+/** Whether the address is a known one-time-code sender (built in, or verifiedSenders for this site). */
+export function knownOtpSender(address: string, site: string | undefined, options: SenderOptions = {}): boolean {
+  const sender = splitAddress(address);
+  if (!sender) return false;
+  const siteDomain = site ? registrableDomain(siteHost(site) ?? '') : null;
+  return KNOWN_OTP_SENDERS.some(pattern => pattern.test(sender.address)) || (!!siteDomain && verifiedFor(siteDomain, sender.address, options));
+}
+/**
+ * Why a message looks like a notification, mailing list or bulk mail rather than a code
+ * message, or null. Codes typed by other people (mentions, comments) arrive this way.
+ */
+export function notificationReason(headers: string, subject: string, body = ''): string | null {
+  const unfolded = headers.replace(/\r?\n[ \t]+/g, ' ');
+  if (/^(?:list-id|list-unsubscribe|list-post|list-help|x-github-reason|x-github-sender|x-gitlab-[\w-]+|x-discourse-[\w-]+|mailing-list|x-mailing-list):/im.test(unfolded)) return 'mailing-list or notification header';
+  if (/^precedence:\s*(?:list|bulk|junk)\b/im.test(unfolded)) return 'bulk precedence';
+  if (/^\s*(?:(?:re|fwd?):\s*)*\[[^\]\s]+\/[^\]\s]+\]/i.test(subject) || /\(#\d+\)/.test(subject)) return 'repository notification subject';
+  if (/^\s*>/m.test(body) || /(?:^|\n)\s*@[a-z0-9][\w-]*\b/i.test(body) || /\b(?:reply to this email directly|view it on github|you are receiving this because|mentioned you|commented on|wrote:)/i.test(body)) return 'quotes user content';
+  return null;
 }
 /**
  * DMARC result from the topmost Authentication-Results header added by Proton.
@@ -123,6 +206,13 @@ export function protonDmarc(headers: string, fromDomain: string | null): boolean
     return !fromDomain || !domain || domain === registrableDomain(fromDomain);
   }
   return null;
+}
+/** Whether an origin-bound SMS domain names this site: same registrable domain, never a user-content host. */
+export function originBoundMatchesSite(domain: string, site: string): boolean {
+  const host = siteHost(site), bound = normalizeHost(domain);
+  if (!host || !bound || USER_CONTENT_HOSTS.some(blocked => host === blocked || host.endsWith(`.${blocked}`))) return false;
+  const siteDomain = registrableDomain(host);
+  return !!siteDomain && registrableDomain(bound) === siteDomain;
 }
 /** Origin-bound SMS codes (WebOTP format): last line "@example.com #123456". */
 export function originBoundCode(text: string): { domain: string; code: string } | null {

@@ -15,8 +15,13 @@
     <p id="trust"></p>
     <button id="fill" type="button">Fill code</button>
   </section>
+  <form id="pair" hidden>
+    <label for="pair-code">Paste the pairing code that <code>waypost connect browser</code> printed.</label>
+    <input id="pair-code" autocomplete="off" spellcheck="false" required>
+    <button id="pair-save" type="submit">Pair</button>
+  </form>
   <label id="auto-row" hidden><input id="auto" type="checkbox"> Fill automatically on this site</label>
-  <p id="auto-note" class="note" hidden>Automatic filling happens only when the sender belongs to this site and the code is unambiguous.</p>
+  <p id="auto-note" class="note" hidden>Fills on its own only for known code senders that Proton verified (DMARC pass) for this site.</p>
 </main>
 <script src="popup.js" type="module"></script>
 </body>

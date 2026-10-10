@@ -39,13 +39,17 @@ export function localIso(zone: string, ms: number): string {
  * An ambiguous time (fall back) resolves to the earlier instant, as RFC 5545 requires.
  */
 export function localToUtc(zone: string, clock: Clock): number | null {
+  return localToUtcDetail(zone, clock).ms;
+}
+/** Like localToUtc, and also reports whether the wall-clock time occurs twice (fall back). */
+export function localToUtcDetail(zone: string, clock: Clock): {ms: number | null; ambiguous: boolean} {
   const naive = Date.UTC(clock.year, clock.month - 1, clock.day, clock.hour, clock.minute, clock.second);
   const candidates = new Set([offsetMinutes(zone, naive - 86400000), offsetMinutes(zone, naive), offsetMinutes(zone, naive + 86400000)]);
   const matches = [...candidates].map(offset => naive - offset * 60000).filter(ms => {
     const back = wallClock(zone, ms);
     return back.year === clock.year && back.month === clock.month && back.day === clock.day && back.hour === clock.hour && back.minute === clock.minute && back.second === clock.second;
   }).sort((a, b) => a - b);
-  return matches[0] ?? null;
+  return {ms: matches[0] ?? null, ambiguous: new Set(matches).size > 1};
 }
 type Transition = {at: number; from: number; to: number};
 const transitionCache = new Map<string, Transition[]>();

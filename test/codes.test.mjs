@@ -6,6 +6,7 @@ import {writeFile,mkdtemp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {spawn} from 'node:child_process';
+import {createHash,randomBytes} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {latestVerificationCode,attributedBodyText} from '../dist/codes.js';
 import {configSchema} from '../dist/config.js';
@@ -86,7 +87,8 @@ test('Messages database (forwarded SMS): text and attributedBody, origin-bound s
 
 test('native host serves only paired extensions over framed stdin/stdout',async()=>{
   const root=await mkdtemp(join(tmpdir(),'waypost-native-'));const config=join(root,'config.json');
-  await writeFile(config,JSON.stringify({version:1,artifactsDir:join(root,'artifacts'),verificationCodes:{browser:true,extensionIds:['bahfokgcpebehdnidclkpdeafnaehdpo']}}),{mode:0o600});
+  const pairing=randomBytes(32).toString('base64url');
+  await writeFile(config,JSON.stringify({version:1,artifactsDir:join(root,'artifacts'),verificationCodes:{browser:true,extensionIds:['bahfokgcpebehdnidclkpdeafnaehdpo'],pairingHash:createHash('sha256').update(pairing).digest('hex')}}),{mode:0o600});
   const ask=(origin,message)=>new Promise((done,fail)=>{
     const child=spawn(process.execPath,[resolve('runtime/waypost.mjs'),'--config',config,'native-host',origin],{stdio:['pipe','pipe','pipe']});
     let output=Buffer.alloc(0);child.stdout.on('data',data=>{output=Buffer.concat([output,data]);});
@@ -95,7 +97,7 @@ test('native host serves only paired extensions over framed stdin/stdout',async(
   });
   const stranger=await ask('chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',{type:'verification_code',site:'github.com'});
   assert.equal(stranger.error.code,'EXTENSION_NOT_ALLOWED');
-  const paired=await ask('chrome-extension://bahfokgcpebehdnidclkpdeafnaehdpo/',{type:'verification_code',site:'github.com'});
+  const paired=await ask('chrome-extension://bahfokgcpebehdnidclkpdeafnaehdpo/',{type:'verification_code',site:'github.com',pairing});
   assert.equal(paired.error.code,'MAIL_UNCONFIGURED');
   const malformed=await ask('chrome-extension://bahfokgcpebehdnidclkpdeafnaehdpo/',{type:'read_mail',mailbox:'INBOX'});
   assert.equal(malformed.error.code,'INPUT_INVALID');
