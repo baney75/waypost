@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Waypost Codes</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header><img src="icon-48.png" alt="" width="20" height="20"><span id="site">Waypost</span></header>
+<main>
+  <p id="status" role="status">Checking Proton Mail…</p>
+  <section id="result" hidden>
+    <output id="code" aria-label="Verification code"></output>
+    <p id="meta"></p>
+    <p id="trust"></p>
+    <button id="fill" type="button">Fill code</button>
+  </section>
+  <label id="auto-row" hidden><input id="auto" type="checkbox"> Fill automatically on this site</label>
+  <p id="auto-note" class="note" hidden>Automatic filling happens only when the sender belongs to this site and the code is unambiguous.</p>
+</main>
+<script src="popup.js" type="module"></script>
+</body>
+</html>

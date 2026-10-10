@@ -44,6 +44,17 @@ For a narrow Drive root, custom ports, or other advanced settings, edit the priv
 
 Remove any service block you are not using. Keep `WAYPOST_CONFIG` or the CLI’s `--config` option pointed at this file on the host that runs the MCP.
 
+## Claude Code
+
+From the `waypost` folder:
+
+```sh
+claude mcp add waypost --scope user -- node "$PWD/runtime/waypost.mjs" mcp
+claude mcp list   # waypost: ... ✔ Connected
+```
+
+With a non-default config path, `waypost --config /path/config.json agent-config claude-code` prints the exact command. For direct Bridge, start Claude Code with the Bridge credentials in its environment (see Mail below), for example `pass-cli run --env-file /absolute/path/bridge.references.env -- claude`. Claude Code passes its environment to stdio servers. The helper route needs no credentials in the agent.
+
 ## Drive
 
 Install the [official CLI](https://proton.me/support/drive-cli), then run `waypost connect drive`. Add `--executable /absolute/path/to/proton-drive` if it is not on PATH. Use `waypost login drive` to sign in again later. Sign in on Proton’s browser page. Sessions use the official CLI’s protected OS store. Its `pass` option means GPG password-store, not Proton Pass. The `unsafe_file` store is unsupported.
@@ -55,6 +66,10 @@ Install the [official CLI](https://proton.me/support/drive-cli), then run `waypo
 Install and sign into [Proton Mail Bridge](https://proton.me/mail/bridge). A paid plan including Mail is required. Read the IMAP/SMTP ports and generated username/password from Bridge’s client configuration. In **Settings → Advanced settings → Export TLS certificates**, export to a private directory. Bridge exports a certificate and private key. Point Waypost at the public certificate PEM only; leave the private key out of Waypost and agent configuration. Set **Connection mode** to STARTTLS for these ports. [Official Bridge settings](https://proton.me/support/comprehensive-guide-to-bridge-settings).
 
 Inject the generated client credentials into the named environment variables using your protected secret manager when launching Waypost. The certificate contains no private key. Verify its origin in Bridge; do not trust a certificate obtained from an unknown network endpoint. Account passwords are not valid IMAP credentials.
+
+On Linux, Bridge’s default ports are IMAP 1143 and SMTP 1025; check the values Bridge shows. If `mail doctor` returns `MAIL_BRIDGE_UNREACHABLE`, Bridge is not running or uses another port. `MAIL_AUTH` means the Bridge-generated username or password is wrong. `MAIL_TLS` means the certificate changed (re-export it and run `connect mail` again) or Bridge is not in STARTTLS mode.
+
+Mailbox names follow Bridge: `INBOX`, `Sent`, `Drafts`, `Archive`, `Spam`, `Trash`, `All Mail`, `Folders/<name>` and `Labels/<name>`. `waypost mail mailboxes` lists them. Searches run on Bridge’s local index; `since` and `before` use the received date.
 
 `waypost mail doctor` authenticates without fetching messages. `--smtp` also checks SMTP authentication without sending. `waypost mail list --mailbox INBOX --limit 1` proves a bounded mailbox read.
 
@@ -108,9 +123,9 @@ Alternatively, pipe the link with `--url-stdin --name Personal`; Waypost saves i
 
 Every query fetches the approved link anew and reports `fetchedAt`. Proton may delay updates by up to eight hours; this is not immediate synchronization. A failed fetch returns an error without silently using stale data. Only the official Proton HTTPS ICS endpoint is accepted; redirects are rejected. Other subscribed calendars cannot be re-exported or shared through Proton. Query their original service separately.
 
-Export the intended calendar through [Proton’s UI](https://proton.me/support/how-to-export-events-from-proton-calendar) and add its local ICS path. A snapshot becomes stale after events change; export again when you need current coverage. Floating times and undeclared timezones fail rather than silently using the host’s timezone. Supported years are 1900–2100. Subdaily recurrence and period-valued RDATE entries are rejected. Recurrence expansion is capped at 20,000 steps and discloses incomplete coverage. A recurring local time inside a spring daylight-saving gap fails explicitly; use corrected UTC events. Timezone definitions are bounded before expansion (64 zones, 16 observances per zone, 512 RDATE values per zone, and 8,192 generated transitions through 2100). Unsupported timezone rules fail with a safe error.
+Export the intended calendar through [Proton’s UI](https://proton.me/support/how-to-export-events-from-proton-calendar) and add its local ICS path. A snapshot becomes stale after events change; export again when you need current coverage. An event that names an IANA zone (such as `America/Chicago`) without a VTIMEZONE block is read with Node.js’s built-in timezone data, and `sources[].timezonesFromRuntime` says so. Floating times and unknown zone names are never guessed from the host’s timezone. An event Waypost cannot read is left out and listed in `skipped[]` with a reason; the rest of the calendar is still returned. Pass `timezone` (or `--timezone` on `calendar agenda`) to get local `startLocal`/`endLocal` times. Supported years are 1900–2100. Subdaily recurrence and period-valued RDATE entries are rejected. Recurrence expansion is capped at 20,000 steps and discloses incomplete coverage. A recurring event with a local time inside a spring daylight saving gap is skipped and reported; export corrected UTC events for it. Timezone definitions are bounded before expansion (64 zones, 16 observances per zone, 512 RDATE values per zone, and 8,192 generated transitions through 2100). Unsupported timezone rules fail with a safe error.
 
-`calendar prepare` requires explicit UTC dates, creates a fresh UID, and returns the artifact and digest. Import it in Proton Calendar, reopen the event, and verify the intended calendar, local date/time, and notification settings. Preparation alone does not save an event.
+`calendar prepare` takes one of three time forms: UTC (`2026-10-12T15:00:00Z`), local time with `timezone` (`2026-10-12T09:00:00` and `America/Chicago`, which keeps 9:00 across daylight saving changes and embeds a VTIMEZONE), or days with `allDay` (`2026-10-12`; the end day is exclusive). `rrule` accepts `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY` with `INTERVAL`, `COUNT` or `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS` and `WKST`. A local time inside a daylight saving gap is rejected. Each file gets a fresh UID; the result returns the path and SHA-256. Import it in Proton Calendar, reopen the event, and verify the intended calendar, local date/time, and notification settings. Preparation alone does not save an event.
 
 ## Recovery
 

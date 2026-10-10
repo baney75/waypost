@@ -20,6 +20,8 @@ The Codex Git marketplace is pinned to a version tag in the recommended setup. C
 
 GitHub CI checks Node.js compatibility, tests, dependency advisories, and the packaged runtime. Dependabot proposes dependency updates for review. Runtime dependencies are pinned in the lockfile. No remote installer is piped into a shell.
 
+Version 0.5 changes some tool output. `mail_read` returns `attachments` as a list of `{part, filename, contentType, bytes, inline}` instead of a count. `drive_list` returns `{path, entries, total, truncated}` with plain `name` strings instead of the CLI's raw objects, and `drive_info` returns the same entry shape. `drive_download` replaces `localChecksums`/`remoteChecksumsVerified` with `claimedSha1Match`. `calendar_events` skips an unreadable event and lists it in `skipped[]` instead of failing the whole request. `mail_list` accepts up to 50 rows. Configuration gains an optional `verificationCodes` block; earlier versions reject a config that contains it.
+
 Version 0.3 adds a required per-call `confirm: true` to `mail_send` and `drive_upload`; scripts that send or upload must pass it. Configuration is unchanged.
 
 Version 0.2 adds optional `mailHelper` and Calendar `feeds` settings to schema 1. Existing direct Bridge, Drive and ICS-file configurations still load. Before rolling back to 0.1, restore your earlier config or remove those new fields; an older runtime rejects them. Keep a private config backup before upgrading.

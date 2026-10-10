@@ -58,3 +58,6 @@ export async function seed(server,messages,mailbox='INBOX') {
 }
 export const day=n=>new Date(Date.UTC(2026,8,1+n,9,0,0)).toUTCString().replace('GMT','+0000');
 export const plain=({from,to='me@example.test',subject,date,id,body,extra=''})=>`From: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\nMessage-ID: <${id}>\n${extra}Content-Type: text/plain; charset=utf-8\n\n${body}\n`;
+
+const minutesAgo=minutes=>new Date(Date.now()-minutes*60000).toUTCString().replace('GMT','+0000');
+export const codeMail=({from,subject,body,minutes=1,headers='',html=false})=>`${headers}From: ${from}\nTo: me@example.test\nSubject: ${subject}\nDate: ${minutesAgo(minutes)}\nMessage-ID: <${Math.random().toString(16).slice(2)}@example.test>\nMIME-Version: 1.0\nContent-Type: ${html?'text/html':'text/plain'}; charset=utf-8\n\n${body}\n`;

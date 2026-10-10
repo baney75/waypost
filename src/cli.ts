@@ -11,6 +11,8 @@ import { VERSION } from './version.js';
 import { runExecutable } from './process.js';
 import { connectDrive, connectMail, connectMailHelper, connectCalendar, connectCalendarFeed, connectCalendarPass } from './connect.js';
 import { checkUpdate } from './update.js';
+import { runNativeHost } from './native-host.js';
+import { connectBrowser } from './browser.js';
 
 const program=new Command().name('waypost').description('Proton Mail, Calendar and Drive for your terminal and agents.').version(VERSION).option('--config <path>','Configuration file',defaultConfigPath()).showHelpAfterError();
 const configPath=()=>resolve(program.opts<{config:string}>().config);
@@ -37,6 +39,7 @@ connect.command('calendar [file]').description('Connect an ICS export or a refre
   }
   output(file?await connectCalendar(configPath(),file):await connectCalendarFeed(configPath(),options.name,options.urlFile?{file:options.urlFile}:{url:await stdinLink()}));
 });
+connect.command('browser').description('Pair the Waypost browser extension so it can fill verification codes. Off until you run this.').option('--extension-id <id>','Extension ID shown on chrome://extensions (defaults to the ID pinned in extension/manifest.json)').option('--browser <name>','chrome, chromium, brave, edge, or helium','chrome').option('--hosts-dir <path>','NativeMessagingHosts directory for another Chromium browser').action(async(options:{extensionId?:string;browser:string;hostsDir?:string})=>output(await connectBrowser(configPath(),options)));
 connect.command('mail').description('Connect local Bridge or an authenticated read-only Mail helper.').option('--certificate <path>','Bridge public PEM; also inject WAYPOST_MAIL_USERNAME and WAYPOST_MAIL_PASSWORD').option('--helper <path>','Authenticated read-only helper executable').option('--imap-port <port>','IMAP STARTTLS port','1143').option('--smtp-port <port>','SMTP STARTTLS port','1025').action(async(options:{certificate?:string;helper?:string;imapPort:string;smtpPort:string})=>{
   if(Number(!!options.certificate)+Number(!!options.helper)!==1)throw new WaypostError('INPUT_INVALID','Choose --certificate for local Bridge or --helper for an existing authenticated helper.');
   output(options.helper?await connectMailHelper(configPath(),options.helper):await connectMail(configPath(),options.certificate!,Number(options.imapPort),Number(options.smtpPort)));
@@ -105,5 +108,7 @@ program.command('agent-config [client]').description('Print a working MCP connec
   else throw new WaypostError('CLIENT_INVALID','Choose claude-code, codex, claude, cursor or generic.');
 });
 program.command('update').description('Check releases; never install silently.').action(async()=>output(await checkUpdate()));
+// Started by the browser through native messaging; Chrome passes the extension origin as the first argument.
+program.command('native-host [origin]',{hidden:true}).allowUnknownOption().description('Native messaging host for the browser extension.').action(async(origin?:string)=>runNativeHost(configPath(),origin));
 program.command('mcp').description('Start the MCP server over standard input/output.').action(async()=>serve(configPath()));
 try {await program.parseAsync();}catch(error){process.stderr.write(JSON.stringify({ok:false,error:publicError(error)})+'\n');process.exitCode=1;}

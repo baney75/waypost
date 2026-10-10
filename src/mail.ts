@@ -96,7 +96,7 @@ export function imapError(error:unknown, mail:{host:string; imapPort:number}, ma
   if (/timeout/i.test(message) || /TIMEOUT/i.test(failure.code ?? '')) return new WaypostError('MAIL_TIMEOUT', 'Bridge did not answer in time. Check that Bridge is running and finished syncing, then retry.');
   return new WaypostError('MAIL_CONNECTION', 'Bridge IMAP operation failed. Run waypost mail doctor to check the listener, credentials and pinned certificate.');
 }
-async function imap<T>(config:Config, operation:(client:ImapFlow)=>Promise<T>) {
+export async function imap<T>(config:Config, operation:(client:ImapFlow)=>Promise<T>) {
   const connection = await bridge(config);
   const client = new ImapFlow({host:connection.mail.host, port:connection.mail.imapPort, secure:false, doSTARTTLS:true, auth:connection.auth, tls:connection.tls, logger:false, disableAutoIdle:true, disableCompression:true, connectionTimeout:config.timeoutMs, greetingTimeout:config.timeoutMs, socketTimeout:config.timeoutMs});
   client.on('error', () => { /* Operation errors are returned through the awaited command, without credentials or server text. */ });
@@ -104,7 +104,7 @@ async function imap<T>(config:Config, operation:(client:ImapFlow)=>Promise<T>) {
   catch(error) { throw imapError(error, connection.mail); }
   finally { client.close(); }
 }
-async function examine<T>(client:ImapFlow, name:string, operation:()=>Promise<T>):Promise<T> {
+export async function examine<T>(client:ImapFlow, name:string, operation:()=>Promise<T>):Promise<T> {
   let lock;
   try { lock = await client.getMailboxLock(name,{readOnly:true}); }
   catch (error) { throw imapError(error,{host:'',imapPort:0},name); }
@@ -236,9 +236,9 @@ export async function mailMailboxes(config:Config, input:unknown) {
 }
 // Inert text only: scripts, styles and images (tracking pixels) are dropped, link targets stay as plain text, nothing is fetched.
 export function htmlText(html:string):string {
-  return convert(html.slice(0,MAX_BODY),{wordwrap:false, selectors:[{selector:'img',format:'skip'},{selector:'script',format:'skip'},{selector:'style',format:'skip'},{selector:'a',options:{hideLinkHrefIfSameAsText:true, ignoreHref:false}},...['h1','h2','h3','h4','h5','h6'].map(selector => ({selector,options:{uppercase:false}}))]}).replace(/\n{3,}/g,'\n\n').trim();
+  return convert(html.slice(0,MAX_BODY),{wordwrap:false, selectors:[{selector:'img',format:'skip'},{selector:'script',format:'skip'},{selector:'style',format:'skip'},{selector:'a',options:{hideLinkHrefIfSameAsText:true, ignoreHref:false}},{selector:'table',format:'block'},{selector:'tr',format:'block'},{selector:'td',format:'block'},{selector:'th',format:'block'},...['h1','h2','h3','h4','h5','h6'].map(selector => ({selector,options:{uppercase:false}}))]}).replace(/\n{3,}/g,'\n\n').trim();
 }
-async function parseMessage(source:Buffer) {
+export async function parseMessage(source:Buffer) {
   return simpleParser(source,{skipHtmlToText:true, skipTextToHtml:true, skipImageLinks:true, maxHtmlLengthToParse:MAX_BODY});
 }
 export async function mailRead(config:Config, input:unknown) {

@@ -30,6 +30,15 @@ export const configSchema = z.object({
     z.object({name:z.string().min(1).max(80),passItem:z.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u),vault:z.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u)}).strict(),
   ])).max(10).default([])}).strict().optional(),
   pass: z.object({executable:absolutePath}).strict().optional(),
+  verificationCodes: z.object({
+    agents: z.boolean().default(false),
+    browser: z.boolean().default(false),
+    maxAgeMinutes: z.number().int().min(1).max(60).default(10),
+    mailboxes: z.array(z.string().min(1).max(256)).min(1).max(5).default(['INBOX']),
+    siteAliases: z.record(z.string().max(253), z.array(z.string().max(253)).max(20)).default({}),
+    extensionIds: z.array(z.string().regex(/^[a-p]{32}$/)).max(5).default([]),
+    messagesDatabase: absolutePath.optional(),
+  }).strict().optional(),
   timeoutMs: z.number().int().min(1000).max(120000).default(45000),
 }).strict().refine(value => !(value.mail && value.mailHelper), 'Choose either local Bridge or a Mail helper.');
 export type Config = z.infer<typeof configSchema>;
