@@ -45,7 +45,7 @@
     "ical.js": "2.2.1",
     "imapflow": "2.2.1",
     "mailparser": "3.9.36",
-    "nodemailer": "10.0.13",
+    "nodemailer": "10.0.16",
     "zod": "4.6.5"
   },
   "devDependencies": {
