@@ -29802,12 +29802,43 @@ var require_libbase64 = __commonJS({
       }
       return Buffer2.from(str, "base64");
     }
+    function normalizeLineLength(lineLength) {
+      lineLength = Math.floor(Number(lineLength));
+      return Number.isFinite(lineLength) && lineLength >= 1 ? lineLength : 76;
+    }
+    function wrapBuffer(src, lineLength, final) {
+      let lines = Math.ceil(src.length / lineLength);
+      let complete = Math.max(lines - 1, 0);
+      let rest = src.length - complete * lineLength;
+      let output3 = Buffer2.allocUnsafe(complete * (lineLength + 2) + (final ? rest : 0));
+      let to = 0;
+      for (let from = 0; from < complete * lineLength; from += lineLength) {
+        src.copy(output3, to, from, from + lineLength);
+        to += lineLength;
+        output3[to++] = 13;
+        output3[to++] = 10;
+      }
+      if (final) {
+        to += src.copy(output3, to, complete * lineLength);
+        rest = 0;
+      }
+      if (to !== output3.length) {
+        throw new Error("Unexpected wrapped length");
+      }
+      return { output: output3, rest };
+    }
     function wrap3(str, lineLength) {
       str = (str || "").toString();
-      lineLength = lineLength || 76;
+      lineLength = normalizeLineLength(lineLength);
       if (str.length <= lineLength) {
         return str;
       }
+      if (/[^\u0000-\u00ff]|[\r\n]/.test(str) || str.trim() !== str) {
+        return legacyWrap(str, lineLength);
+      }
+      return wrapBuffer(Buffer2.from(str, "latin1"), lineLength, true).output.toString("latin1");
+    }
+    function legacyWrap(str, lineLength) {
       let result = [];
       let pos = 0;
       let chunkLength = lineLength * 1024;
@@ -29823,12 +29854,12 @@ var require_libbase64 = __commonJS({
         super();
         this.options = options || {};
         if (this.options.lineLength !== false) {
-          this.options.lineLength = Number(this.options.lineLength) || 76;
+          this.options.lineLength = normalizeLineLength(this.options.lineLength);
         }
         this.skipStartBytes = Number(this.options.skipStartBytes) || 0;
-        this.limitOutbutBytes = Number(this.options.limitOutbutBytes) || 0;
+        this.limitOutputBytes = Number(this.options.limitOutputBytes || this.options.limitOutbutBytes) || 0;
         this._curLine = this.options.startPadding || "";
-        this._remainingBytes = false;
+        this._remainingBytes = null;
         this.inputBytes = 0;
         this.outputBytes = 0;
       }
@@ -29838,73 +29869,61 @@ var require_libbase64 = __commonJS({
             this.skipStartBytes -= chunk.length;
             return;
           }
-          chunk = chunk.slice(this.skipStartBytes);
+          chunk = chunk.subarray(this.skipStartBytes);
           this.skipStartBytes = 0;
         }
-        if (this.limitOutbutBytes) {
-          if (this.outputBytes + chunk.length <= this.limitOutbutBytes) {
-          } else if (this.outputBytes >= this.limitOutbutBytes) {
+        if (this.limitOutputBytes) {
+          if (this.outputBytes >= this.limitOutputBytes) {
             return;
-          } else {
-            chunk = chunk.slice(0, this.limitOutbutBytes - this.outputBytes);
+          }
+          if (this.outputBytes + chunk.length > this.limitOutputBytes) {
+            chunk = chunk.subarray(0, this.limitOutputBytes - this.outputBytes);
           }
         }
         this.outputBytes += chunk.length;
         this.push(chunk);
       }
-      _getWrapped(str, isFinal) {
-        str = wrap3(str, this.options.lineLength);
-        if (!isFinal && str.length === this.options.lineLength) {
-          str += "\r\n";
+      /**
+       * Emits the encoded characters `b64` that follow the current line, keeping what can not be emitted
+       * yet as the new current line
+       */
+      _emit(b64, final) {
+        let src = Buffer2.from(this._curLine + b64, "latin1");
+        if (!src.length) {
+          return;
         }
-        return str;
+        if (!this.options.lineLength) {
+          this._curLine = "";
+          return this._writeChunk(src);
+        }
+        let { output: output3, rest } = wrapBuffer(src, this.options.lineLength, final);
+        this._curLine = rest ? src.toString("latin1", src.length - rest) : "";
+        if (output3.length) {
+          this._writeChunk(output3);
+        }
       }
       _transform(chunk, encoding, done) {
         if (encoding !== "buffer") {
           chunk = Buffer2.from(chunk, encoding);
         }
         if (!chunk || !chunk.length) {
-          return setImmediate(done);
+          return done();
         }
         this.inputBytes += chunk.length;
-        if (this._remainingBytes && this._remainingBytes.length) {
+        if (this._remainingBytes) {
           chunk = Buffer2.concat([this._remainingBytes, chunk], this._remainingBytes.length + chunk.length);
-          this._remainingBytes = false;
+          this._remainingBytes = null;
         }
-        if (chunk.length % 3) {
-          this._remainingBytes = chunk.slice(chunk.length - chunk.length % 3);
-          chunk = chunk.slice(0, chunk.length - chunk.length % 3);
-        } else {
-          this._remainingBytes = false;
+        let extra = chunk.length % 3;
+        if (extra) {
+          this._remainingBytes = chunk.subarray(chunk.length - extra);
+          chunk = chunk.subarray(0, chunk.length - extra);
         }
-        let b64 = this._curLine + encode7(chunk);
-        if (this.options.lineLength) {
-          b64 = this._getWrapped(b64);
-          let lastLF = b64.lastIndexOf("\n");
-          if (lastLF < 0) {
-            this._curLine = b64;
-            b64 = "";
-          } else if (lastLF === b64.length - 1) {
-            this._curLine = "";
-          } else {
-            this._curLine = b64.substr(lastLF + 1);
-            b64 = b64.substr(0, lastLF + 1);
-          }
-        }
-        if (b64) {
-          this._writeChunk(Buffer2.from(b64, "ascii"), false);
-        }
-        setImmediate(done);
+        this._emit(encode7(chunk), false);
+        done();
       }
       _flush(done) {
-        if (this._remainingBytes && this._remainingBytes.length) {
-          this._curLine += encode7(this._remainingBytes);
-        }
-        if (this._curLine) {
-          this._curLine = this._getWrapped(this._curLine, true);
-          this._writeChunk(Buffer2.from(this._curLine, "ascii"), true);
-          this._curLine = "";
-        }
+        this._emit(this._remainingBytes ? encode7(this._remainingBytes) : "", true);
         done();
       }
     };
@@ -34632,5001 +34651,6 @@ var require_mailsplit = __commonJS({
     var Headers2 = require_headers();
     var ChunkedPassthrough = require_chunked_passthrough();
     var MimeNode2 = require_mime_node();
-    module.exports = {
-      Splitter: MessageSplitter,
-      Joiner: MessageJoiner,
-      Rewriter: NodeRewriter,
-      Streamer: NodeStreamer,
-      ChunkedPassthrough,
-      Headers: Headers2,
-      MimeNode: MimeNode2
-    };
-  }
-});
-
-// node_modules/mailparser/node_modules/libmime/lib/charsets.js
-var require_charsets2 = __commonJS({
-  "node_modules/mailparser/node_modules/libmime/lib/charsets.js"(exports, module) {
-    "use strict";
-    module.exports = {
-      "866": "IBM866",
-      "unicode-1-1-utf-8": "UTF-8",
-      "utf-8": "UTF-8",
-      utf8: "UTF-8",
-      cp866: "IBM866",
-      csibm866: "IBM866",
-      ibm866: "IBM866",
-      csisolatin2: "ISO-8859-2",
-      "iso-8859-2": "ISO-8859-2",
-      "iso-ir-101": "ISO-8859-2",
-      "iso8859-2": "ISO-8859-2",
-      iso88592: "ISO-8859-2",
-      "iso_8859-2": "ISO-8859-2",
-      "iso_8859-2:1987": "ISO-8859-2",
-      l2: "ISO-8859-2",
-      latin2: "ISO-8859-2",
-      csisolatin3: "ISO-8859-3",
-      "iso-8859-3": "ISO-8859-3",
-      "iso-ir-109": "ISO-8859-3",
-      "iso8859-3": "ISO-8859-3",
-      iso88593: "ISO-8859-3",
-      "iso_8859-3": "ISO-8859-3",
-      "iso_8859-3:1988": "ISO-8859-3",
-      l3: "ISO-8859-3",
-      latin3: "ISO-8859-3",
-      csisolatin4: "ISO-8859-4",
-      "iso-8859-4": "ISO-8859-4",
-      "iso-ir-110": "ISO-8859-4",
-      "iso8859-4": "ISO-8859-4",
-      iso88594: "ISO-8859-4",
-      "iso_8859-4": "ISO-8859-4",
-      "iso_8859-4:1988": "ISO-8859-4",
-      l4: "ISO-8859-4",
-      latin4: "ISO-8859-4",
-      csisolatincyrillic: "ISO-8859-5",
-      cyrillic: "ISO-8859-5",
-      "iso-8859-5": "ISO-8859-5",
-      "iso-ir-144": "ISO-8859-5",
-      "iso8859-5": "ISO-8859-5",
-      iso88595: "ISO-8859-5",
-      "iso_8859-5": "ISO-8859-5",
-      "iso_8859-5:1988": "ISO-8859-5",
-      arabic: "ISO-8859-6",
-      "asmo-708": "ISO-8859-6",
-      csiso88596e: "ISO-8859-6",
-      csiso88596i: "ISO-8859-6",
-      csisolatinarabic: "ISO-8859-6",
-      "ecma-114": "ISO-8859-6",
-      "iso-8859-6": "ISO-8859-6",
-      "iso-8859-6-e": "ISO-8859-6",
-      "iso-8859-6-i": "ISO-8859-6",
-      "iso-ir-127": "ISO-8859-6",
-      "iso8859-6": "ISO-8859-6",
-      iso88596: "ISO-8859-6",
-      "iso_8859-6": "ISO-8859-6",
-      "iso_8859-6:1987": "ISO-8859-6",
-      csisolatingreek: "ISO-8859-7",
-      "ecma-118": "ISO-8859-7",
-      elot_928: "ISO-8859-7",
-      greek: "ISO-8859-7",
-      greek8: "ISO-8859-7",
-      "iso-8859-7": "ISO-8859-7",
-      "iso-ir-126": "ISO-8859-7",
-      "iso8859-7": "ISO-8859-7",
-      iso88597: "ISO-8859-7",
-      "iso_8859-7": "ISO-8859-7",
-      "iso_8859-7:1987": "ISO-8859-7",
-      sun_eu_greek: "ISO-8859-7",
-      csiso88598e: "ISO-8859-8",
-      csisolatinhebrew: "ISO-8859-8",
-      hebrew: "ISO-8859-8",
-      "iso-8859-8": "ISO-8859-8",
-      "iso-8859-8-e": "ISO-8859-8",
-      "iso-8859-8-i": "ISO-8859-8",
-      "iso-ir-138": "ISO-8859-8",
-      "iso8859-8": "ISO-8859-8",
-      iso88598: "ISO-8859-8",
-      "iso_8859-8": "ISO-8859-8",
-      "iso_8859-8:1988": "ISO-8859-8",
-      visual: "ISO-8859-8",
-      csisolatin6: "ISO-8859-10",
-      "iso-8859-10": "ISO-8859-10",
-      "iso-ir-157": "ISO-8859-10",
-      "iso8859-10": "ISO-8859-10",
-      iso885910: "ISO-8859-10",
-      l6: "ISO-8859-10",
-      latin6: "ISO-8859-10",
-      "iso-8859-13": "ISO-8859-13",
-      "iso8859-13": "ISO-8859-13",
-      iso885913: "ISO-8859-13",
-      "iso-8859-14": "ISO-8859-14",
-      "iso8859-14": "ISO-8859-14",
-      iso885914: "ISO-8859-14",
-      csisolatin9: "ISO-8859-15",
-      "iso-8859-15": "ISO-8859-15",
-      "iso8859-15": "ISO-8859-15",
-      iso885915: "ISO-8859-15",
-      "iso_8859-15": "ISO-8859-15",
-      l9: "ISO-8859-15",
-      "iso-8859-16": "ISO-8859-16",
-      cskoi8r: "KOI8-R",
-      koi: "KOI8-R",
-      koi8: "KOI8-R",
-      "koi8-r": "KOI8-R",
-      koi8_r: "KOI8-R",
-      "koi8-ru": "KOI8-U",
-      "koi8-u": "KOI8-U",
-      csmacintosh: "macintosh",
-      mac: "macintosh",
-      macintosh: "macintosh",
-      "x-mac-roman": "macintosh",
-      "dos-874": "windows-874",
-      "iso-8859-11": "windows-874",
-      "iso8859-11": "windows-874",
-      iso885911: "windows-874",
-      "tis-620": "windows-874",
-      "windows-874": "windows-874",
-      cp1250: "windows-1250",
-      "windows-1250": "windows-1250",
-      "x-cp1250": "windows-1250",
-      cp1251: "windows-1251",
-      "windows-1251": "windows-1251",
-      "x-cp1251": "windows-1251",
-      "ansi_x3.4-1968": "windows-1252",
-      ascii: "windows-1252",
-      cp1252: "windows-1252",
-      cp819: "windows-1252",
-      csisolatin1: "windows-1252",
-      ibm819: "windows-1252",
-      "iso-8859-1": "windows-1252",
-      "iso-ir-100": "windows-1252",
-      "iso8859-1": "windows-1252",
-      iso88591: "windows-1252",
-      "iso_8859-1": "windows-1252",
-      "iso_8859-1:1987": "windows-1252",
-      l1: "windows-1252",
-      latin1: "windows-1252",
-      "us-ascii": "windows-1252",
-      "windows-1252": "windows-1252",
-      "x-cp1252": "windows-1252",
-      cp1253: "windows-1253",
-      "windows-1253": "windows-1253",
-      "x-cp1253": "windows-1253",
-      cp1254: "windows-1254",
-      csisolatin5: "windows-1254",
-      "iso-8859-9": "windows-1254",
-      "iso-ir-148": "windows-1254",
-      "iso8859-9": "windows-1254",
-      iso88599: "windows-1254",
-      "iso_8859-9": "windows-1254",
-      "iso_8859-9:1989": "windows-1254",
-      l5: "windows-1254",
-      latin5: "windows-1254",
-      "windows-1254": "windows-1254",
-      "x-cp1254": "windows-1254",
-      cp1255: "windows-1255",
-      "windows-1255": "windows-1255",
-      "x-cp1255": "windows-1255",
-      cp1256: "windows-1256",
-      "windows-1256": "windows-1256",
-      "x-cp1256": "windows-1256",
-      cp1257: "windows-1257",
-      "windows-1257": "windows-1257",
-      "x-cp1257": "windows-1257",
-      cp1258: "windows-1258",
-      "windows-1258": "windows-1258",
-      "x-cp1258": "windows-1258",
-      chinese: "GBK",
-      csgb2312: "GBK",
-      csiso58gb231280: "GBK",
-      gb2312: "GBK",
-      gb_2312: "GBK",
-      "gb_2312-80": "GBK",
-      gbk: "GBK",
-      "iso-ir-58": "GBK",
-      "x-gbk": "GBK",
-      gb18030: "gb18030",
-      big5: "Big5",
-      "big5-hkscs": "Big5",
-      "cn-big5": "Big5",
-      csbig5: "Big5",
-      "x-x-big5": "Big5",
-      cseucpkdfmtjapanese: "EUC-JP",
-      "euc-jp": "EUC-JP",
-      "x-euc-jp": "EUC-JP",
-      csshiftjis: "Shift_JIS",
-      ms932: "Shift_JIS",
-      ms_kanji: "Shift_JIS",
-      "shift-jis": "Shift_JIS",
-      shift_jis: "Shift_JIS",
-      sjis: "Shift_JIS",
-      "windows-31j": "Shift_JIS",
-      "x-sjis": "Shift_JIS",
-      cseuckr: "EUC-KR",
-      csksc56011987: "EUC-KR",
-      "euc-kr": "EUC-KR",
-      "iso-ir-149": "EUC-KR",
-      korean: "EUC-KR",
-      "ks_c_5601-1987": "EUC-KR",
-      "ks_c_5601-1989": "EUC-KR",
-      ksc5601: "EUC-KR",
-      ksc_5601: "EUC-KR",
-      "windows-949": "EUC-KR",
-      "utf-16be": "UTF-16BE",
-      "utf-16": "UTF-16LE",
-      "utf-16le": "UTF-16LE"
-    };
-  }
-});
-
-// node_modules/mailparser/node_modules/libmime/lib/charset.js
-var require_charset2 = __commonJS({
-  "node_modules/mailparser/node_modules/libmime/lib/charset.js"(exports, module) {
-    "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var iconv2 = require_lib();
-    var encodingJapanese2 = require_src();
-    var charsets = require_charsets2();
-    var charset = module.exports = {
-      /**
-       * Encodes an unicode string into an Buffer object as UTF-8
-       *
-       * We force UTF-8 here, no strange encodings allowed.
-       *
-       * @param {String} str String to be encoded
-       * @return {Buffer} UTF-8 encoded typed array
-       */
-      encode(str) {
-        return Buffer2.from(str, "utf-8");
-      },
-      /**
-       * Decodes a string from Buffer to an unicode string using specified encoding
-       * NB! Throws if unknown charset is used
-       *
-       * @param {Buffer} buf Binary data to be decoded
-       * @param {String} [fromCharset='UTF-8'] Binary data is decoded into string using this charset
-       * @return {String} Decoded string
-       */
-      decode(buf, fromCharset) {
-        fromCharset = charset.normalizeCharset(fromCharset || "UTF-8");
-        if (/^(us-)?ascii|utf-8|7bit$/i.test(fromCharset)) {
-          return buf.toString("utf-8");
-        }
-        try {
-          if (/^jis|^iso-?2022-?jp|^EUCJP/i.test(fromCharset)) {
-            if (typeof buf === "string") {
-              buf = Buffer2.from(buf);
-            }
-            try {
-              let output3 = encodingJapanese2.convert(buf, {
-                to: "UNICODE",
-                from: fromCharset,
-                type: "string"
-              });
-              if (typeof output3 === "string") {
-                return output3;
-              }
-            } catch (err) {
-            }
-          }
-          return iconv2.decode(buf, fromCharset);
-        } catch (err) {
-          return buf.toString();
-        }
-      },
-      /**
-       * Convert a string from specific encoding to UTF-8 Buffer
-       *
-       * @param {String|Buffer} data String or Buffer to be encoded
-       * @param {String} [fromCharset='UTF-8'] Source encoding for the string
-       * @return {Buffer} UTF-8 encoded typed array
-       */
-      convert(data, fromCharset) {
-        fromCharset = charset.normalizeCharset(fromCharset || "UTF-8");
-        let bufString;
-        if (typeof data !== "string") {
-          if (/^(us-)?ascii|utf-8|7bit$/i.test(fromCharset)) {
-            return data;
-          }
-          bufString = charset.decode(data, fromCharset);
-          return charset.encode(bufString);
-        }
-        return charset.encode(data);
-      },
-      /**
-       * Converts well known invalid character set names to proper names.
-       * eg. win-1257 will be converted to windows-1257. Missing or non-string
-       * input defaults to UTF-8.
-       *
-       * @param {String} charset Charset name to convert
-       * @return {String} Canonicalized charset name
-       */
-      normalizeCharset(charset2) {
-        charset2 = (charset2 || "UTF-8").toString().toLowerCase().trim();
-        if (charsets.hasOwnProperty(charset2) && charsets[charset2]) {
-          return charsets[charset2];
-        }
-        charset2 = charset2.replace(/^utf[-_]?(\d+)/, "utf-$1").replace(/^(?:us[-_]?)ascii/, "windows-1252").replace(/^win(?:dows)?[-_]?(\d+)/, "windows-$1").replace(/^(?:latin|iso[-_]?8859)?[-_]?(\d+)/, "iso-8859-$1").replace(/^l[-_]?(\d+)/, "iso-8859-$1");
-        if (charsets.hasOwnProperty(charset2) && charsets[charset2]) {
-          return charsets[charset2];
-        }
-        return charset2.toUpperCase();
-      }
-    };
-  }
-});
-
-// node_modules/mailparser/node_modules/libbase64/lib/libbase64.js
-var require_libbase642 = __commonJS({
-  "node_modules/mailparser/node_modules/libbase64/lib/libbase64.js"(exports, module) {
-    "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var stream = __require("node:stream");
-    var Transform12 = stream.Transform;
-    function encode7(buffer) {
-      if (typeof buffer === "string") {
-        buffer = Buffer2.from(buffer, "utf-8");
-      }
-      return buffer.toString("base64");
-    }
-    function decode4(str) {
-      str = str || "";
-      if (typeof str === "string") {
-        let padPos = str.indexOf("=");
-        if (padPos >= 0 && /[a-zA-Z0-9+/\-_]/.test(str.substr(padPos))) {
-          let parts = [];
-          for (let segment of str.split(/[=]+/)) {
-            if (segment) {
-              parts.push(Buffer2.from(segment, "base64"));
-            }
-          }
-          return Buffer2.concat(parts);
-        }
-      }
-      return Buffer2.from(str, "base64");
-    }
-    function normalizeLineLength(lineLength) {
-      lineLength = Math.floor(Number(lineLength));
-      return Number.isFinite(lineLength) && lineLength >= 1 ? lineLength : 76;
-    }
-    function wrapBuffer(src, lineLength, final) {
-      let lines = Math.ceil(src.length / lineLength);
-      let complete = Math.max(lines - 1, 0);
-      let rest = src.length - complete * lineLength;
-      let output3 = Buffer2.allocUnsafe(complete * (lineLength + 2) + (final ? rest : 0));
-      let to = 0;
-      for (let from = 0; from < complete * lineLength; from += lineLength) {
-        src.copy(output3, to, from, from + lineLength);
-        to += lineLength;
-        output3[to++] = 13;
-        output3[to++] = 10;
-      }
-      if (final) {
-        to += src.copy(output3, to, complete * lineLength);
-        rest = 0;
-      }
-      if (to !== output3.length) {
-        throw new Error("Unexpected wrapped length");
-      }
-      return { output: output3, rest };
-    }
-    function wrap3(str, lineLength) {
-      str = (str || "").toString();
-      lineLength = normalizeLineLength(lineLength);
-      if (str.length <= lineLength) {
-        return str;
-      }
-      if (/[^\u0000-\u00ff]|[\r\n]/.test(str) || str.trim() !== str) {
-        return legacyWrap(str, lineLength);
-      }
-      return wrapBuffer(Buffer2.from(str, "latin1"), lineLength, true).output.toString("latin1");
-    }
-    function legacyWrap(str, lineLength) {
-      let result = [];
-      let pos = 0;
-      let chunkLength = lineLength * 1024;
-      while (pos < str.length) {
-        let wrappedLines = str.substr(pos, chunkLength).replace(new RegExp(".{" + lineLength + "}", "g"), "$&\r\n").trim();
-        result.push(wrappedLines);
-        pos += chunkLength;
-      }
-      return result.join("\r\n").trim();
-    }
-    var Encoder3 = class extends Transform12 {
-      constructor(options) {
-        super();
-        this.options = options || {};
-        if (this.options.lineLength !== false) {
-          this.options.lineLength = normalizeLineLength(this.options.lineLength);
-        }
-        this.skipStartBytes = Number(this.options.skipStartBytes) || 0;
-        this.limitOutputBytes = Number(this.options.limitOutputBytes || this.options.limitOutbutBytes) || 0;
-        this._curLine = this.options.startPadding || "";
-        this._remainingBytes = null;
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-      }
-      _writeChunk(chunk) {
-        if (this.skipStartBytes) {
-          if (chunk.length <= this.skipStartBytes) {
-            this.skipStartBytes -= chunk.length;
-            return;
-          }
-          chunk = chunk.subarray(this.skipStartBytes);
-          this.skipStartBytes = 0;
-        }
-        if (this.limitOutputBytes) {
-          if (this.outputBytes >= this.limitOutputBytes) {
-            return;
-          }
-          if (this.outputBytes + chunk.length > this.limitOutputBytes) {
-            chunk = chunk.subarray(0, this.limitOutputBytes - this.outputBytes);
-          }
-        }
-        this.outputBytes += chunk.length;
-        this.push(chunk);
-      }
-      /**
-       * Emits the encoded characters `b64` that follow the current line, keeping what can not be emitted
-       * yet as the new current line
-       */
-      _emit(b64, final) {
-        let src = Buffer2.from(this._curLine + b64, "latin1");
-        if (!src.length) {
-          return;
-        }
-        if (!this.options.lineLength) {
-          this._curLine = "";
-          return this._writeChunk(src);
-        }
-        let { output: output3, rest } = wrapBuffer(src, this.options.lineLength, final);
-        this._curLine = rest ? src.toString("latin1", src.length - rest) : "";
-        if (output3.length) {
-          this._writeChunk(output3);
-        }
-      }
-      _transform(chunk, encoding, done) {
-        if (encoding !== "buffer") {
-          chunk = Buffer2.from(chunk, encoding);
-        }
-        if (!chunk || !chunk.length) {
-          return done();
-        }
-        this.inputBytes += chunk.length;
-        if (this._remainingBytes) {
-          chunk = Buffer2.concat([this._remainingBytes, chunk], this._remainingBytes.length + chunk.length);
-          this._remainingBytes = null;
-        }
-        let extra = chunk.length % 3;
-        if (extra) {
-          this._remainingBytes = chunk.subarray(chunk.length - extra);
-          chunk = chunk.subarray(0, chunk.length - extra);
-        }
-        this._emit(encode7(chunk), false);
-        done();
-      }
-      _flush(done) {
-        this._emit(this._remainingBytes ? encode7(this._remainingBytes) : "", true);
-        done();
-      }
-    };
-    var Decoder = class extends Transform12 {
-      constructor(options) {
-        super();
-        this.options = options || {};
-        this._curLine = "";
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-      }
-      _transform(chunk, encoding, done) {
-        if (!chunk || !chunk.length) {
-          return setImmediate(done);
-        }
-        this.inputBytes += chunk.length;
-        let b64 = this._curLine + chunk.toString("ascii");
-        this._curLine = "";
-        if (/[^a-zA-Z0-9+/=]/.test(b64)) {
-          b64 = b64.replace(/[^a-zA-Z0-9+/=]/g, "");
-        }
-        let padded = "";
-        let lastPad = b64.lastIndexOf("=");
-        if (lastPad >= 0) {
-          padded = b64.substr(0, lastPad + 1);
-          b64 = b64.substr(lastPad + 1);
-        }
-        if (b64.length < 4) {
-          this._curLine = b64;
-          b64 = "";
-        } else if (b64.length % 4) {
-          this._curLine = b64.substr(-b64.length % 4);
-          b64 = b64.substr(0, b64.length - this._curLine.length);
-        }
-        b64 = padded + b64;
-        if (b64) {
-          let buf = decode4(b64);
-          this.outputBytes += buf.length;
-          this.push(buf);
-        }
-        setImmediate(done);
-      }
-      _flush(done) {
-        if (this._curLine) {
-          let buf = decode4(this._curLine);
-          this.outputBytes += buf.length;
-          this.push(buf);
-          this._curLine = "";
-        }
-        setImmediate(done);
-      }
-    };
-    module.exports = {
-      encode: encode7,
-      decode: decode4,
-      wrap: wrap3,
-      Encoder: Encoder3,
-      Decoder
-    };
-  }
-});
-
-// node_modules/mailparser/node_modules/libmime/lib/mimetypes.js
-var require_mimetypes2 = __commonJS({
-  "node_modules/mailparser/node_modules/libmime/lib/mimetypes.js"(exports, module) {
-    "use strict";
-    module.exports = {
-      list: {
-        "application/acad": "dwg",
-        "application/applixware": "aw",
-        "application/arj": "arj",
-        "application/atom+xml": "xml",
-        "application/atomcat+xml": "atomcat",
-        "application/atomsvc+xml": "atomsvc",
-        "application/base64": ["mm", "mme"],
-        "application/binhex": "hqx",
-        "application/binhex4": "hqx",
-        "application/book": ["book", "boo"],
-        "application/ccxml+xml,": "ccxml",
-        "application/cdf": "cdf",
-        "application/cdmi-capability": "cdmia",
-        "application/cdmi-container": "cdmic",
-        "application/cdmi-domain": "cdmid",
-        "application/cdmi-object": "cdmio",
-        "application/cdmi-queue": "cdmiq",
-        "application/clariscad": "ccad",
-        "application/commonground": "dp",
-        "application/cu-seeme": "cu",
-        "application/davmount+xml": "davmount",
-        "application/drafting": "drw",
-        "application/dsptype": "tsp",
-        "application/dssc+der": "dssc",
-        "application/dssc+xml": "xdssc",
-        "application/dxf": "dxf",
-        "application/ecmascript": ["js", "es"],
-        "application/emma+xml": "emma",
-        "application/envoy": "evy",
-        "application/epub+zip": "epub",
-        "application/excel": ["xls", "xl", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
-        "application/exi": "exi",
-        "application/font-tdpfr": "pfr",
-        "application/fractals": "fif",
-        "application/freeloader": "frl",
-        "application/futuresplash": "spl",
-        "application/gnutar": "tgz",
-        "application/groupwise": "vew",
-        "application/hlp": "hlp",
-        "application/hta": "hta",
-        "application/hyperstudio": "stk",
-        "application/i-deas": "unv",
-        "application/iges": ["iges", "igs"],
-        "application/inf": "inf",
-        "application/internet-property-stream": "acx",
-        "application/ipfix": "ipfix",
-        "application/java": "class",
-        "application/java-archive": "jar",
-        "application/java-byte-code": "class",
-        "application/java-serialized-object": "ser",
-        "application/java-vm": "class",
-        "application/javascript": "js",
-        "application/json": "json",
-        "application/lha": "lha",
-        "application/lzx": "lzx",
-        "application/mac-binary": "bin",
-        "application/mac-binhex": "hqx",
-        "application/mac-binhex40": "hqx",
-        "application/mac-compactpro": "cpt",
-        "application/macbinary": "bin",
-        "application/mads+xml": "mads",
-        "application/marc": "mrc",
-        "application/marcxml+xml": "mrcx",
-        "application/mathematica": "ma",
-        "application/mathml+xml": "mathml",
-        "application/mbedlet": "mbd",
-        "application/mbox": "mbox",
-        "application/mcad": "mcd",
-        "application/mediaservercontrol+xml": "mscml",
-        "application/metalink4+xml": "meta4",
-        "application/mets+xml": "mets",
-        "application/mime": "aps",
-        "application/mods+xml": "mods",
-        "application/mp21": "m21",
-        "application/mp4": "mp4",
-        "application/mspowerpoint": ["ppt", "pot", "pps", "ppz"],
-        "application/msword": ["doc", "dot", "w6w", "wiz", "word"],
-        "application/mswrite": "wri",
-        "application/mxf": "mxf",
-        "application/netmc": "mcp",
-        "application/octet-stream": ["*"],
-        "application/oda": "oda",
-        "application/oebps-package+xml": "opf",
-        "application/ogg": "ogx",
-        "application/olescript": "axs",
-        "application/onenote": "onetoc",
-        "application/patch-ops-error+xml": "xer",
-        "application/pdf": "pdf",
-        "application/pgp-encrypted": "asc",
-        "application/pgp-signature": "pgp",
-        "application/pics-rules": "prf",
-        "application/pkcs-12": "p12",
-        "application/pkcs-crl": "crl",
-        "application/pkcs10": "p10",
-        "application/pkcs7-mime": ["p7c", "p7m"],
-        "application/pkcs7-signature": "p7s",
-        "application/pkcs8": "p8",
-        "application/pkix-attr-cert": "ac",
-        "application/pkix-cert": ["cer", "crt"],
-        "application/pkix-crl": "crl",
-        "application/pkix-pkipath": "pkipath",
-        "application/pkixcmp": "pki",
-        "application/plain": "text",
-        "application/pls+xml": "pls",
-        "application/postscript": ["ps", "ai", "eps"],
-        "application/powerpoint": "ppt",
-        "application/pro_eng": ["part", "prt"],
-        "application/prs.cww": "cww",
-        "application/pskc+xml": "pskcxml",
-        "application/rdf+xml": "rdf",
-        "application/reginfo+xml": "rif",
-        "application/relax-ng-compact-syntax": "rnc",
-        "application/resource-lists+xml": "rl",
-        "application/resource-lists-diff+xml": "rld",
-        "application/ringing-tones": "rng",
-        "application/rls-services+xml": "rs",
-        "application/rsd+xml": "rsd",
-        "application/rss+xml": "xml",
-        "application/rtf": ["rtf", "rtx"],
-        "application/sbml+xml": "sbml",
-        "application/scvp-cv-request": "scq",
-        "application/scvp-cv-response": "scs",
-        "application/scvp-vp-request": "spq",
-        "application/scvp-vp-response": "spp",
-        "application/sdp": "sdp",
-        "application/sea": "sea",
-        "application/set": "set",
-        "application/set-payment-initiation": "setpay",
-        "application/set-registration-initiation": "setreg",
-        "application/shf+xml": "shf",
-        "application/sla": "stl",
-        "application/smil": ["smi", "smil"],
-        "application/smil+xml": "smi",
-        "application/solids": "sol",
-        "application/sounder": "sdr",
-        "application/sparql-query": "rq",
-        "application/sparql-results+xml": "srx",
-        "application/srgs": "gram",
-        "application/srgs+xml": "grxml",
-        "application/sru+xml": "sru",
-        "application/ssml+xml": "ssml",
-        "application/step": ["step", "stp"],
-        "application/streamingmedia": "ssm",
-        "application/tei+xml": "tei",
-        "application/thraud+xml": "tfi",
-        "application/timestamped-data": "tsd",
-        "application/toolbook": "tbk",
-        "application/vda": "vda",
-        "application/vnd.3gpp.pic-bw-large": "plb",
-        "application/vnd.3gpp.pic-bw-small": "psb",
-        "application/vnd.3gpp.pic-bw-var": "pvb",
-        "application/vnd.3gpp2.tcap": "tcap",
-        "application/vnd.3m.post-it-notes": "pwn",
-        "application/vnd.accpac.simply.aso": "aso",
-        "application/vnd.accpac.simply.imp": "imp",
-        "application/vnd.acucobol": "acu",
-        "application/vnd.acucorp": "atc",
-        "application/vnd.adobe.air-application-installer-package+zip": "air",
-        "application/vnd.adobe.fxp": "fxp",
-        "application/vnd.adobe.xdp+xml": "xdp",
-        "application/vnd.adobe.xfdf": "xfdf",
-        "application/vnd.ahead.space": "ahead",
-        "application/vnd.airzip.filesecure.azf": "azf",
-        "application/vnd.airzip.filesecure.azs": "azs",
-        "application/vnd.amazon.ebook": "azw",
-        "application/vnd.americandynamics.acc": "acc",
-        "application/vnd.amiga.ami": "ami",
-        "application/vnd.android.package-archive": "apk",
-        "application/vnd.anser-web-certificate-issue-initiation": "cii",
-        "application/vnd.anser-web-funds-transfer-initiation": "fti",
-        "application/vnd.antix.game-component": "atx",
-        "application/vnd.apple.installer+xml": "mpkg",
-        "application/vnd.apple.mpegurl": "m3u8",
-        "application/vnd.aristanetworks.swi": "swi",
-        "application/vnd.audiograph": "aep",
-        "application/vnd.blueice.multipass": "mpm",
-        "application/vnd.bmi": "bmi",
-        "application/vnd.businessobjects": "rep",
-        "application/vnd.chemdraw+xml": "cdxml",
-        "application/vnd.chipnuts.karaoke-mmd": "mmd",
-        "application/vnd.cinderella": "cdy",
-        "application/vnd.claymore": "cla",
-        "application/vnd.cloanto.rp9": "rp9",
-        "application/vnd.clonk.c4group": "c4g",
-        "application/vnd.cluetrust.cartomobile-config": "c11amc",
-        "application/vnd.cluetrust.cartomobile-config-pkg": "c11amz",
-        "application/vnd.commonspace": "csp",
-        "application/vnd.contact.cmsg": "cdbcmsg",
-        "application/vnd.cosmocaller": "cmc",
-        "application/vnd.crick.clicker": "clkx",
-        "application/vnd.crick.clicker.keyboard": "clkk",
-        "application/vnd.crick.clicker.palette": "clkp",
-        "application/vnd.crick.clicker.template": "clkt",
-        "application/vnd.crick.clicker.wordbank": "clkw",
-        "application/vnd.criticaltools.wbs+xml": "wbs",
-        "application/vnd.ctc-posml": "pml",
-        "application/vnd.cups-ppd": "ppd",
-        "application/vnd.curl.car": "car",
-        "application/vnd.curl.pcurl": "pcurl",
-        "application/vnd.data-vision.rdz": "rdz",
-        "application/vnd.denovo.fcselayout-link": "fe_launch",
-        "application/vnd.dna": "dna",
-        "application/vnd.dolby.mlp": "mlp",
-        "application/vnd.dpgraph": "dpg",
-        "application/vnd.dreamfactory": "dfac",
-        "application/vnd.dvb.ait": "ait",
-        "application/vnd.dvb.service": "svc",
-        "application/vnd.dynageo": "geo",
-        "application/vnd.ecowin.chart": "mag",
-        "application/vnd.enliven": "nml",
-        "application/vnd.epson.esf": "esf",
-        "application/vnd.epson.msf": "msf",
-        "application/vnd.epson.quickanime": "qam",
-        "application/vnd.epson.salt": "slt",
-        "application/vnd.epson.ssf": "ssf",
-        "application/vnd.eszigno3+xml": "es3",
-        "application/vnd.ezpix-album": "ez2",
-        "application/vnd.ezpix-package": "ez3",
-        "application/vnd.fdf": "fdf",
-        "application/vnd.fdsn.seed": "seed",
-        "application/vnd.flographit": "gph",
-        "application/vnd.fluxtime.clip": "ftc",
-        "application/vnd.framemaker": "fm",
-        "application/vnd.frogans.fnc": "fnc",
-        "application/vnd.frogans.ltf": "ltf",
-        "application/vnd.fsc.weblaunch": "fsc",
-        "application/vnd.fujitsu.oasys": "oas",
-        "application/vnd.fujitsu.oasys2": "oa2",
-        "application/vnd.fujitsu.oasys3": "oa3",
-        "application/vnd.fujitsu.oasysgp": "fg5",
-        "application/vnd.fujitsu.oasysprs": "bh2",
-        "application/vnd.fujixerox.ddd": "ddd",
-        "application/vnd.fujixerox.docuworks": "xdw",
-        "application/vnd.fujixerox.docuworks.binder": "xbd",
-        "application/vnd.fuzzysheet": "fzs",
-        "application/vnd.genomatix.tuxedo": "txd",
-        "application/vnd.geogebra.file": "ggb",
-        "application/vnd.geogebra.tool": "ggt",
-        "application/vnd.geometry-explorer": "gex",
-        "application/vnd.geonext": "gxt",
-        "application/vnd.geoplan": "g2w",
-        "application/vnd.geospace": "g3w",
-        "application/vnd.gmx": "gmx",
-        "application/vnd.google-earth.kml+xml": "kml",
-        "application/vnd.google-earth.kmz": "kmz",
-        "application/vnd.grafeq": "gqf",
-        "application/vnd.groove-account": "gac",
-        "application/vnd.groove-help": "ghf",
-        "application/vnd.groove-identity-message": "gim",
-        "application/vnd.groove-injector": "grv",
-        "application/vnd.groove-tool-message": "gtm",
-        "application/vnd.groove-tool-template": "tpl",
-        "application/vnd.groove-vcard": "vcg",
-        "application/vnd.hal+xml": "hal",
-        "application/vnd.handheld-entertainment+xml": "zmm",
-        "application/vnd.hbci": "hbci",
-        "application/vnd.hhe.lesson-player": "les",
-        "application/vnd.hp-hpgl": ["hgl", "hpg", "hpgl"],
-        "application/vnd.hp-hpid": "hpid",
-        "application/vnd.hp-hps": "hps",
-        "application/vnd.hp-jlyt": "jlt",
-        "application/vnd.hp-pcl": "pcl",
-        "application/vnd.hp-pclxl": "pclxl",
-        "application/vnd.hydrostatix.sof-data": "sfd-hdstx",
-        "application/vnd.hzn-3d-crossword": "x3d",
-        "application/vnd.ibm.minipay": "mpy",
-        "application/vnd.ibm.modcap": "afp",
-        "application/vnd.ibm.rights-management": "irm",
-        "application/vnd.ibm.secure-container": "sc",
-        "application/vnd.iccprofile": "icc",
-        "application/vnd.igloader": "igl",
-        "application/vnd.immervision-ivp": "ivp",
-        "application/vnd.immervision-ivu": "ivu",
-        "application/vnd.insors.igm": "igm",
-        "application/vnd.intercon.formnet": "xpw",
-        "application/vnd.intergeo": "i2g",
-        "application/vnd.intu.qbo": "qbo",
-        "application/vnd.intu.qfx": "qfx",
-        "application/vnd.ipunplugged.rcprofile": "rcprofile",
-        "application/vnd.irepository.package+xml": "irp",
-        "application/vnd.is-xpr": "xpr",
-        "application/vnd.isac.fcs": "fcs",
-        "application/vnd.jam": "jam",
-        "application/vnd.jcp.javame.midlet-rms": "rms",
-        "application/vnd.jisp": "jisp",
-        "application/vnd.joost.joda-archive": "joda",
-        "application/vnd.kahootz": "ktz",
-        "application/vnd.kde.karbon": "karbon",
-        "application/vnd.kde.kchart": "chrt",
-        "application/vnd.kde.kformula": "kfo",
-        "application/vnd.kde.kivio": "flw",
-        "application/vnd.kde.kontour": "kon",
-        "application/vnd.kde.kpresenter": "kpr",
-        "application/vnd.kde.kspread": "ksp",
-        "application/vnd.kde.kword": "kwd",
-        "application/vnd.kenameaapp": "htke",
-        "application/vnd.kidspiration": "kia",
-        "application/vnd.kinar": "kne",
-        "application/vnd.koan": "skp",
-        "application/vnd.kodak-descriptor": "sse",
-        "application/vnd.las.las+xml": "lasxml",
-        "application/vnd.llamagraphics.life-balance.desktop": "lbd",
-        "application/vnd.llamagraphics.life-balance.exchange+xml": "lbe",
-        "application/vnd.lotus-1-2-3": "123",
-        "application/vnd.lotus-approach": "apr",
-        "application/vnd.lotus-freelance": "pre",
-        "application/vnd.lotus-notes": "nsf",
-        "application/vnd.lotus-organizer": "org",
-        "application/vnd.lotus-screencam": "scm",
-        "application/vnd.lotus-wordpro": "lwp",
-        "application/vnd.macports.portpkg": "portpkg",
-        "application/vnd.mcd": "mcd",
-        "application/vnd.medcalcdata": "mc1",
-        "application/vnd.mediastation.cdkey": "cdkey",
-        "application/vnd.mfer": "mwf",
-        "application/vnd.mfmp": "mfm",
-        "application/vnd.micrografx.flo": "flo",
-        "application/vnd.micrografx.igx": "igx",
-        "application/vnd.mif": "mif",
-        "application/vnd.mobius.daf": "daf",
-        "application/vnd.mobius.dis": "dis",
-        "application/vnd.mobius.mbk": "mbk",
-        "application/vnd.mobius.mqy": "mqy",
-        "application/vnd.mobius.msl": "msl",
-        "application/vnd.mobius.plc": "plc",
-        "application/vnd.mobius.txf": "txf",
-        "application/vnd.mophun.application": "mpn",
-        "application/vnd.mophun.certificate": "mpc",
-        "application/vnd.mozilla.xul+xml": "xul",
-        "application/vnd.ms-artgalry": "cil",
-        "application/vnd.ms-cab-compressed": "cab",
-        "application/vnd.ms-excel": ["xls", "xla", "xlc", "xlm", "xlt", "xlw", "xlb", "xll"],
-        "application/vnd.ms-excel.addin.macroenabled.12": "xlam",
-        "application/vnd.ms-excel.sheet.binary.macroenabled.12": "xlsb",
-        "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
-        "application/vnd.ms-excel.template.macroenabled.12": "xltm",
-        "application/vnd.ms-fontobject": "eot",
-        "application/vnd.ms-htmlhelp": "chm",
-        "application/vnd.ms-ims": "ims",
-        "application/vnd.ms-lrm": "lrm",
-        "application/vnd.ms-officetheme": "thmx",
-        "application/vnd.ms-outlook": "msg",
-        "application/vnd.ms-pki.certstore": "sst",
-        "application/vnd.ms-pki.pko": "pko",
-        "application/vnd.ms-pki.seccat": "cat",
-        "application/vnd.ms-pki.stl": "stl",
-        "application/vnd.ms-pkicertstore": "sst",
-        "application/vnd.ms-pkiseccat": "cat",
-        "application/vnd.ms-pkistl": "stl",
-        "application/vnd.ms-powerpoint": ["ppt", "pot", "pps", "ppa", "pwz"],
-        "application/vnd.ms-powerpoint.addin.macroenabled.12": "ppam",
-        "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptm",
-        "application/vnd.ms-powerpoint.slide.macroenabled.12": "sldm",
-        "application/vnd.ms-powerpoint.slideshow.macroenabled.12": "ppsm",
-        "application/vnd.ms-powerpoint.template.macroenabled.12": "potm",
-        "application/vnd.ms-project": "mpp",
-        "application/vnd.ms-word.document.macroenabled.12": "docm",
-        "application/vnd.ms-word.template.macroenabled.12": "dotm",
-        "application/vnd.ms-works": ["wks", "wcm", "wdb", "wps"],
-        "application/vnd.ms-wpl": "wpl",
-        "application/vnd.ms-xpsdocument": "xps",
-        "application/vnd.mseq": "mseq",
-        "application/vnd.musician": "mus",
-        "application/vnd.muvee.style": "msty",
-        "application/vnd.neurolanguage.nlu": "nlu",
-        "application/vnd.noblenet-directory": "nnd",
-        "application/vnd.noblenet-sealer": "nns",
-        "application/vnd.noblenet-web": "nnw",
-        "application/vnd.nokia.configuration-message": "ncm",
-        "application/vnd.nokia.n-gage.data": "ngdat",
-        "application/vnd.nokia.n-gage.symbian.install": "n-gage",
-        "application/vnd.nokia.radio-preset": "rpst",
-        "application/vnd.nokia.radio-presets": "rpss",
-        "application/vnd.nokia.ringing-tone": "rng",
-        "application/vnd.novadigm.edm": "edm",
-        "application/vnd.novadigm.edx": "edx",
-        "application/vnd.novadigm.ext": "ext",
-        "application/vnd.oasis.opendocument.chart": "odc",
-        "application/vnd.oasis.opendocument.chart-template": "otc",
-        "application/vnd.oasis.opendocument.database": "odb",
-        "application/vnd.oasis.opendocument.formula": "odf",
-        "application/vnd.oasis.opendocument.formula-template": "odft",
-        "application/vnd.oasis.opendocument.graphics": "odg",
-        "application/vnd.oasis.opendocument.graphics-template": "otg",
-        "application/vnd.oasis.opendocument.image": "odi",
-        "application/vnd.oasis.opendocument.image-template": "oti",
-        "application/vnd.oasis.opendocument.presentation": "odp",
-        "application/vnd.oasis.opendocument.presentation-template": "otp",
-        "application/vnd.oasis.opendocument.spreadsheet": "ods",
-        "application/vnd.oasis.opendocument.spreadsheet-template": "ots",
-        "application/vnd.oasis.opendocument.text": "odt",
-        "application/vnd.oasis.opendocument.text-master": "odm",
-        "application/vnd.oasis.opendocument.text-template": "ott",
-        "application/vnd.oasis.opendocument.text-web": "oth",
-        "application/vnd.olpc-sugar": "xo",
-        "application/vnd.oma.dd2+xml": "dd2",
-        "application/vnd.openofficeorg.extension": "oxt",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-        "application/vnd.openxmlformats-officedocument.presentationml.slide": "sldx",
-        "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "ppsx",
-        "application/vnd.openxmlformats-officedocument.presentationml.template": "potx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.template": "xltx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.template": "dotx",
-        "application/vnd.osgeo.mapguide.package": "mgp",
-        "application/vnd.osgi.dp": "dp",
-        "application/vnd.palm": "pdb",
-        "application/vnd.pawaafile": "paw",
-        "application/vnd.pg.format": "str",
-        "application/vnd.pg.osasli": "ei6",
-        "application/vnd.picsel": "efif",
-        "application/vnd.pmi.widget": "wg",
-        "application/vnd.pocketlearn": "plf",
-        "application/vnd.powerbuilder6": "pbd",
-        "application/vnd.previewsystems.box": "box",
-        "application/vnd.proteus.magazine": "mgz",
-        "application/vnd.publishare-delta-tree": "qps",
-        "application/vnd.pvi.ptid1": "ptid",
-        "application/vnd.quark.quarkxpress": "qxd",
-        "application/vnd.realvnc.bed": "bed",
-        "application/vnd.recordare.musicxml": "mxl",
-        "application/vnd.recordare.musicxml+xml": "musicxml",
-        "application/vnd.rig.cryptonote": "cryptonote",
-        "application/vnd.rim.cod": "cod",
-        "application/vnd.rn-realmedia": "rm",
-        "application/vnd.rn-realplayer": "rnx",
-        "application/vnd.route66.link66+xml": "link66",
-        "application/vnd.sailingtracker.track": "st",
-        "application/vnd.seemail": "see",
-        "application/vnd.sema": "sema",
-        "application/vnd.semd": "semd",
-        "application/vnd.semf": "semf",
-        "application/vnd.shana.informed.formdata": "ifm",
-        "application/vnd.shana.informed.formtemplate": "itp",
-        "application/vnd.shana.informed.interchange": "iif",
-        "application/vnd.shana.informed.package": "ipk",
-        "application/vnd.simtech-mindmapper": "twd",
-        "application/vnd.smaf": "mmf",
-        "application/vnd.smart.teacher": "teacher",
-        "application/vnd.solent.sdkm+xml": "sdkm",
-        "application/vnd.spotfire.dxp": "dxp",
-        "application/vnd.spotfire.sfs": "sfs",
-        "application/vnd.stardivision.calc": "sdc",
-        "application/vnd.stardivision.draw": "sda",
-        "application/vnd.stardivision.impress": "sdd",
-        "application/vnd.stardivision.math": "smf",
-        "application/vnd.stardivision.writer": "sdw",
-        "application/vnd.stardivision.writer-global": "sgl",
-        "application/vnd.stepmania.stepchart": "sm",
-        "application/vnd.sun.xml.calc": "sxc",
-        "application/vnd.sun.xml.calc.template": "stc",
-        "application/vnd.sun.xml.draw": "sxd",
-        "application/vnd.sun.xml.draw.template": "std",
-        "application/vnd.sun.xml.impress": "sxi",
-        "application/vnd.sun.xml.impress.template": "sti",
-        "application/vnd.sun.xml.math": "sxm",
-        "application/vnd.sun.xml.writer": "sxw",
-        "application/vnd.sun.xml.writer.global": "sxg",
-        "application/vnd.sun.xml.writer.template": "stw",
-        "application/vnd.sus-calendar": "sus",
-        "application/vnd.svd": "svd",
-        "application/vnd.symbian.install": "sis",
-        "application/vnd.syncml+xml": "xsm",
-        "application/vnd.syncml.dm+wbxml": "bdm",
-        "application/vnd.syncml.dm+xml": "xdm",
-        "application/vnd.tao.intent-module-archive": "tao",
-        "application/vnd.tmobile-livetv": "tmo",
-        "application/vnd.trid.tpt": "tpt",
-        "application/vnd.triscape.mxs": "mxs",
-        "application/vnd.trueapp": "tra",
-        "application/vnd.ufdl": "ufd",
-        "application/vnd.uiq.theme": "utz",
-        "application/vnd.umajin": "umj",
-        "application/vnd.unity": "unityweb",
-        "application/vnd.uoml+xml": "uoml",
-        "application/vnd.vcx": "vcx",
-        "application/vnd.visio": "vsd",
-        "application/vnd.visionary": "vis",
-        "application/vnd.vsf": "vsf",
-        "application/vnd.wap.wbxml": "wbxml",
-        "application/vnd.wap.wmlc": "wmlc",
-        "application/vnd.wap.wmlscriptc": "wmlsc",
-        "application/vnd.webturbo": "wtb",
-        "application/vnd.wolfram.player": "nbp",
-        "application/vnd.wordperfect": "wpd",
-        "application/vnd.wqd": "wqd",
-        "application/vnd.wt.stf": "stf",
-        "application/vnd.xara": ["web", "xar"],
-        "application/vnd.xfdl": "xfdl",
-        "application/vnd.yamaha.hv-dic": "hvd",
-        "application/vnd.yamaha.hv-script": "hvs",
-        "application/vnd.yamaha.hv-voice": "hvp",
-        "application/vnd.yamaha.openscoreformat": "osf",
-        "application/vnd.yamaha.openscoreformat.osfpvg+xml": "osfpvg",
-        "application/vnd.yamaha.smaf-audio": "saf",
-        "application/vnd.yamaha.smaf-phrase": "spf",
-        "application/vnd.yellowriver-custom-menu": "cmp",
-        "application/vnd.zul": "zir",
-        "application/vnd.zzazz.deck+xml": "zaz",
-        "application/vocaltec-media-desc": "vmd",
-        "application/vocaltec-media-file": "vmf",
-        "application/voicexml+xml": "vxml",
-        "application/widget": "wgt",
-        "application/winhlp": "hlp",
-        "application/wordperfect": ["wp", "wp5", "wp6", "wpd"],
-        "application/wordperfect6.0": ["w60", "wp5"],
-        "application/wordperfect6.1": "w61",
-        "application/wsdl+xml": "wsdl",
-        "application/wspolicy+xml": "wspolicy",
-        "application/x-123": "wk1",
-        "application/x-7z-compressed": "7z",
-        "application/x-abiword": "abw",
-        "application/x-ace-compressed": "ace",
-        "application/x-aim": "aim",
-        "application/x-authorware-bin": "aab",
-        "application/x-authorware-map": "aam",
-        "application/x-authorware-seg": "aas",
-        "application/x-bcpio": "bcpio",
-        "application/x-binary": "bin",
-        "application/x-binhex40": "hqx",
-        "application/x-bittorrent": "torrent",
-        "application/x-bsh": ["bsh", "sh", "shar"],
-        "application/x-bytecode.elisp": "elc",
-        "applicaiton/x-bytecode.python": "pyc",
-        "application/x-bzip": "bz",
-        "application/x-bzip2": ["boz", "bz2"],
-        "application/x-cdf": "cdf",
-        "application/x-cdlink": "vcd",
-        "application/x-chat": ["cha", "chat"],
-        "application/x-chess-pgn": "pgn",
-        "application/x-cmu-raster": "ras",
-        "application/x-cocoa": "cco",
-        "application/x-compactpro": "cpt",
-        "application/x-compress": "z",
-        "application/x-compressed": ["tgz", "gz", "z", "zip"],
-        "application/x-conference": "nsc",
-        "application/x-cpio": "cpio",
-        "application/x-cpt": "cpt",
-        "application/x-csh": "csh",
-        "application/x-debian-package": "deb",
-        "application/x-deepv": "deepv",
-        "application/x-director": ["dir", "dcr", "dxr"],
-        "application/x-doom": "wad",
-        "application/x-dtbncx+xml": "ncx",
-        "application/x-dtbook+xml": "dtb",
-        "application/x-dtbresource+xml": "res",
-        "application/x-dvi": "dvi",
-        "application/x-elc": "elc",
-        "application/x-envoy": ["env", "evy"],
-        "application/x-esrehber": "es",
-        "application/x-excel": ["xls", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
-        "application/x-font-bdf": "bdf",
-        "application/x-font-ghostscript": "gsf",
-        "application/x-font-linux-psf": "psf",
-        "application/x-font-otf": "otf",
-        "application/x-font-pcf": "pcf",
-        "application/x-font-snf": "snf",
-        "application/x-font-ttf": "ttf",
-        "application/x-font-type1": "pfa",
-        "application/x-font-woff": "woff",
-        "application/x-frame": "mif",
-        "application/x-freelance": "pre",
-        "application/x-futuresplash": "spl",
-        "application/x-gnumeric": "gnumeric",
-        "application/x-gsp": "gsp",
-        "application/x-gss": "gss",
-        "application/x-gtar": "gtar",
-        "application/x-gzip": ["gz", "gzip"],
-        "application/x-hdf": "hdf",
-        "application/x-helpfile": ["help", "hlp"],
-        "application/x-httpd-imap": "imap",
-        "application/x-ima": "ima",
-        "application/x-internet-signup": ["ins", "isp"],
-        "application/x-internett-signup": "ins",
-        "application/x-inventor": "iv",
-        "application/x-ip2": "ip",
-        "application/x-iphone": "iii",
-        "application/x-java-class": "class",
-        "application/x-java-commerce": "jcm",
-        "application/x-java-jnlp-file": "jnlp",
-        "application/x-javascript": "js",
-        "application/x-koan": ["skd", "skm", "skp", "skt"],
-        "application/x-ksh": "ksh",
-        "application/x-latex": ["latex", "ltx"],
-        "application/x-lha": "lha",
-        "application/x-lisp": "lsp",
-        "application/x-livescreen": "ivy",
-        "application/x-lotus": "wq1",
-        "application/x-lotusscreencam": "scm",
-        "application/x-lzh": "lzh",
-        "application/x-lzx": "lzx",
-        "application/x-mac-binhex40": "hqx",
-        "application/x-macbinary": "bin",
-        "application/x-magic-cap-package-1.0": "mc$",
-        "application/x-mathcad": "mcd",
-        "application/x-meme": "mm",
-        "application/x-midi": ["mid", "midi"],
-        "application/x-mif": "mif",
-        "application/x-mix-transfer": "nix",
-        "application/x-mobipocket-ebook": "prc",
-        "application/x-mplayer2": "asx",
-        "application/x-ms-application": "application",
-        "application/x-ms-wmd": "wmd",
-        "application/x-ms-wmz": "wmz",
-        "application/x-ms-xbap": "xbap",
-        "application/x-msaccess": "mdb",
-        "application/x-msbinder": "obd",
-        "application/x-mscardfile": "crd",
-        "application/x-msclip": "clp",
-        "application/x-msdownload": ["exe", "dll"],
-        "application/x-msexcel": ["xls", "xla", "xlw"],
-        "application/x-msmediaview": ["mvb", "m13", "m14"],
-        "application/x-msmetafile": "wmf",
-        "application/x-msmoney": "mny",
-        "application/x-mspowerpoint": "ppt",
-        "application/x-mspublisher": "pub",
-        "application/x-msschedule": "scd",
-        "application/x-msterminal": "trm",
-        "application/x-mswrite": "wri",
-        "application/x-navi-animation": "ani",
-        "application/x-navidoc": "nvd",
-        "application/x-navimap": "map",
-        "application/x-navistyle": "stl",
-        "application/x-netcdf": ["cdf", "nc"],
-        "application/x-newton-compatible-pkg": "pkg",
-        "application/x-nokia-9000-communicator-add-on-software": "aos",
-        "application/x-omc": "omc",
-        "application/x-omcdatamaker": "omcd",
-        "application/x-omcregerator": "omcr",
-        "application/x-pagemaker": ["pm4", "pm5"],
-        "application/x-pcl": "pcl",
-        "application/x-perfmon": ["pma", "pmc", "pml", "pmr", "pmw"],
-        "application/x-pixclscript": "plx",
-        "application/x-pkcs10": "p10",
-        "application/x-pkcs12": ["p12", "pfx"],
-        "application/x-pkcs7-certificates": ["p7b", "spc"],
-        "application/x-pkcs7-certreqresp": "p7r",
-        "application/x-pkcs7-mime": ["p7m", "p7c"],
-        "application/x-pkcs7-signature": ["p7s", "p7a"],
-        "application/x-pointplus": "css",
-        "application/x-portable-anymap": "pnm",
-        "application/x-project": ["mpc", "mpt", "mpv", "mpx"],
-        "application/x-qpro": "wb1",
-        "application/x-rar-compressed": "rar",
-        "application/x-rtf": "rtf",
-        "application/x-sdp": "sdp",
-        "application/x-sea": "sea",
-        "application/x-seelogo": "sl",
-        "application/x-sh": "sh",
-        "application/x-shar": ["shar", "sh"],
-        "application/x-shockwave-flash": "swf",
-        "application/x-silverlight-app": "xap",
-        "application/x-sit": "sit",
-        "application/x-sprite": ["spr", "sprite"],
-        "application/x-stuffit": "sit",
-        "application/x-stuffitx": "sitx",
-        "application/x-sv4cpio": "sv4cpio",
-        "application/x-sv4crc": "sv4crc",
-        "application/x-tar": "tar",
-        "application/x-tbook": ["sbk", "tbk"],
-        "application/x-tcl": "tcl",
-        "application/x-tex": "tex",
-        "application/x-tex-tfm": "tfm",
-        "application/x-texinfo": ["texi", "texinfo"],
-        "application/x-troff": ["roff", "t", "tr"],
-        "application/x-troff-man": "man",
-        "application/x-troff-me": "me",
-        "application/x-troff-ms": "ms",
-        "application/x-troff-msvideo": "avi",
-        "application/x-ustar": "ustar",
-        "application/x-visio": ["vsd", "vst", "vsw"],
-        "application/x-vnd.audioexplosion.mzz": "mzz",
-        "application/x-vnd.ls-xpix": "xpix",
-        "application/x-vrml": "vrml",
-        "application/x-wais-source": ["src", "wsrc"],
-        "application/x-winhelp": "hlp",
-        "application/x-wintalk": "wtk",
-        "application/x-world": ["wrl", "svr"],
-        "application/x-wpwin": "wpd",
-        "application/x-wri": "wri",
-        "application/x-x509-ca-cert": ["cer", "crt", "der"],
-        "application/x-x509-user-cert": "crt",
-        "application/x-xfig": "fig",
-        "application/x-xpinstall": "xpi",
-        "application/x-zip-compressed": "zip",
-        "application/xcap-diff+xml": "xdf",
-        "application/xenc+xml": "xenc",
-        "application/xhtml+xml": "xhtml",
-        "application/xml": "xml",
-        "application/xml-dtd": "dtd",
-        "application/xop+xml": "xop",
-        "application/xslt+xml": "xslt",
-        "application/xspf+xml": "xspf",
-        "application/xv+xml": "mxml",
-        "application/yang": "yang",
-        "application/yin+xml": "yin",
-        "application/ynd.ms-pkipko": "pko",
-        "application/zip": "zip",
-        "audio/adpcm": "adp",
-        "audio/aiff": ["aiff", "aif", "aifc"],
-        "audio/basic": ["snd", "au"],
-        "audio/it": "it",
-        "audio/make": ["funk", "my", "pfunk"],
-        "audio/make.my.funk": "pfunk",
-        "audio/mid": ["mid", "rmi"],
-        "audio/midi": ["midi", "kar", "mid"],
-        "audio/mod": "mod",
-        "audio/mp4": "mp4a",
-        "audio/mpeg": ["mpga", "mp3", "m2a", "mp2", "mpa", "mpg"],
-        "audio/mpeg3": "mp3",
-        "audio/nspaudio": ["la", "lma"],
-        "audio/ogg": "oga",
-        "audio/s3m": "s3m",
-        "audio/tsp-audio": "tsi",
-        "audio/tsplayer": "tsp",
-        "audio/vnd.dece.audio": "uva",
-        "audio/vnd.digital-winds": "eol",
-        "audio/vnd.dra": "dra",
-        "audio/vnd.dts": "dts",
-        "audio/vnd.dts.hd": "dtshd",
-        "audio/vnd.lucent.voice": "lvp",
-        "audio/vnd.ms-playready.media.pya": "pya",
-        "audio/vnd.nuera.ecelp4800": "ecelp4800",
-        "audio/vnd.nuera.ecelp7470": "ecelp7470",
-        "audio/vnd.nuera.ecelp9600": "ecelp9600",
-        "audio/vnd.qcelp": "qcp",
-        "audio/vnd.rip": "rip",
-        "audio/voc": "voc",
-        "audio/voxware": "vox",
-        "audio/wav": "wav",
-        "audio/webm": "weba",
-        "audio/x-aac": "aac",
-        "audio/x-adpcm": "snd",
-        "audio/x-aiff": ["aiff", "aif", "aifc"],
-        "audio/x-au": "au",
-        "audio/x-gsm": ["gsd", "gsm"],
-        "audio/x-jam": "jam",
-        "audio/x-liveaudio": "lam",
-        "audio/x-mid": ["mid", "midi"],
-        "audio/x-midi": ["midi", "mid"],
-        "audio/x-mod": "mod",
-        "audio/x-mpeg": "mp2",
-        "audio/x-mpeg-3": "mp3",
-        "audio/x-mpegurl": "m3u",
-        "audio/x-mpequrl": "m3u",
-        "audio/x-ms-wax": "wax",
-        "audio/x-ms-wma": "wma",
-        "audio/x-nspaudio": ["la", "lma"],
-        "audio/x-pn-realaudio": ["ra", "ram", "rm", "rmm", "rmp"],
-        "audio/x-pn-realaudio-plugin": ["ra", "rmp", "rpm"],
-        "audio/x-psid": "sid",
-        "audio/x-realaudio": "ra",
-        "audio/x-twinvq": "vqf",
-        "audio/x-twinvq-plugin": ["vqe", "vql"],
-        "audio/x-vnd.audioexplosion.mjuicemediafile": "mjf",
-        "audio/x-voc": "voc",
-        "audio/x-wav": "wav",
-        "audio/xm": "xm",
-        "chemical/x-cdx": "cdx",
-        "chemical/x-cif": "cif",
-        "chemical/x-cmdf": "cmdf",
-        "chemical/x-cml": "cml",
-        "chemical/x-csml": "csml",
-        "chemical/x-pdb": ["pdb", "xyz"],
-        "chemical/x-xyz": "xyz",
-        "drawing/x-dwf": "dwf",
-        "i-world/i-vrml": "ivr",
-        "image/bmp": ["bmp", "bm"],
-        "image/cgm": "cgm",
-        "image/cis-cod": "cod",
-        "image/cmu-raster": ["ras", "rast"],
-        "image/fif": "fif",
-        "image/florian": ["flo", "turbot"],
-        "image/g3fax": "g3",
-        "image/gif": "gif",
-        "image/ief": ["ief", "iefs"],
-        "image/jpeg": ["jpeg", "jpe", "jpg", "jfif", "jfif-tbnl"],
-        "image/jutvision": "jut",
-        "image/ktx": "ktx",
-        "image/naplps": ["nap", "naplps"],
-        "image/pict": ["pic", "pict"],
-        "image/pipeg": "jfif",
-        "image/pjpeg": ["jfif", "jpe", "jpeg", "jpg"],
-        "image/png": ["png", "x-png"],
-        "image/prs.btif": "btif",
-        "image/svg+xml": "svg",
-        "image/tiff": ["tif", "tiff"],
-        "image/vasa": "mcf",
-        "image/vnd.adobe.photoshop": "psd",
-        "image/vnd.dece.graphic": "uvi",
-        "image/vnd.djvu": "djvu",
-        "image/vnd.dvb.subtitle": "sub",
-        "image/vnd.dwg": ["dwg", "dxf", "svf"],
-        "image/vnd.dxf": "dxf",
-        "image/vnd.fastbidsheet": "fbs",
-        "image/vnd.fpx": "fpx",
-        "image/vnd.fst": "fst",
-        "image/vnd.fujixerox.edmics-mmr": "mmr",
-        "image/vnd.fujixerox.edmics-rlc": "rlc",
-        "image/vnd.ms-modi": "mdi",
-        "image/vnd.net-fpx": ["fpx", "npx"],
-        "image/vnd.rn-realflash": "rf",
-        "image/vnd.rn-realpix": "rp",
-        "image/vnd.wap.wbmp": "wbmp",
-        "image/vnd.xiff": "xif",
-        "image/webp": "webp",
-        "image/x-cmu-raster": "ras",
-        "image/x-cmx": "cmx",
-        "image/x-dwg": ["dwg", "dxf", "svf"],
-        "image/x-freehand": "fh",
-        "image/x-icon": "ico",
-        "image/x-jg": "art",
-        "image/x-jps": "jps",
-        "image/x-niff": ["niff", "nif"],
-        "image/x-pcx": "pcx",
-        "image/x-pict": ["pct", "pic"],
-        "image/x-portable-anymap": "pnm",
-        "image/x-portable-bitmap": "pbm",
-        "image/x-portable-graymap": "pgm",
-        "image/x-portable-greymap": "pgm",
-        "image/x-portable-pixmap": "ppm",
-        "image/x-quicktime": ["qif", "qti", "qtif"],
-        "image/x-rgb": "rgb",
-        "image/x-tiff": ["tif", "tiff"],
-        "image/x-windows-bmp": "bmp",
-        "image/x-xbitmap": "xbm",
-        "image/x-xbm": "xbm",
-        "image/x-xpixmap": ["xpm", "pm"],
-        "image/x-xwd": "xwd",
-        "image/x-xwindowdump": "xwd",
-        "image/xbm": "xbm",
-        "image/xpm": "xpm",
-        "message/rfc822": ["eml", "mht", "mhtml", "nws", "mime"],
-        "model/iges": ["iges", "igs"],
-        "model/mesh": "msh",
-        "model/vnd.collada+xml": "dae",
-        "model/vnd.dwf": "dwf",
-        "model/vnd.gdl": "gdl",
-        "model/vnd.gtw": "gtw",
-        "model/vnd.mts": "mts",
-        "model/vnd.vtu": "vtu",
-        "model/vrml": ["vrml", "wrl", "wrz"],
-        "model/x-pov": "pov",
-        "multipart/x-gzip": "gzip",
-        "multipart/x-ustar": "ustar",
-        "multipart/x-zip": "zip",
-        "music/crescendo": ["mid", "midi"],
-        "music/x-karaoke": "kar",
-        "paleovu/x-pv": "pvu",
-        "text/asp": "asp",
-        "text/calendar": "ics",
-        "text/css": "css",
-        "text/csv": "csv",
-        "text/ecmascript": "js",
-        "text/h323": "323",
-        "text/html": ["html", "htm", "stm", "acgi", "htmls", "htx", "shtml"],
-        "text/iuls": "uls",
-        "text/javascript": "js",
-        "text/mcf": "mcf",
-        "text/n3": "n3",
-        "text/pascal": "pas",
-        "text/plain": [
-          "txt",
-          "bas",
-          "c",
-          "h",
-          "c++",
-          "cc",
-          "com",
-          "conf",
-          "cxx",
-          "def",
-          "f",
-          "f90",
-          "for",
-          "g",
-          "hh",
-          "idc",
-          "jav",
-          "java",
-          "list",
-          "log",
-          "lst",
-          "m",
-          "mar",
-          "pl",
-          "sdml",
-          "text"
-        ],
-        "text/plain-bas": "par",
-        "text/prs.lines.tag": "dsc",
-        "text/richtext": ["rtx", "rt", "rtf"],
-        "text/scriplet": "wsc",
-        "text/scriptlet": "sct",
-        "text/sgml": ["sgm", "sgml"],
-        "text/tab-separated-values": "tsv",
-        "text/troff": "t",
-        "text/turtle": "ttl",
-        "text/uri-list": ["uni", "unis", "uri", "uris"],
-        "text/vnd.abc": "abc",
-        "text/vnd.curl": "curl",
-        "text/vnd.curl.dcurl": "dcurl",
-        "text/vnd.curl.mcurl": "mcurl",
-        "text/vnd.curl.scurl": "scurl",
-        "text/vnd.fly": "fly",
-        "text/vnd.fmi.flexstor": "flx",
-        "text/vnd.graphviz": "gv",
-        "text/vnd.in3d.3dml": "3dml",
-        "text/vnd.in3d.spot": "spot",
-        "text/vnd.rn-realtext": "rt",
-        "text/vnd.sun.j2me.app-descriptor": "jad",
-        "text/vnd.wap.wml": "wml",
-        "text/vnd.wap.wmlscript": "wmls",
-        "text/webviewhtml": "htt",
-        "text/x-asm": ["asm", "s"],
-        "text/x-audiosoft-intra": "aip",
-        "text/x-c": ["c", "cc", "cpp"],
-        "text/x-component": "htc",
-        "text/x-fortran": ["for", "f", "f77", "f90"],
-        "text/x-h": ["h", "hh"],
-        "text/x-java-source": ["java", "jav"],
-        "text/x-java-source,java": "java",
-        "text/x-la-asf": "lsx",
-        "text/x-m": "m",
-        "text/x-pascal": "p",
-        "text/x-script": "hlb",
-        "text/x-script.csh": "csh",
-        "text/x-script.elisp": "el",
-        "text/x-script.guile": "scm",
-        "text/x-script.ksh": "ksh",
-        "text/x-script.lisp": "lsp",
-        "text/x-script.perl": "pl",
-        "text/x-script.perl-module": "pm",
-        "text/x-script.phyton": "py",
-        "text/x-script.rexx": "rexx",
-        "text/x-script.scheme": "scm",
-        "text/x-script.sh": "sh",
-        "text/x-script.tcl": "tcl",
-        "text/x-script.tcsh": "tcsh",
-        "text/x-script.zsh": "zsh",
-        "text/x-server-parsed-html": ["shtml", "ssi"],
-        "text/x-setext": "etx",
-        "text/x-sgml": ["sgm", "sgml"],
-        "text/x-speech": ["spc", "talk"],
-        "text/x-uil": "uil",
-        "text/x-uuencode": ["uu", "uue"],
-        "text/x-vcalendar": "vcs",
-        "text/x-vcard": "vcf",
-        "text/xml": "xml",
-        "video/3gpp": "3gp",
-        "video/3gpp2": "3g2",
-        "video/animaflex": "afl",
-        "video/avi": "avi",
-        "video/avs-video": "avs",
-        "video/dl": "dl",
-        "video/fli": "fli",
-        "video/gl": "gl",
-        "video/h261": "h261",
-        "video/h263": "h263",
-        "video/h264": "h264",
-        "video/jpeg": "jpgv",
-        "video/jpm": "jpm",
-        "video/mj2": "mj2",
-        "video/mp4": "mp4",
-        "video/mpeg": ["mpeg", "mp2", "mpa", "mpe", "mpg", "mpv2", "m1v", "m2v", "mp3"],
-        "video/msvideo": "avi",
-        "video/ogg": "ogv",
-        "video/quicktime": ["mov", "qt", "moov"],
-        "video/vdo": "vdo",
-        "video/vivo": ["viv", "vivo"],
-        "video/vnd.dece.hd": "uvh",
-        "video/vnd.dece.mobile": "uvm",
-        "video/vnd.dece.pd": "uvp",
-        "video/vnd.dece.sd": "uvs",
-        "video/vnd.dece.video": "uvv",
-        "video/vnd.fvt": "fvt",
-        "video/vnd.mpegurl": "mxu",
-        "video/vnd.ms-playready.media.pyv": "pyv",
-        "video/vnd.rn-realvideo": "rv",
-        "video/vnd.uvvu.mp4": "uvu",
-        "video/vnd.vivo": ["viv", "vivo"],
-        "video/vosaic": "vos",
-        "video/webm": "webm",
-        "video/x-amt-demorun": "xdr",
-        "video/x-amt-showrun": "xsr",
-        "video/x-atomic3d-feature": "fmf",
-        "video/x-dl": "dl",
-        "video/x-dv": ["dif", "dv"],
-        "video/x-f4v": "f4v",
-        "video/x-fli": "fli",
-        "video/x-flv": "flv",
-        "video/x-gl": "gl",
-        "video/x-isvideo": "isu",
-        "video/x-la-asf": ["lsf", "lsx"],
-        "video/x-m4v": "m4v",
-        "video/x-motion-jpeg": "mjpg",
-        "video/x-mpeg": ["mp3", "mp2"],
-        "video/x-mpeq2a": "mp2",
-        "video/x-ms-asf": ["asf", "asr", "asx"],
-        "video/x-ms-asf-plugin": "asx",
-        "video/x-ms-wm": "wm",
-        "video/x-ms-wmv": "wmv",
-        "video/x-ms-wmx": "wmx",
-        "video/x-ms-wvx": "wvx",
-        "video/x-msvideo": "avi",
-        "video/x-qtc": "qtc",
-        "video/x-scm": "scm",
-        "video/x-sgi-movie": ["movie", "mv"],
-        "windows/metafile": "wmf",
-        "www/mime": "mime",
-        "x-conference/x-cooltalk": "ice",
-        "x-music/x-midi": ["mid", "midi"],
-        "x-world/x-3dmf": ["3dm", "3dmf", "qd3", "qd3d"],
-        "x-world/x-svr": "svr",
-        "x-world/x-vrml": ["flr", "vrml", "wrl", "wrz", "xaf", "xof"],
-        "x-world/x-vrt": "vrt",
-        "xgl/drawing": "xgz",
-        "xgl/movie": "xmz"
-      },
-      extensions: {
-        "*": "application/octet-stream",
-        "123": "application/vnd.lotus-1-2-3",
-        "323": "text/h323",
-        "3dm": "x-world/x-3dmf",
-        "3dmf": "x-world/x-3dmf",
-        "3dml": "text/vnd.in3d.3dml",
-        "3g2": "video/3gpp2",
-        "3gp": "video/3gpp",
-        "7z": "application/x-7z-compressed",
-        a: "application/octet-stream",
-        aab: "application/x-authorware-bin",
-        aac: "audio/x-aac",
-        aam: "application/x-authorware-map",
-        aas: "application/x-authorware-seg",
-        abc: "text/vnd.abc",
-        abw: "application/x-abiword",
-        ac: "application/pkix-attr-cert",
-        acc: "application/vnd.americandynamics.acc",
-        ace: "application/x-ace-compressed",
-        acgi: "text/html",
-        acu: "application/vnd.acucobol",
-        acx: "application/internet-property-stream",
-        adp: "audio/adpcm",
-        aep: "application/vnd.audiograph",
-        afl: "video/animaflex",
-        afp: "application/vnd.ibm.modcap",
-        ahead: "application/vnd.ahead.space",
-        ai: "application/postscript",
-        aif: ["audio/aiff", "audio/x-aiff"],
-        aifc: ["audio/aiff", "audio/x-aiff"],
-        aiff: ["audio/aiff", "audio/x-aiff"],
-        aim: "application/x-aim",
-        aip: "text/x-audiosoft-intra",
-        air: "application/vnd.adobe.air-application-installer-package+zip",
-        ait: "application/vnd.dvb.ait",
-        ami: "application/vnd.amiga.ami",
-        ani: "application/x-navi-animation",
-        aos: "application/x-nokia-9000-communicator-add-on-software",
-        apk: "application/vnd.android.package-archive",
-        application: "application/x-ms-application",
-        apr: "application/vnd.lotus-approach",
-        aps: "application/mime",
-        arc: "application/octet-stream",
-        arj: ["application/arj", "application/octet-stream"],
-        art: "image/x-jg",
-        asf: "video/x-ms-asf",
-        asm: "text/x-asm",
-        aso: "application/vnd.accpac.simply.aso",
-        asp: "text/asp",
-        asr: "video/x-ms-asf",
-        asx: ["video/x-ms-asf", "application/x-mplayer2", "video/x-ms-asf-plugin"],
-        atc: "application/vnd.acucorp",
-        atomcat: "application/atomcat+xml",
-        atomsvc: "application/atomsvc+xml",
-        atx: "application/vnd.antix.game-component",
-        au: ["audio/basic", "audio/x-au"],
-        avi: ["video/avi", "video/msvideo", "application/x-troff-msvideo", "video/x-msvideo"],
-        avs: "video/avs-video",
-        aw: "application/applixware",
-        axs: "application/olescript",
-        azf: "application/vnd.airzip.filesecure.azf",
-        azs: "application/vnd.airzip.filesecure.azs",
-        azw: "application/vnd.amazon.ebook",
-        bas: "text/plain",
-        bcpio: "application/x-bcpio",
-        bdf: "application/x-font-bdf",
-        bdm: "application/vnd.syncml.dm+wbxml",
-        bed: "application/vnd.realvnc.bed",
-        bh2: "application/vnd.fujitsu.oasysprs",
-        bin: ["application/octet-stream", "application/mac-binary", "application/macbinary", "application/x-macbinary", "application/x-binary"],
-        bm: "image/bmp",
-        bmi: "application/vnd.bmi",
-        bmp: ["image/bmp", "image/x-windows-bmp"],
-        boo: "application/book",
-        book: "application/book",
-        box: "application/vnd.previewsystems.box",
-        boz: "application/x-bzip2",
-        bsh: "application/x-bsh",
-        btif: "image/prs.btif",
-        bz: "application/x-bzip",
-        bz2: "application/x-bzip2",
-        c: ["text/plain", "text/x-c"],
-        "c++": "text/plain",
-        c11amc: "application/vnd.cluetrust.cartomobile-config",
-        c11amz: "application/vnd.cluetrust.cartomobile-config-pkg",
-        c4g: "application/vnd.clonk.c4group",
-        cab: "application/vnd.ms-cab-compressed",
-        car: "application/vnd.curl.car",
-        cat: ["application/vnd.ms-pkiseccat", "application/vnd.ms-pki.seccat"],
-        cc: ["text/plain", "text/x-c"],
-        ccad: "application/clariscad",
-        cco: "application/x-cocoa",
-        ccxml: "application/ccxml+xml,",
-        cdbcmsg: "application/vnd.contact.cmsg",
-        cdf: ["application/cdf", "application/x-cdf", "application/x-netcdf"],
-        cdkey: "application/vnd.mediastation.cdkey",
-        cdmia: "application/cdmi-capability",
-        cdmic: "application/cdmi-container",
-        cdmid: "application/cdmi-domain",
-        cdmio: "application/cdmi-object",
-        cdmiq: "application/cdmi-queue",
-        cdx: "chemical/x-cdx",
-        cdxml: "application/vnd.chemdraw+xml",
-        cdy: "application/vnd.cinderella",
-        cer: ["application/pkix-cert", "application/x-x509-ca-cert"],
-        cgm: "image/cgm",
-        cha: "application/x-chat",
-        chat: "application/x-chat",
-        chm: "application/vnd.ms-htmlhelp",
-        chrt: "application/vnd.kde.kchart",
-        cif: "chemical/x-cif",
-        cii: "application/vnd.anser-web-certificate-issue-initiation",
-        cil: "application/vnd.ms-artgalry",
-        cla: "application/vnd.claymore",
-        class: ["application/octet-stream", "application/java", "application/java-byte-code", "application/java-vm", "application/x-java-class"],
-        clkk: "application/vnd.crick.clicker.keyboard",
-        clkp: "application/vnd.crick.clicker.palette",
-        clkt: "application/vnd.crick.clicker.template",
-        clkw: "application/vnd.crick.clicker.wordbank",
-        clkx: "application/vnd.crick.clicker",
-        clp: "application/x-msclip",
-        cmc: "application/vnd.cosmocaller",
-        cmdf: "chemical/x-cmdf",
-        cml: "chemical/x-cml",
-        cmp: "application/vnd.yellowriver-custom-menu",
-        cmx: "image/x-cmx",
-        cod: ["image/cis-cod", "application/vnd.rim.cod"],
-        com: ["application/octet-stream", "text/plain"],
-        conf: "text/plain",
-        cpio: "application/x-cpio",
-        cpp: "text/x-c",
-        cpt: ["application/mac-compactpro", "application/x-compactpro", "application/x-cpt"],
-        crd: "application/x-mscardfile",
-        crl: ["application/pkix-crl", "application/pkcs-crl"],
-        crt: ["application/pkix-cert", "application/x-x509-user-cert", "application/x-x509-ca-cert"],
-        cryptonote: "application/vnd.rig.cryptonote",
-        csh: ["text/x-script.csh", "application/x-csh"],
-        csml: "chemical/x-csml",
-        csp: "application/vnd.commonspace",
-        css: ["text/css", "application/x-pointplus"],
-        csv: "text/csv",
-        cu: "application/cu-seeme",
-        curl: "text/vnd.curl",
-        cww: "application/prs.cww",
-        cxx: "text/plain",
-        dae: "model/vnd.collada+xml",
-        daf: "application/vnd.mobius.daf",
-        davmount: "application/davmount+xml",
-        dcr: "application/x-director",
-        dcurl: "text/vnd.curl.dcurl",
-        dd2: "application/vnd.oma.dd2+xml",
-        ddd: "application/vnd.fujixerox.ddd",
-        deb: "application/x-debian-package",
-        deepv: "application/x-deepv",
-        def: "text/plain",
-        der: "application/x-x509-ca-cert",
-        dfac: "application/vnd.dreamfactory",
-        dif: "video/x-dv",
-        dir: "application/x-director",
-        dis: "application/vnd.mobius.dis",
-        djvu: "image/vnd.djvu",
-        dl: ["video/dl", "video/x-dl"],
-        dll: "application/x-msdownload",
-        dms: "application/octet-stream",
-        dna: "application/vnd.dna",
-        doc: "application/msword",
-        docm: "application/vnd.ms-word.document.macroenabled.12",
-        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        dot: "application/msword",
-        dotm: "application/vnd.ms-word.template.macroenabled.12",
-        dotx: "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-        dp: ["application/commonground", "application/vnd.osgi.dp"],
-        dpg: "application/vnd.dpgraph",
-        dra: "audio/vnd.dra",
-        drw: "application/drafting",
-        dsc: "text/prs.lines.tag",
-        dssc: "application/dssc+der",
-        dtb: "application/x-dtbook+xml",
-        dtd: "application/xml-dtd",
-        dts: "audio/vnd.dts",
-        dtshd: "audio/vnd.dts.hd",
-        dump: "application/octet-stream",
-        dv: "video/x-dv",
-        dvi: "application/x-dvi",
-        dwf: ["model/vnd.dwf", "drawing/x-dwf"],
-        dwg: ["application/acad", "image/vnd.dwg", "image/x-dwg"],
-        dxf: ["application/dxf", "image/vnd.dwg", "image/vnd.dxf", "image/x-dwg"],
-        dxp: "application/vnd.spotfire.dxp",
-        dxr: "application/x-director",
-        ecelp4800: "audio/vnd.nuera.ecelp4800",
-        ecelp7470: "audio/vnd.nuera.ecelp7470",
-        ecelp9600: "audio/vnd.nuera.ecelp9600",
-        edm: "application/vnd.novadigm.edm",
-        edx: "application/vnd.novadigm.edx",
-        efif: "application/vnd.picsel",
-        ei6: "application/vnd.pg.osasli",
-        el: "text/x-script.elisp",
-        elc: ["application/x-elc", "application/x-bytecode.elisp"],
-        eml: "message/rfc822",
-        emma: "application/emma+xml",
-        env: "application/x-envoy",
-        eol: "audio/vnd.digital-winds",
-        eot: "application/vnd.ms-fontobject",
-        eps: "application/postscript",
-        epub: "application/epub+zip",
-        es: ["application/ecmascript", "application/x-esrehber"],
-        es3: "application/vnd.eszigno3+xml",
-        esf: "application/vnd.epson.esf",
-        etx: "text/x-setext",
-        evy: ["application/envoy", "application/x-envoy"],
-        exe: ["application/octet-stream", "application/x-msdownload"],
-        exi: "application/exi",
-        ext: "application/vnd.novadigm.ext",
-        ez2: "application/vnd.ezpix-album",
-        ez3: "application/vnd.ezpix-package",
-        f: ["text/plain", "text/x-fortran"],
-        f4v: "video/x-f4v",
-        f77: "text/x-fortran",
-        f90: ["text/plain", "text/x-fortran"],
-        fbs: "image/vnd.fastbidsheet",
-        fcs: "application/vnd.isac.fcs",
-        fdf: "application/vnd.fdf",
-        fe_launch: "application/vnd.denovo.fcselayout-link",
-        fg5: "application/vnd.fujitsu.oasysgp",
-        fh: "image/x-freehand",
-        fif: ["application/fractals", "image/fif"],
-        fig: "application/x-xfig",
-        fli: ["video/fli", "video/x-fli"],
-        flo: ["image/florian", "application/vnd.micrografx.flo"],
-        flr: "x-world/x-vrml",
-        flv: "video/x-flv",
-        flw: "application/vnd.kde.kivio",
-        flx: "text/vnd.fmi.flexstor",
-        fly: "text/vnd.fly",
-        fm: "application/vnd.framemaker",
-        fmf: "video/x-atomic3d-feature",
-        fnc: "application/vnd.frogans.fnc",
-        for: ["text/plain", "text/x-fortran"],
-        fpx: ["image/vnd.fpx", "image/vnd.net-fpx"],
-        frl: "application/freeloader",
-        fsc: "application/vnd.fsc.weblaunch",
-        fst: "image/vnd.fst",
-        ftc: "application/vnd.fluxtime.clip",
-        fti: "application/vnd.anser-web-funds-transfer-initiation",
-        funk: "audio/make",
-        fvt: "video/vnd.fvt",
-        fxp: "application/vnd.adobe.fxp",
-        fzs: "application/vnd.fuzzysheet",
-        g: "text/plain",
-        g2w: "application/vnd.geoplan",
-        g3: "image/g3fax",
-        g3w: "application/vnd.geospace",
-        gac: "application/vnd.groove-account",
-        gdl: "model/vnd.gdl",
-        geo: "application/vnd.dynageo",
-        gex: "application/vnd.geometry-explorer",
-        ggb: "application/vnd.geogebra.file",
-        ggt: "application/vnd.geogebra.tool",
-        ghf: "application/vnd.groove-help",
-        gif: "image/gif",
-        gim: "application/vnd.groove-identity-message",
-        gl: ["video/gl", "video/x-gl"],
-        gmx: "application/vnd.gmx",
-        gnumeric: "application/x-gnumeric",
-        gph: "application/vnd.flographit",
-        gqf: "application/vnd.grafeq",
-        gram: "application/srgs",
-        grv: "application/vnd.groove-injector",
-        grxml: "application/srgs+xml",
-        gsd: "audio/x-gsm",
-        gsf: "application/x-font-ghostscript",
-        gsm: "audio/x-gsm",
-        gsp: "application/x-gsp",
-        gss: "application/x-gss",
-        gtar: "application/x-gtar",
-        gtm: "application/vnd.groove-tool-message",
-        gtw: "model/vnd.gtw",
-        gv: "text/vnd.graphviz",
-        gxt: "application/vnd.geonext",
-        gz: ["application/x-gzip", "application/x-compressed"],
-        gzip: ["multipart/x-gzip", "application/x-gzip"],
-        h: ["text/plain", "text/x-h"],
-        h261: "video/h261",
-        h263: "video/h263",
-        h264: "video/h264",
-        hal: "application/vnd.hal+xml",
-        hbci: "application/vnd.hbci",
-        hdf: "application/x-hdf",
-        help: "application/x-helpfile",
-        hgl: "application/vnd.hp-hpgl",
-        hh: ["text/plain", "text/x-h"],
-        hlb: "text/x-script",
-        hlp: ["application/winhlp", "application/hlp", "application/x-helpfile", "application/x-winhelp"],
-        hpg: "application/vnd.hp-hpgl",
-        hpgl: "application/vnd.hp-hpgl",
-        hpid: "application/vnd.hp-hpid",
-        hps: "application/vnd.hp-hps",
-        hqx: [
-          "application/mac-binhex40",
-          "application/binhex",
-          "application/binhex4",
-          "application/mac-binhex",
-          "application/x-binhex40",
-          "application/x-mac-binhex40"
-        ],
-        hta: "application/hta",
-        htc: "text/x-component",
-        htke: "application/vnd.kenameaapp",
-        htm: "text/html",
-        html: "text/html",
-        htmls: "text/html",
-        htt: "text/webviewhtml",
-        htx: "text/html",
-        hvd: "application/vnd.yamaha.hv-dic",
-        hvp: "application/vnd.yamaha.hv-voice",
-        hvs: "application/vnd.yamaha.hv-script",
-        i2g: "application/vnd.intergeo",
-        icc: "application/vnd.iccprofile",
-        ice: "x-conference/x-cooltalk",
-        ico: "image/x-icon",
-        ics: "text/calendar",
-        idc: "text/plain",
-        ief: "image/ief",
-        iefs: "image/ief",
-        ifm: "application/vnd.shana.informed.formdata",
-        iges: ["application/iges", "model/iges"],
-        igl: "application/vnd.igloader",
-        igm: "application/vnd.insors.igm",
-        igs: ["application/iges", "model/iges"],
-        igx: "application/vnd.micrografx.igx",
-        iif: "application/vnd.shana.informed.interchange",
-        iii: "application/x-iphone",
-        ima: "application/x-ima",
-        imap: "application/x-httpd-imap",
-        imp: "application/vnd.accpac.simply.imp",
-        ims: "application/vnd.ms-ims",
-        inf: "application/inf",
-        ins: ["application/x-internet-signup", "application/x-internett-signup"],
-        ip: "application/x-ip2",
-        ipfix: "application/ipfix",
-        ipk: "application/vnd.shana.informed.package",
-        irm: "application/vnd.ibm.rights-management",
-        irp: "application/vnd.irepository.package+xml",
-        isp: "application/x-internet-signup",
-        isu: "video/x-isvideo",
-        it: "audio/it",
-        itp: "application/vnd.shana.informed.formtemplate",
-        iv: "application/x-inventor",
-        ivp: "application/vnd.immervision-ivp",
-        ivr: "i-world/i-vrml",
-        ivu: "application/vnd.immervision-ivu",
-        ivy: "application/x-livescreen",
-        jad: "text/vnd.sun.j2me.app-descriptor",
-        jam: ["application/vnd.jam", "audio/x-jam"],
-        jar: "application/java-archive",
-        jav: ["text/plain", "text/x-java-source"],
-        java: ["text/plain", "text/x-java-source,java", "text/x-java-source"],
-        jcm: "application/x-java-commerce",
-        jfif: ["image/pipeg", "image/jpeg", "image/pjpeg"],
-        "jfif-tbnl": "image/jpeg",
-        jisp: "application/vnd.jisp",
-        jlt: "application/vnd.hp-jlyt",
-        jnlp: "application/x-java-jnlp-file",
-        joda: "application/vnd.joost.joda-archive",
-        jpe: ["image/jpeg", "image/pjpeg"],
-        jpeg: ["image/jpeg", "image/pjpeg"],
-        jpg: ["image/jpeg", "image/pjpeg"],
-        jpgv: "video/jpeg",
-        jpm: "video/jpm",
-        jps: "image/x-jps",
-        js: ["application/javascript", "application/ecmascript", "text/javascript", "text/ecmascript", "application/x-javascript"],
-        json: "application/json",
-        jut: "image/jutvision",
-        kar: ["audio/midi", "music/x-karaoke"],
-        karbon: "application/vnd.kde.karbon",
-        kfo: "application/vnd.kde.kformula",
-        kia: "application/vnd.kidspiration",
-        kml: "application/vnd.google-earth.kml+xml",
-        kmz: "application/vnd.google-earth.kmz",
-        kne: "application/vnd.kinar",
-        kon: "application/vnd.kde.kontour",
-        kpr: "application/vnd.kde.kpresenter",
-        ksh: ["application/x-ksh", "text/x-script.ksh"],
-        ksp: "application/vnd.kde.kspread",
-        ktx: "image/ktx",
-        ktz: "application/vnd.kahootz",
-        kwd: "application/vnd.kde.kword",
-        la: ["audio/nspaudio", "audio/x-nspaudio"],
-        lam: "audio/x-liveaudio",
-        lasxml: "application/vnd.las.las+xml",
-        latex: "application/x-latex",
-        lbd: "application/vnd.llamagraphics.life-balance.desktop",
-        lbe: "application/vnd.llamagraphics.life-balance.exchange+xml",
-        les: "application/vnd.hhe.lesson-player",
-        lha: ["application/octet-stream", "application/lha", "application/x-lha"],
-        lhx: "application/octet-stream",
-        link66: "application/vnd.route66.link66+xml",
-        list: "text/plain",
-        lma: ["audio/nspaudio", "audio/x-nspaudio"],
-        log: "text/plain",
-        lrm: "application/vnd.ms-lrm",
-        lsf: "video/x-la-asf",
-        lsp: ["application/x-lisp", "text/x-script.lisp"],
-        lst: "text/plain",
-        lsx: ["video/x-la-asf", "text/x-la-asf"],
-        ltf: "application/vnd.frogans.ltf",
-        ltx: "application/x-latex",
-        lvp: "audio/vnd.lucent.voice",
-        lwp: "application/vnd.lotus-wordpro",
-        lzh: ["application/octet-stream", "application/x-lzh"],
-        lzx: ["application/lzx", "application/octet-stream", "application/x-lzx"],
-        m: ["text/plain", "text/x-m"],
-        m13: "application/x-msmediaview",
-        m14: "application/x-msmediaview",
-        m1v: "video/mpeg",
-        m21: "application/mp21",
-        m2a: "audio/mpeg",
-        m2v: "video/mpeg",
-        m3u: ["audio/x-mpegurl", "audio/x-mpequrl"],
-        m3u8: "application/vnd.apple.mpegurl",
-        m4v: "video/x-m4v",
-        ma: "application/mathematica",
-        mads: "application/mads+xml",
-        mag: "application/vnd.ecowin.chart",
-        man: "application/x-troff-man",
-        map: "application/x-navimap",
-        mar: "text/plain",
-        mathml: "application/mathml+xml",
-        mbd: "application/mbedlet",
-        mbk: "application/vnd.mobius.mbk",
-        mbox: "application/mbox",
-        mc$: "application/x-magic-cap-package-1.0",
-        mc1: "application/vnd.medcalcdata",
-        mcd: ["application/mcad", "application/vnd.mcd", "application/x-mathcad"],
-        mcf: ["image/vasa", "text/mcf"],
-        mcp: "application/netmc",
-        mcurl: "text/vnd.curl.mcurl",
-        mdb: "application/x-msaccess",
-        mdi: "image/vnd.ms-modi",
-        me: "application/x-troff-me",
-        meta4: "application/metalink4+xml",
-        mets: "application/mets+xml",
-        mfm: "application/vnd.mfmp",
-        mgp: "application/vnd.osgeo.mapguide.package",
-        mgz: "application/vnd.proteus.magazine",
-        mht: "message/rfc822",
-        mhtml: "message/rfc822",
-        mid: ["audio/mid", "audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
-        midi: ["audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
-        mif: ["application/vnd.mif", "application/x-mif", "application/x-frame"],
-        mime: ["message/rfc822", "www/mime"],
-        mj2: "video/mj2",
-        mjf: "audio/x-vnd.audioexplosion.mjuicemediafile",
-        mjpg: "video/x-motion-jpeg",
-        mlp: "application/vnd.dolby.mlp",
-        mm: ["application/base64", "application/x-meme"],
-        mmd: "application/vnd.chipnuts.karaoke-mmd",
-        mme: "application/base64",
-        mmf: "application/vnd.smaf",
-        mmr: "image/vnd.fujixerox.edmics-mmr",
-        mny: "application/x-msmoney",
-        mod: ["audio/mod", "audio/x-mod"],
-        mods: "application/mods+xml",
-        moov: "video/quicktime",
-        mov: "video/quicktime",
-        movie: "video/x-sgi-movie",
-        mp2: ["video/mpeg", "audio/mpeg", "video/x-mpeg", "audio/x-mpeg", "video/x-mpeq2a"],
-        mp3: ["audio/mpeg", "audio/mpeg3", "video/mpeg", "audio/x-mpeg-3", "video/x-mpeg"],
-        mp4: ["video/mp4", "application/mp4"],
-        mp4a: "audio/mp4",
-        mpa: ["video/mpeg", "audio/mpeg"],
-        mpc: ["application/vnd.mophun.certificate", "application/x-project"],
-        mpe: "video/mpeg",
-        mpeg: "video/mpeg",
-        mpg: ["video/mpeg", "audio/mpeg"],
-        mpga: "audio/mpeg",
-        mpkg: "application/vnd.apple.installer+xml",
-        mpm: "application/vnd.blueice.multipass",
-        mpn: "application/vnd.mophun.application",
-        mpp: "application/vnd.ms-project",
-        mpt: "application/x-project",
-        mpv: "application/x-project",
-        mpv2: "video/mpeg",
-        mpx: "application/x-project",
-        mpy: "application/vnd.ibm.minipay",
-        mqy: "application/vnd.mobius.mqy",
-        mrc: "application/marc",
-        mrcx: "application/marcxml+xml",
-        ms: "application/x-troff-ms",
-        mscml: "application/mediaservercontrol+xml",
-        mseq: "application/vnd.mseq",
-        msf: "application/vnd.epson.msf",
-        msg: "application/vnd.ms-outlook",
-        msh: "model/mesh",
-        msl: "application/vnd.mobius.msl",
-        msty: "application/vnd.muvee.style",
-        mts: "model/vnd.mts",
-        mus: "application/vnd.musician",
-        musicxml: "application/vnd.recordare.musicxml+xml",
-        mv: "video/x-sgi-movie",
-        mvb: "application/x-msmediaview",
-        mwf: "application/vnd.mfer",
-        mxf: "application/mxf",
-        mxl: "application/vnd.recordare.musicxml",
-        mxml: "application/xv+xml",
-        mxs: "application/vnd.triscape.mxs",
-        mxu: "video/vnd.mpegurl",
-        my: "audio/make",
-        mzz: "application/x-vnd.audioexplosion.mzz",
-        "n-gage": "application/vnd.nokia.n-gage.symbian.install",
-        n3: "text/n3",
-        nap: "image/naplps",
-        naplps: "image/naplps",
-        nbp: "application/vnd.wolfram.player",
-        nc: "application/x-netcdf",
-        ncm: "application/vnd.nokia.configuration-message",
-        ncx: "application/x-dtbncx+xml",
-        ngdat: "application/vnd.nokia.n-gage.data",
-        nif: "image/x-niff",
-        niff: "image/x-niff",
-        nix: "application/x-mix-transfer",
-        nlu: "application/vnd.neurolanguage.nlu",
-        nml: "application/vnd.enliven",
-        nnd: "application/vnd.noblenet-directory",
-        nns: "application/vnd.noblenet-sealer",
-        nnw: "application/vnd.noblenet-web",
-        npx: "image/vnd.net-fpx",
-        nsc: "application/x-conference",
-        nsf: "application/vnd.lotus-notes",
-        nvd: "application/x-navidoc",
-        nws: "message/rfc822",
-        o: "application/octet-stream",
-        oa2: "application/vnd.fujitsu.oasys2",
-        oa3: "application/vnd.fujitsu.oasys3",
-        oas: "application/vnd.fujitsu.oasys",
-        obd: "application/x-msbinder",
-        oda: "application/oda",
-        odb: "application/vnd.oasis.opendocument.database",
-        odc: "application/vnd.oasis.opendocument.chart",
-        odf: "application/vnd.oasis.opendocument.formula",
-        odft: "application/vnd.oasis.opendocument.formula-template",
-        odg: "application/vnd.oasis.opendocument.graphics",
-        odi: "application/vnd.oasis.opendocument.image",
-        odm: "application/vnd.oasis.opendocument.text-master",
-        odp: "application/vnd.oasis.opendocument.presentation",
-        ods: "application/vnd.oasis.opendocument.spreadsheet",
-        odt: "application/vnd.oasis.opendocument.text",
-        oga: "audio/ogg",
-        ogv: "video/ogg",
-        ogx: "application/ogg",
-        omc: "application/x-omc",
-        omcd: "application/x-omcdatamaker",
-        omcr: "application/x-omcregerator",
-        onetoc: "application/onenote",
-        opf: "application/oebps-package+xml",
-        org: "application/vnd.lotus-organizer",
-        osf: "application/vnd.yamaha.openscoreformat",
-        osfpvg: "application/vnd.yamaha.openscoreformat.osfpvg+xml",
-        otc: "application/vnd.oasis.opendocument.chart-template",
-        otf: "application/x-font-otf",
-        otg: "application/vnd.oasis.opendocument.graphics-template",
-        oth: "application/vnd.oasis.opendocument.text-web",
-        oti: "application/vnd.oasis.opendocument.image-template",
-        otp: "application/vnd.oasis.opendocument.presentation-template",
-        ots: "application/vnd.oasis.opendocument.spreadsheet-template",
-        ott: "application/vnd.oasis.opendocument.text-template",
-        oxt: "application/vnd.openofficeorg.extension",
-        p: "text/x-pascal",
-        p10: ["application/pkcs10", "application/x-pkcs10"],
-        p12: ["application/pkcs-12", "application/x-pkcs12"],
-        p7a: "application/x-pkcs7-signature",
-        p7b: "application/x-pkcs7-certificates",
-        p7c: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
-        p7m: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
-        p7r: "application/x-pkcs7-certreqresp",
-        p7s: ["application/pkcs7-signature", "application/x-pkcs7-signature"],
-        p8: "application/pkcs8",
-        par: "text/plain-bas",
-        part: "application/pro_eng",
-        pas: "text/pascal",
-        paw: "application/vnd.pawaafile",
-        pbd: "application/vnd.powerbuilder6",
-        pbm: "image/x-portable-bitmap",
-        pcf: "application/x-font-pcf",
-        pcl: ["application/vnd.hp-pcl", "application/x-pcl"],
-        pclxl: "application/vnd.hp-pclxl",
-        pct: "image/x-pict",
-        pcurl: "application/vnd.curl.pcurl",
-        pcx: "image/x-pcx",
-        pdb: ["application/vnd.palm", "chemical/x-pdb"],
-        pdf: "application/pdf",
-        pfa: "application/x-font-type1",
-        pfr: "application/font-tdpfr",
-        pfunk: ["audio/make", "audio/make.my.funk"],
-        pfx: "application/x-pkcs12",
-        pgm: ["image/x-portable-graymap", "image/x-portable-greymap"],
-        pgn: "application/x-chess-pgn",
-        pgp: "application/pgp-signature",
-        pic: ["image/pict", "image/x-pict"],
-        pict: "image/pict",
-        pkg: "application/x-newton-compatible-pkg",
-        pki: "application/pkixcmp",
-        pkipath: "application/pkix-pkipath",
-        pko: ["application/ynd.ms-pkipko", "application/vnd.ms-pki.pko"],
-        pl: ["text/plain", "text/x-script.perl"],
-        plb: "application/vnd.3gpp.pic-bw-large",
-        plc: "application/vnd.mobius.plc",
-        plf: "application/vnd.pocketlearn",
-        pls: "application/pls+xml",
-        plx: "application/x-pixclscript",
-        pm: ["text/x-script.perl-module", "image/x-xpixmap"],
-        pm4: "application/x-pagemaker",
-        pm5: "application/x-pagemaker",
-        pma: "application/x-perfmon",
-        pmc: "application/x-perfmon",
-        pml: ["application/vnd.ctc-posml", "application/x-perfmon"],
-        pmr: "application/x-perfmon",
-        pmw: "application/x-perfmon",
-        png: "image/png",
-        pnm: ["application/x-portable-anymap", "image/x-portable-anymap"],
-        portpkg: "application/vnd.macports.portpkg",
-        pot: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
-        potm: "application/vnd.ms-powerpoint.template.macroenabled.12",
-        potx: "application/vnd.openxmlformats-officedocument.presentationml.template",
-        pov: "model/x-pov",
-        ppa: "application/vnd.ms-powerpoint",
-        ppam: "application/vnd.ms-powerpoint.addin.macroenabled.12",
-        ppd: "application/vnd.cups-ppd",
-        ppm: "image/x-portable-pixmap",
-        pps: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
-        ppsm: "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
-        ppsx: "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
-        ppt: ["application/vnd.ms-powerpoint", "application/mspowerpoint", "application/powerpoint", "application/x-mspowerpoint"],
-        pptm: "application/vnd.ms-powerpoint.presentation.macroenabled.12",
-        pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ppz: "application/mspowerpoint",
-        prc: "application/x-mobipocket-ebook",
-        pre: ["application/vnd.lotus-freelance", "application/x-freelance"],
-        prf: "application/pics-rules",
-        prt: "application/pro_eng",
-        ps: "application/postscript",
-        psb: "application/vnd.3gpp.pic-bw-small",
-        psd: ["application/octet-stream", "image/vnd.adobe.photoshop"],
-        psf: "application/x-font-linux-psf",
-        pskcxml: "application/pskc+xml",
-        ptid: "application/vnd.pvi.ptid1",
-        pub: "application/x-mspublisher",
-        pvb: "application/vnd.3gpp.pic-bw-var",
-        pvu: "paleovu/x-pv",
-        pwn: "application/vnd.3m.post-it-notes",
-        pwz: "application/vnd.ms-powerpoint",
-        py: "text/x-script.phyton",
-        pya: "audio/vnd.ms-playready.media.pya",
-        pyc: "applicaiton/x-bytecode.python",
-        pyv: "video/vnd.ms-playready.media.pyv",
-        qam: "application/vnd.epson.quickanime",
-        qbo: "application/vnd.intu.qbo",
-        qcp: "audio/vnd.qcelp",
-        qd3: "x-world/x-3dmf",
-        qd3d: "x-world/x-3dmf",
-        qfx: "application/vnd.intu.qfx",
-        qif: "image/x-quicktime",
-        qps: "application/vnd.publishare-delta-tree",
-        qt: "video/quicktime",
-        qtc: "video/x-qtc",
-        qti: "image/x-quicktime",
-        qtif: "image/x-quicktime",
-        qxd: "application/vnd.quark.quarkxpress",
-        ra: ["audio/x-realaudio", "audio/x-pn-realaudio", "audio/x-pn-realaudio-plugin"],
-        ram: "audio/x-pn-realaudio",
-        rar: "application/x-rar-compressed",
-        ras: ["image/cmu-raster", "application/x-cmu-raster", "image/x-cmu-raster"],
-        rast: "image/cmu-raster",
-        rcprofile: "application/vnd.ipunplugged.rcprofile",
-        rdf: "application/rdf+xml",
-        rdz: "application/vnd.data-vision.rdz",
-        rep: "application/vnd.businessobjects",
-        res: "application/x-dtbresource+xml",
-        rexx: "text/x-script.rexx",
-        rf: "image/vnd.rn-realflash",
-        rgb: "image/x-rgb",
-        rif: "application/reginfo+xml",
-        rip: "audio/vnd.rip",
-        rl: "application/resource-lists+xml",
-        rlc: "image/vnd.fujixerox.edmics-rlc",
-        rld: "application/resource-lists-diff+xml",
-        rm: ["application/vnd.rn-realmedia", "audio/x-pn-realaudio"],
-        rmi: "audio/mid",
-        rmm: "audio/x-pn-realaudio",
-        rmp: ["audio/x-pn-realaudio-plugin", "audio/x-pn-realaudio"],
-        rms: "application/vnd.jcp.javame.midlet-rms",
-        rnc: "application/relax-ng-compact-syntax",
-        rng: ["application/ringing-tones", "application/vnd.nokia.ringing-tone"],
-        rnx: "application/vnd.rn-realplayer",
-        roff: "application/x-troff",
-        rp: "image/vnd.rn-realpix",
-        rp9: "application/vnd.cloanto.rp9",
-        rpm: "audio/x-pn-realaudio-plugin",
-        rpss: "application/vnd.nokia.radio-presets",
-        rpst: "application/vnd.nokia.radio-preset",
-        rq: "application/sparql-query",
-        rs: "application/rls-services+xml",
-        rsd: "application/rsd+xml",
-        rt: ["text/richtext", "text/vnd.rn-realtext"],
-        rtf: ["application/rtf", "text/richtext", "application/x-rtf"],
-        rtx: ["text/richtext", "application/rtf"],
-        rv: "video/vnd.rn-realvideo",
-        s: "text/x-asm",
-        s3m: "audio/s3m",
-        saf: "application/vnd.yamaha.smaf-audio",
-        saveme: "application/octet-stream",
-        sbk: "application/x-tbook",
-        sbml: "application/sbml+xml",
-        sc: "application/vnd.ibm.secure-container",
-        scd: "application/x-msschedule",
-        scm: ["application/vnd.lotus-screencam", "video/x-scm", "text/x-script.guile", "application/x-lotusscreencam", "text/x-script.scheme"],
-        scq: "application/scvp-cv-request",
-        scs: "application/scvp-cv-response",
-        sct: "text/scriptlet",
-        scurl: "text/vnd.curl.scurl",
-        sda: "application/vnd.stardivision.draw",
-        sdc: "application/vnd.stardivision.calc",
-        sdd: "application/vnd.stardivision.impress",
-        sdkm: "application/vnd.solent.sdkm+xml",
-        sdml: "text/plain",
-        sdp: ["application/sdp", "application/x-sdp"],
-        sdr: "application/sounder",
-        sdw: "application/vnd.stardivision.writer",
-        sea: ["application/sea", "application/x-sea"],
-        see: "application/vnd.seemail",
-        seed: "application/vnd.fdsn.seed",
-        sema: "application/vnd.sema",
-        semd: "application/vnd.semd",
-        semf: "application/vnd.semf",
-        ser: "application/java-serialized-object",
-        set: "application/set",
-        setpay: "application/set-payment-initiation",
-        setreg: "application/set-registration-initiation",
-        "sfd-hdstx": "application/vnd.hydrostatix.sof-data",
-        sfs: "application/vnd.spotfire.sfs",
-        sgl: "application/vnd.stardivision.writer-global",
-        sgm: ["text/sgml", "text/x-sgml"],
-        sgml: ["text/sgml", "text/x-sgml"],
-        sh: ["application/x-shar", "application/x-bsh", "application/x-sh", "text/x-script.sh"],
-        shar: ["application/x-bsh", "application/x-shar"],
-        shf: "application/shf+xml",
-        shtml: ["text/html", "text/x-server-parsed-html"],
-        sid: "audio/x-psid",
-        sis: "application/vnd.symbian.install",
-        sit: ["application/x-stuffit", "application/x-sit"],
-        sitx: "application/x-stuffitx",
-        skd: "application/x-koan",
-        skm: "application/x-koan",
-        skp: ["application/vnd.koan", "application/x-koan"],
-        skt: "application/x-koan",
-        sl: "application/x-seelogo",
-        sldm: "application/vnd.ms-powerpoint.slide.macroenabled.12",
-        sldx: "application/vnd.openxmlformats-officedocument.presentationml.slide",
-        slt: "application/vnd.epson.salt",
-        sm: "application/vnd.stepmania.stepchart",
-        smf: "application/vnd.stardivision.math",
-        smi: ["application/smil", "application/smil+xml"],
-        smil: "application/smil",
-        snd: ["audio/basic", "audio/x-adpcm"],
-        snf: "application/x-font-snf",
-        sol: "application/solids",
-        spc: ["text/x-speech", "application/x-pkcs7-certificates"],
-        spf: "application/vnd.yamaha.smaf-phrase",
-        spl: ["application/futuresplash", "application/x-futuresplash"],
-        spot: "text/vnd.in3d.spot",
-        spp: "application/scvp-vp-response",
-        spq: "application/scvp-vp-request",
-        spr: "application/x-sprite",
-        sprite: "application/x-sprite",
-        src: "application/x-wais-source",
-        sru: "application/sru+xml",
-        srx: "application/sparql-results+xml",
-        sse: "application/vnd.kodak-descriptor",
-        ssf: "application/vnd.epson.ssf",
-        ssi: "text/x-server-parsed-html",
-        ssm: "application/streamingmedia",
-        ssml: "application/ssml+xml",
-        sst: ["application/vnd.ms-pkicertstore", "application/vnd.ms-pki.certstore"],
-        st: "application/vnd.sailingtracker.track",
-        stc: "application/vnd.sun.xml.calc.template",
-        std: "application/vnd.sun.xml.draw.template",
-        step: "application/step",
-        stf: "application/vnd.wt.stf",
-        sti: "application/vnd.sun.xml.impress.template",
-        stk: "application/hyperstudio",
-        stl: ["application/vnd.ms-pkistl", "application/sla", "application/vnd.ms-pki.stl", "application/x-navistyle"],
-        stm: "text/html",
-        stp: "application/step",
-        str: "application/vnd.pg.format",
-        stw: "application/vnd.sun.xml.writer.template",
-        sub: "image/vnd.dvb.subtitle",
-        sus: "application/vnd.sus-calendar",
-        sv4cpio: "application/x-sv4cpio",
-        sv4crc: "application/x-sv4crc",
-        svc: "application/vnd.dvb.service",
-        svd: "application/vnd.svd",
-        svf: ["image/vnd.dwg", "image/x-dwg"],
-        svg: "image/svg+xml",
-        svr: ["x-world/x-svr", "application/x-world"],
-        swf: "application/x-shockwave-flash",
-        swi: "application/vnd.aristanetworks.swi",
-        sxc: "application/vnd.sun.xml.calc",
-        sxd: "application/vnd.sun.xml.draw",
-        sxg: "application/vnd.sun.xml.writer.global",
-        sxi: "application/vnd.sun.xml.impress",
-        sxm: "application/vnd.sun.xml.math",
-        sxw: "application/vnd.sun.xml.writer",
-        t: ["text/troff", "application/x-troff"],
-        talk: "text/x-speech",
-        tao: "application/vnd.tao.intent-module-archive",
-        tar: "application/x-tar",
-        tbk: ["application/toolbook", "application/x-tbook"],
-        tcap: "application/vnd.3gpp2.tcap",
-        tcl: ["text/x-script.tcl", "application/x-tcl"],
-        tcsh: "text/x-script.tcsh",
-        teacher: "application/vnd.smart.teacher",
-        tei: "application/tei+xml",
-        tex: "application/x-tex",
-        texi: "application/x-texinfo",
-        texinfo: "application/x-texinfo",
-        text: ["application/plain", "text/plain"],
-        tfi: "application/thraud+xml",
-        tfm: "application/x-tex-tfm",
-        tgz: ["application/gnutar", "application/x-compressed"],
-        thmx: "application/vnd.ms-officetheme",
-        tif: ["image/tiff", "image/x-tiff"],
-        tiff: ["image/tiff", "image/x-tiff"],
-        tmo: "application/vnd.tmobile-livetv",
-        torrent: "application/x-bittorrent",
-        tpl: "application/vnd.groove-tool-template",
-        tpt: "application/vnd.trid.tpt",
-        tr: "application/x-troff",
-        tra: "application/vnd.trueapp",
-        trm: "application/x-msterminal",
-        tsd: "application/timestamped-data",
-        tsi: "audio/tsp-audio",
-        tsp: ["application/dsptype", "audio/tsplayer"],
-        tsv: "text/tab-separated-values",
-        ttf: "application/x-font-ttf",
-        ttl: "text/turtle",
-        turbot: "image/florian",
-        twd: "application/vnd.simtech-mindmapper",
-        txd: "application/vnd.genomatix.tuxedo",
-        txf: "application/vnd.mobius.txf",
-        txt: "text/plain",
-        ufd: "application/vnd.ufdl",
-        uil: "text/x-uil",
-        uls: "text/iuls",
-        umj: "application/vnd.umajin",
-        uni: "text/uri-list",
-        unis: "text/uri-list",
-        unityweb: "application/vnd.unity",
-        unv: "application/i-deas",
-        uoml: "application/vnd.uoml+xml",
-        uri: "text/uri-list",
-        uris: "text/uri-list",
-        ustar: ["application/x-ustar", "multipart/x-ustar"],
-        utz: "application/vnd.uiq.theme",
-        uu: ["application/octet-stream", "text/x-uuencode"],
-        uue: "text/x-uuencode",
-        uva: "audio/vnd.dece.audio",
-        uvh: "video/vnd.dece.hd",
-        uvi: "image/vnd.dece.graphic",
-        uvm: "video/vnd.dece.mobile",
-        uvp: "video/vnd.dece.pd",
-        uvs: "video/vnd.dece.sd",
-        uvu: "video/vnd.uvvu.mp4",
-        uvv: "video/vnd.dece.video",
-        vcd: "application/x-cdlink",
-        vcf: "text/x-vcard",
-        vcg: "application/vnd.groove-vcard",
-        vcs: "text/x-vcalendar",
-        vcx: "application/vnd.vcx",
-        vda: "application/vda",
-        vdo: "video/vdo",
-        vew: "application/groupwise",
-        vis: "application/vnd.visionary",
-        viv: ["video/vivo", "video/vnd.vivo"],
-        vivo: ["video/vivo", "video/vnd.vivo"],
-        vmd: "application/vocaltec-media-desc",
-        vmf: "application/vocaltec-media-file",
-        voc: ["audio/voc", "audio/x-voc"],
-        vos: "video/vosaic",
-        vox: "audio/voxware",
-        vqe: "audio/x-twinvq-plugin",
-        vqf: "audio/x-twinvq",
-        vql: "audio/x-twinvq-plugin",
-        vrml: ["model/vrml", "x-world/x-vrml", "application/x-vrml"],
-        vrt: "x-world/x-vrt",
-        vsd: ["application/vnd.visio", "application/x-visio"],
-        vsf: "application/vnd.vsf",
-        vst: "application/x-visio",
-        vsw: "application/x-visio",
-        vtu: "model/vnd.vtu",
-        vxml: "application/voicexml+xml",
-        w60: "application/wordperfect6.0",
-        w61: "application/wordperfect6.1",
-        w6w: "application/msword",
-        wad: "application/x-doom",
-        wav: ["audio/wav", "audio/x-wav"],
-        wax: "audio/x-ms-wax",
-        wb1: "application/x-qpro",
-        wbmp: "image/vnd.wap.wbmp",
-        wbs: "application/vnd.criticaltools.wbs+xml",
-        wbxml: "application/vnd.wap.wbxml",
-        wcm: "application/vnd.ms-works",
-        wdb: "application/vnd.ms-works",
-        web: "application/vnd.xara",
-        weba: "audio/webm",
-        webm: "video/webm",
-        webp: "image/webp",
-        wg: "application/vnd.pmi.widget",
-        wgt: "application/widget",
-        wiz: "application/msword",
-        wk1: "application/x-123",
-        wks: "application/vnd.ms-works",
-        wm: "video/x-ms-wm",
-        wma: "audio/x-ms-wma",
-        wmd: "application/x-ms-wmd",
-        wmf: ["windows/metafile", "application/x-msmetafile"],
-        wml: "text/vnd.wap.wml",
-        wmlc: "application/vnd.wap.wmlc",
-        wmls: "text/vnd.wap.wmlscript",
-        wmlsc: "application/vnd.wap.wmlscriptc",
-        wmv: "video/x-ms-wmv",
-        wmx: "video/x-ms-wmx",
-        wmz: "application/x-ms-wmz",
-        woff: "application/x-font-woff",
-        word: "application/msword",
-        wp: "application/wordperfect",
-        wp5: ["application/wordperfect", "application/wordperfect6.0"],
-        wp6: "application/wordperfect",
-        wpd: ["application/wordperfect", "application/vnd.wordperfect", "application/x-wpwin"],
-        wpl: "application/vnd.ms-wpl",
-        wps: "application/vnd.ms-works",
-        wq1: "application/x-lotus",
-        wqd: "application/vnd.wqd",
-        wri: ["application/mswrite", "application/x-wri", "application/x-mswrite"],
-        wrl: ["model/vrml", "x-world/x-vrml", "application/x-world"],
-        wrz: ["model/vrml", "x-world/x-vrml"],
-        wsc: "text/scriplet",
-        wsdl: "application/wsdl+xml",
-        wspolicy: "application/wspolicy+xml",
-        wsrc: "application/x-wais-source",
-        wtb: "application/vnd.webturbo",
-        wtk: "application/x-wintalk",
-        wvx: "video/x-ms-wvx",
-        "x-png": "image/png",
-        x3d: "application/vnd.hzn-3d-crossword",
-        xaf: "x-world/x-vrml",
-        xap: "application/x-silverlight-app",
-        xar: "application/vnd.xara",
-        xbap: "application/x-ms-xbap",
-        xbd: "application/vnd.fujixerox.docuworks.binder",
-        xbm: ["image/xbm", "image/x-xbm", "image/x-xbitmap"],
-        xdf: "application/xcap-diff+xml",
-        xdm: "application/vnd.syncml.dm+xml",
-        xdp: "application/vnd.adobe.xdp+xml",
-        xdr: "video/x-amt-demorun",
-        xdssc: "application/dssc+xml",
-        xdw: "application/vnd.fujixerox.docuworks",
-        xenc: "application/xenc+xml",
-        xer: "application/patch-ops-error+xml",
-        xfdf: "application/vnd.adobe.xfdf",
-        xfdl: "application/vnd.xfdl",
-        xgz: "xgl/drawing",
-        xhtml: "application/xhtml+xml",
-        xif: "image/vnd.xiff",
-        xl: "application/excel",
-        xla: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xlam: "application/vnd.ms-excel.addin.macroenabled.12",
-        xlb: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
-        xlc: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xld: ["application/excel", "application/x-excel"],
-        xlk: ["application/excel", "application/x-excel"],
-        xll: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
-        xlm: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xls: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xlsb: "application/vnd.ms-excel.sheet.binary.macroenabled.12",
-        xlsm: "application/vnd.ms-excel.sheet.macroenabled.12",
-        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        xlt: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xltm: "application/vnd.ms-excel.template.macroenabled.12",
-        xltx: "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
-        xlv: ["application/excel", "application/x-excel"],
-        xlw: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xm: "audio/xm",
-        xml: ["application/xml", "text/xml", "application/atom+xml", "application/rss+xml"],
-        xmz: "xgl/movie",
-        xo: "application/vnd.olpc-sugar",
-        xof: "x-world/x-vrml",
-        xop: "application/xop+xml",
-        xpi: "application/x-xpinstall",
-        xpix: "application/x-vnd.ls-xpix",
-        xpm: ["image/xpm", "image/x-xpixmap"],
-        xpr: "application/vnd.is-xpr",
-        xps: "application/vnd.ms-xpsdocument",
-        xpw: "application/vnd.intercon.formnet",
-        xslt: "application/xslt+xml",
-        xsm: "application/vnd.syncml+xml",
-        xspf: "application/xspf+xml",
-        xsr: "video/x-amt-showrun",
-        xul: "application/vnd.mozilla.xul+xml",
-        xwd: ["image/x-xwd", "image/x-xwindowdump"],
-        xyz: ["chemical/x-xyz", "chemical/x-pdb"],
-        yang: "application/yang",
-        yin: "application/yin+xml",
-        z: ["application/x-compressed", "application/x-compress"],
-        zaz: "application/vnd.zzazz.deck+xml",
-        zip: ["application/zip", "multipart/x-zip", "application/x-zip-compressed", "application/x-compressed"],
-        zir: "application/vnd.zul",
-        zmm: "application/vnd.handheld-entertainment+xml",
-        zoo: "application/octet-stream",
-        zsh: "text/x-script.zsh"
-      }
-    };
-  }
-});
-
-// node_modules/mailparser/node_modules/libmime/lib/libmime.js
-var require_libmime2 = __commonJS({
-  "node_modules/mailparser/node_modules/libmime/lib/libmime.js"(exports, module) {
-    "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var libcharset = require_charset2();
-    var libbase642 = require_libbase642();
-    var libqp2 = require_libqp();
-    var mimetypes = require_mimetypes2();
-    var STAGE_KEY = 4097;
-    var STAGE_VALUE = 4098;
-    var setOwnProperty = (obj, key, value) => {
-      if (key === "__proto__") {
-        Object.defineProperty(obj, key, {
-          value,
-          writable: true,
-          enumerable: true,
-          configurable: true
-        });
-      } else {
-        obj[key] = value;
-      }
-    };
-    var hasOwn2 = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
-    var isWSP = (chr) => chr === " " || chr === "	" || chr === "\r" || chr === "\n" || chr === "\f" || chr === "\v";
-    var Libmime = class {
-      constructor(config2) {
-        this.config = config2 || {};
-      }
-      /**
-       * Checks if a value is plaintext string (uses only printable 7bit chars)
-       *
-       * @param {String} value String to be tested
-       * @returns {Boolean} true if it is a plaintext string
-       */
-      isPlainText(value) {
-        if (typeof value !== "string" || /[\x00-\x08\x0b\x0c\x0e-\x1f\u0080-\uFFFF]/.test(value)) {
-          return false;
-        } else {
-          return true;
-        }
-      }
-      /**
-       * Checks if a multi line string containes lines longer than the selected value.
-       *
-       * Useful when detecting if a mail message needs any processing at all –
-       * if only plaintext characters are used and lines are short, then there is
-       * no need to encode the values in any way. If the value is plaintext but has
-       * longer lines then allowed, then use format=flowed
-       *
-       * @param {String} str String to be tested
-       * @param {Number} lineLength Max line length to check for
-       * @returns {Boolean} Returns true if there is at least one line longer than lineLength chars
-       */
-      hasLongerLines(str, lineLength) {
-        return new RegExp("^.{" + (lineLength + 1) + ",}", "m").test(str);
-      }
-      /**
-       * Decodes a string from a format=flowed soft wrapping.
-       *
-       * @param {String} str Plaintext string with format=flowed to decode
-       * @param {Boolean} [delSp] If true, delete leading spaces (delsp=yes)
-       * @return {String} Mime decoded string
-       */
-      decodeFlowed(str, delSp) {
-        str = (str || "").toString();
-        let lines = str.split(/\r?\n/);
-        let result = [];
-        let parts = null, partsLength = 0;
-        let pushPart = (part) => {
-          if (part) {
-            parts.push(part);
-            partsLength += part.length;
-          }
-        };
-        for (let i = 0; i < lines.length; i++) {
-          let line = lines[i];
-          let last = parts !== null && parts.length ? parts[parts.length - 1] : "";
-          let isSoftBreak = last.endsWith(" ") && !(partsLength === 3 && parts.join("") === "-- ");
-          if (isSoftBreak) {
-            if (delSp) {
-              parts.pop();
-              partsLength -= last.length;
-              pushPart(last.slice(0, -1));
-            }
-            pushPart(line);
-          } else {
-            if (parts !== null) {
-              result.push(parts.join(""));
-            }
-            parts = [];
-            partsLength = 0;
-            pushPart(line);
-          }
-        }
-        if (parts !== null && partsLength) {
-          result.push(parts.join(""));
-        }
-        return result.join("\n").replace(/^ /gm, "");
-      }
-      /**
-       * Adds soft line breaks to content marked with format=flowed to
-       * ensure that no line in the message is never longer than lineLength
-       *
-       * @param {String} str Plaintext string that requires wrapping
-       * @param {Number} [lineLength=76] Maximum length of a line
-       * @return {String} String with forced line breaks
-       */
-      encodeFlowed(str, lineLength) {
-        lineLength = lineLength || 76;
-        let flowed = [];
-        str.split(/\r?\n/).forEach((line) => {
-          flowed.push(
-            this.foldLines(
-              line.replace(/^( |From|>)/gim, " $1"),
-              lineLength,
-              true
-            )
-          );
-        });
-        return flowed.join("\r\n");
-      }
-      /**
-       * Encodes a string or an Buffer to an UTF-8 MIME Word (rfc2047)
-       *
-       * @param {String|Buffer} data String to be encoded
-       * @param {String} mimeWordEncoding='Q' Encoding for the mime word, either Q or B
-       * @param {Number} [maxLength=0] If set, split mime words into several chunks if needed
-       * @return {String} Single or several mime words joined together
-       */
-      encodeWord(data, mimeWordEncoding, maxLength) {
-        mimeWordEncoding = (mimeWordEncoding || "Q").toString().toUpperCase().trim().charAt(0);
-        maxLength = maxLength || 0;
-        let encodedStr;
-        let toCharset = "UTF-8";
-        if (maxLength && maxLength > 7 + toCharset.length) {
-          maxLength -= 7 + toCharset.length;
-        }
-        if (mimeWordEncoding === "Q") {
-          encodedStr = libqp2.encode(data).replace(/[^a-z0-9!*+\-/=]/gi, (chr) => {
-            let ord = chr.charCodeAt(0).toString(16).toUpperCase();
-            if (chr === " ") {
-              return "_";
-            } else {
-              return "=" + (ord.length === 1 ? "0" + ord : ord);
-            }
-          });
-        } else if (mimeWordEncoding === "B") {
-          encodedStr = typeof data === "string" ? data : libbase642.encode(data);
-          maxLength = maxLength ? Math.max(3, (maxLength - maxLength % 4) / 4 * 3) : 0;
-        }
-        if (maxLength && (mimeWordEncoding !== "B" ? encodedStr : libbase642.encode(data)).length > maxLength) {
-          if (mimeWordEncoding === "Q") {
-            encodedStr = this.splitMimeEncodedString(encodedStr, maxLength).join("?= =?" + toCharset + "?" + mimeWordEncoding + "?");
-          } else {
-            let parts = [];
-            let lpart = "";
-            for (let i = 0, len = encodedStr.length; i < len; i++) {
-              let chr = encodedStr.charAt(i);
-              if (/[\ud83c\ud83d\ud83e]/.test(chr) && i < len - 1) {
-                chr += encodedStr.charAt(++i);
-              }
-              if (Buffer2.byteLength(lpart + chr) <= maxLength || i === 0) {
-                lpart += chr;
-              } else {
-                parts.push(libbase642.encode(lpart));
-                lpart = chr;
-              }
-            }
-            if (lpart) {
-              parts.push(libbase642.encode(lpart));
-            }
-            if (parts.length > 1) {
-              encodedStr = parts.join("?= =?" + toCharset + "?" + mimeWordEncoding + "?");
-            } else {
-              encodedStr = parts.join("");
-            }
-          }
-        } else if (mimeWordEncoding === "B") {
-          encodedStr = libbase642.encode(data);
-        }
-        return "=?" + toCharset + "?" + mimeWordEncoding + "?" + encodedStr + (encodedStr.substr(-2) === "?=" ? "" : "?=");
-      }
-      /**
-       * Normalizes a charset name to its canonical form, resolving common aliases and
-       * invalid names. For example `iso-8859-8-i` and `iso-8859-8-e` become `ISO-8859-8`
-       * and `win-1257` becomes `windows-1257`. Unknown charsets are returned uppercased.
-       * Missing or non-string input defaults to `UTF-8`.
-       *
-       * @param {String} charset Charset name to normalize
-       * @return {String} Canonical charset name
-       */
-      normalizeCharset(charset) {
-        return libcharset.normalizeCharset(charset);
-      }
-      /**
-       * Decodes the inner payload of a single mime encoded-word into a unicode string.
-       * Expects the three components of `=?charset?encoding?text?=` already separated.
-       *
-       * @param {String} charset Charset name from the encoded-word (may include an RFC 2231 language tag, which is ignored)
-       * @param {String} encoding Encoding indicator, either 'Q' or 'B' (case insensitive)
-       * @param {String} str Encoded payload between the second `?` and the trailing `?=`
-       * @return {String} Decoded unicode string
-       */
-      decodeWord(charset, encoding, str) {
-        let splitPos = charset.indexOf("*");
-        if (splitPos >= 0) {
-          charset = charset.substr(0, splitPos);
-        }
-        charset = libcharset.normalizeCharset(charset);
-        encoding = encoding.toUpperCase();
-        if (encoding === "Q") {
-          str = str.replace(/=\s+([0-9a-fA-F])/g, "=$1").replace(/[_\s]/g, " ");
-          let buf = Buffer2.from(str);
-          let bytes = [];
-          for (let i = 0, len = buf.length; i < len; i++) {
-            let c = buf[i];
-            if (i <= len - 2 && c === 61) {
-              let c1 = this.getHex(buf[i + 1]);
-              let c2 = this.getHex(buf[i + 2]);
-              if (c1 && c2) {
-                let c3 = parseInt(c1 + c2, 16);
-                bytes.push(c3);
-                i += 2;
-                continue;
-              }
-            }
-            bytes.push(c);
-          }
-          str = Buffer2.from(bytes);
-        } else if (encoding === "B") {
-          str = libbase642.decode(str);
-        } else {
-          str = Buffer2.from(str);
-        }
-        return libcharset.decode(str, charset);
-      }
-      /**
-       * Finds word sequences with non ascii text and converts these to mime words
-       *
-       * @param {String|Buffer} data String to be encoded
-       * @param {String} mimeWordEncoding='Q' Encoding for the mime word, either Q or B
-       * @param {Number} [maxLength=0] If set, split mime words into several chunks if needed
-       * @param {String} [fromCharset='UTF-8'] Source character set
-       * @return {String} String with possible mime words
-       */
-      encodeWords(data, mimeWordEncoding, maxLength, fromCharset) {
-        if (!fromCharset && typeof maxLength === "string" && !maxLength.match(/^[0-9]+$/)) {
-          fromCharset = maxLength;
-          maxLength = void 0;
-        }
-        maxLength = maxLength || 0;
-        let decodedValue = libcharset.decode(libcharset.convert(data || "", fromCharset));
-        let encodedValue;
-        let firstMatch = decodedValue.match(/(?:^|\s)([^\s]*[\u0080-\uFFFF])/);
-        if (!firstMatch) {
-          return decodedValue;
-        }
-        let lastMatch = decodedValue.match(/([\u0080-\uFFFF][^\s]*)[^\u0080-\uFFFF]*$/);
-        if (!lastMatch) {
-          return decodedValue;
-        }
-        let startIndex = firstMatch.index + (firstMatch[0].match(/[^\s]/) || {
-          index: 0
-        }).index;
-        let endIndex = lastMatch.index + (lastMatch[1] || "").length;
-        encodedValue = (startIndex ? decodedValue.substr(0, startIndex) : "") + this.encodeWord(decodedValue.substring(startIndex, endIndex), mimeWordEncoding || "Q", maxLength) + (endIndex < decodedValue.length ? decodedValue.substr(endIndex) : "");
-        return encodedValue;
-      }
-      /**
-       * Decode a string that might include one or several mime words
-       *
-       * @param {String} str String including some mime words that will be decoded
-       * @return {String} Decoded unicode string
-       */
-      decodeWords(str) {
-        return (str || "").toString().replace(/(=\?([^?]+)\?[Bb]\?[^?]*\?=)\s*(?==\?([^?]+)\?[Bb]\?[^?]*\?=)/g, (match, left2, chLeft, chRight) => {
-          if (libcharset.normalizeCharset(chLeft || "") === libcharset.normalizeCharset(chRight || "")) {
-            return left2 + "__\0JOIN\0__";
-          }
-          return match;
-        }).replace(/(=\?([^?]+)\?[Qq]\?[^?]*\?=)\s*(?==\?([^?]+)\?[Qq]\?[^?]*\?=)/g, (match, left2, chLeft, chRight) => {
-          if (libcharset.normalizeCharset(chLeft || "") === libcharset.normalizeCharset(chRight || "")) {
-            return left2 + "__\0JOIN\0__";
-          }
-          return match;
-        }).replace(/(\?=)?__\x00JOIN\x00__(=\?([^?]+)\?[QqBb]\?)?/g, "").replace(/(=\?[^?]+\?[QqBb]\?[^?]*\?=)\s+(?==\?[^?]+\?[QqBb]\?[^?]*\?=)/g, "$1").replace(/=\?([\w_\-*]+)\?([QqBb])\?([^?]*)\?=/g, (m, charset, encoding, text3) => this.decodeWord(charset, encoding, text3));
-      }
-      getHex(c) {
-        if (c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70) {
-          return String.fromCharCode(c);
-        }
-        return false;
-      }
-      /**
-       * Splits a string by :
-       * The result is not mime word decoded, you need to do your own decoding based
-       * on the rules for the specific header key
-       *
-       * @param {String} headerLine Single header line, might include linebreaks as well if folded
-       * @return {Object} An object of {key, value}
-       */
-      decodeHeader(headerLine) {
-        let line = (headerLine || "").toString().replace(/(?:\r?\n|\r)[ \t]*/g, " ").trim(), match = line.match(/^\s*([^:]+):(.*)$/), key = (match && match[1] || "").trim().toLowerCase(), value = (match && match[2] || "").trim();
-        return {
-          key,
-          value
-        };
-      }
-      /**
-       * Parses a block of header lines. Does not decode mime words as every
-       * header might have its own rules (eg. formatted email addresses and such)
-       *
-       * @param {String} headers Headers string
-       * @return {Object} An object of headers, where header keys are object keys and every value is an Array of the values for that key
-       */
-      decodeHeaders(headers2) {
-        let lines = headers2.split(/\r?\n|\r/), headersObj = {}, header3, i, len;
-        let headersPos = 0;
-        while (headersPos < lines.length && lines[headersPos] === "") {
-          headersPos++;
-        }
-        let bodyPos = lines.indexOf("", headersPos);
-        lines = lines.slice(headersPos, bodyPos >= 0 ? bodyPos : lines.length);
-        let unfolded = [];
-        for (i = 0, len = lines.length; i < len; i++) {
-          if (unfolded.length && /^[ \t]/.test(lines[i])) {
-            unfolded[unfolded.length - 1] += "\r\n" + lines[i];
-          } else {
-            unfolded.push(lines[i]);
-          }
-        }
-        lines = unfolded;
-        for (i = 0, len = lines.length; i < len; i++) {
-          header3 = this.decodeHeader(lines[i]);
-          if (!hasOwn2(headersObj, header3.key)) {
-            setOwnProperty(headersObj, header3.key, [header3.value]);
-          } else {
-            headersObj[header3.key].push(header3.value);
-          }
-        }
-        return headersObj;
-      }
-      /**
-       * Joins parsed header value together as 'value; param1=value1; param2=value2'
-       * PS: We are following RFC 822 for the list of special characters that we need to keep in quotes.
-       *      Refer: https://www.w3.org/Protocols/rfc1341/4_Content-Type.html
-       * @param {Object} structured Parsed header value
-       * @return {String} joined header value
-       */
-      buildHeaderValue(structured) {
-        let paramsArray = [];
-        Object.keys(structured.params || {}).forEach((param) => {
-          let value = structured.params[param];
-          if (!this.isPlainText(value) || value.length >= 75) {
-            this.buildHeaderParam(param, value, 50).forEach((encodedParam) => {
-              if (!/[\s"\\;:/=(),<>@[\]?]|^[-']|'$/.test(encodedParam.value) || encodedParam.key.substr(-1) === "*") {
-                paramsArray.push(encodedParam.key + "=" + encodedParam.value);
-              } else {
-                paramsArray.push(encodedParam.key + "=" + JSON.stringify(encodedParam.value));
-              }
-            });
-          } else if (/[\s'"\\;:/=(),<>@[\]?]|^-/.test(value)) {
-            paramsArray.push(param + "=" + JSON.stringify(value));
-          } else {
-            paramsArray.push(param + "=" + value);
-          }
-        });
-        return structured.value + (paramsArray.length ? "; " + paramsArray.join("; ") : "");
-      }
-      /**
-       * Parses a header value with key=value arguments into a structured
-       * object.
-       *
-       *   parseHeaderValue('text/plain; CHARSET=UTF-8') ->
-       *   {
-       *     'value': 'text/plain',
-       *     'params': {
-       *       'charset': 'UTF-8'
-       *     }
-       *   }
-       *
-       * @param {String} str Header value
-       * @return {Object} Header value as a parsed structure
-       */
-      parseHeaderValue(str) {
-        let response = {
-          value: false,
-          params: {}
-        };
-        let key = false;
-        let value = "";
-        let valueEnd = 0;
-        let stage = STAGE_VALUE;
-        let quote = false;
-        let escaped = false;
-        let chr;
-        let commit = () => {
-          let collected = value.substring(0, valueEnd);
-          value = "";
-          valueEnd = 0;
-          if (stage === STAGE_KEY) {
-            if (collected) {
-              setOwnProperty(response.params, collected.toLowerCase(), "");
-            }
-          } else if (key === false) {
-            response.value = collected;
-          } else {
-            setOwnProperty(response.params, key, collected);
-          }
-        };
-        for (let i = 0, len = str.length; i < len; i++) {
-          chr = str.charAt(i);
-          switch (stage) {
-            case STAGE_KEY:
-              if (chr === "=") {
-                key = value.substring(0, valueEnd).toLowerCase();
-                value = "";
-                valueEnd = 0;
-                stage = STAGE_VALUE;
-              } else if (chr === ";") {
-                commit();
-              } else if (isWSP(chr)) {
-                if (value.length) {
-                  value += chr;
-                }
-              } else {
-                value += chr;
-                valueEnd = value.length;
-              }
-              break;
-            case STAGE_VALUE:
-              if (escaped) {
-                value += chr;
-                valueEnd = value.length;
-              } else if (chr === "\\") {
-                escaped = true;
-                continue;
-              } else if (chr === '"') {
-                quote = !quote;
-              } else if (!quote && chr === ";") {
-                commit();
-                stage = STAGE_KEY;
-              } else if (!quote && isWSP(chr)) {
-                if (value.length) {
-                  value += chr;
-                }
-              } else {
-                value += chr;
-                valueEnd = value.length;
-              }
-              escaped = false;
-              break;
-          }
-        }
-        commit();
-        let continuations = /* @__PURE__ */ new Map();
-        for (let key2 of Object.keys(response.params)) {
-          let match = key2.match(/\*((\d+)\*?)?$/);
-          if (!match) {
-            continue;
-          }
-          let actualKey = key2.substr(0, match.index).toLowerCase();
-          let nr = Number(match[2]) || 0;
-          let value2 = response.params[key2];
-          delete response.params[key2];
-          let continuation = continuations.get(actualKey);
-          if (!continuation) {
-            continuation = {
-              charset: false,
-              values: []
-            };
-            continuations.set(actualKey, continuation);
-          }
-          if (nr === 0 && match[0].charAt(match[0].length - 1) === "*" && (match = value2.match(/^([^']*)'[^']*'(.*)$/))) {
-            continuation.charset = match[1] || "utf-8";
-            value2 = match[2];
-          }
-          continuation.values.push({ nr, value: value2 });
-        }
-        for (let [key2, continuation] of continuations) {
-          let value2 = continuation.values.sort((a, b) => a.nr - b.nr).map((val) => val.value).join("");
-          if (!continuation.charset) {
-            setOwnProperty(response.params, key2, this.decodeWords(value2));
-            continue;
-          }
-          let qpValue = value2.replace(/[=_\s]/g, (s) => {
-            if (s === " ") {
-              return "_";
-            }
-            let c = s.charCodeAt(0).toString(16);
-            return "%" + (c.length < 2 ? "0" : "") + c;
-          }).replace(/%/g, "=");
-          setOwnProperty(response.params, key2, this.decodeWord(continuation.charset, "Q", qpValue));
-        }
-        return response;
-      }
-      /**
-       * Encodes a string or an Buffer to an UTF-8 Parameter Value Continuation encoding (rfc2231)
-       * Useful for splitting long parameter values.
-       *
-       * For example
-       *      title="unicode string"
-       * becomes
-       *     title*0*=utf-8''unicode
-       *     title*1*=%20string
-       *
-       * @param {String} key Parameter name (eg. 'filename')
-       * @param {String|Buffer} data String to be encoded
-       * @param {Number} [maxLength=50] Max length for generated chunks
-       * @param {String} [fromCharset='UTF-8'] Source character set
-       * @return {Array} A list of encoded keys and headers
-       */
-      buildHeaderParam(key, data, maxLength, fromCharset) {
-        let list2 = [];
-        if (typeof data !== "string" && !Buffer2.isBuffer(data)) {
-          data = data === null || data === void 0 ? "" : data.toString();
-        }
-        let encodedStr = typeof data === "string" ? data : libcharset.decode(data, fromCharset);
-        let encodedStrArr;
-        let chr, ord;
-        let line;
-        let startPos = 0;
-        let isEncoded = false;
-        let i, len;
-        maxLength = maxLength || 50;
-        if (this.isPlainText(data)) {
-          if (encodedStr.length <= maxLength) {
-            return [
-              {
-                key,
-                value: encodedStr
-              }
-            ];
-          }
-          encodedStr = encodedStr.replace(new RegExp(".{" + maxLength + "}", "g"), (str) => {
-            list2.push({
-              line: str
-            });
-            return "";
-          });
-          if (encodedStr) {
-            list2.push({
-              line: encodedStr
-            });
-          }
-        } else {
-          if (/[\uD800-\uDBFF]/.test(encodedStr)) {
-            encodedStrArr = [];
-            for (i = 0, len = encodedStr.length; i < len; i++) {
-              chr = encodedStr.charAt(i);
-              ord = chr.charCodeAt(0);
-              if (ord >= 55296 && ord <= 56319 && i < len - 1) {
-                chr += encodedStr.charAt(i + 1);
-                encodedStrArr.push(chr);
-                i++;
-              } else {
-                encodedStrArr.push(chr);
-              }
-            }
-            encodedStr = encodedStrArr;
-          }
-          line = "utf-8''";
-          isEncoded = true;
-          startPos = 0;
-          for (i = 0, len = encodedStr.length; i < len; i++) {
-            chr = encodedStr[i];
-            if (isEncoded) {
-              chr = this.safeEncodeURIComponent(chr);
-            } else {
-              chr = chr === " " ? chr : this.safeEncodeURIComponent(chr);
-              if (chr !== encodedStr[i]) {
-                if ((this.safeEncodeURIComponent(line) + chr).length >= maxLength) {
-                  list2.push({
-                    line,
-                    encoded: isEncoded
-                  });
-                  line = "";
-                  startPos = i - 1;
-                } else {
-                  isEncoded = true;
-                  i = startPos;
-                  line = "";
-                  continue;
-                }
-              }
-            }
-            if ((line + chr).length >= maxLength) {
-              list2.push({
-                line,
-                encoded: isEncoded
-              });
-              line = chr = encodedStr[i] === " " ? " " : this.safeEncodeURIComponent(encodedStr[i]);
-              if (chr === encodedStr[i]) {
-                isEncoded = false;
-                startPos = i - 1;
-              } else {
-                isEncoded = true;
-              }
-            } else {
-              line += chr;
-            }
-          }
-          if (line) {
-            list2.push({
-              line,
-              encoded: isEncoded
-            });
-          }
-        }
-        return list2.map((item, i2) => ({
-          // encoded lines: {name}*{part}*
-          // unencoded lines: {name}*{part}
-          // if any line needs to be encoded then the first line (part==0) is always encoded
-          key: key + "*" + i2 + (item.encoded ? "*" : ""),
-          value: item.line
-        }));
-      }
-      /**
-       * Returns file extension for a content type string. If no suitable extensions
-       * are found, 'bin' is used as the default extension
-       *
-       * @param {String} mimeType Content type to be checked for
-       * @return {String} File extension
-       */
-      detectExtension(mimeType) {
-        mimeType = (mimeType || "").toString().toLowerCase().replace(/\s/g, "");
-        if (!hasOwn2(mimetypes.list, mimeType)) {
-          return "bin";
-        }
-        if (typeof mimetypes.list[mimeType] === "string") {
-          return mimetypes.list[mimeType];
-        }
-        let mimeParts = mimeType.split("/");
-        for (let i = 0, len = mimetypes.list[mimeType].length; i < len; i++) {
-          if (mimeParts[1] === mimetypes.list[mimeType][i]) {
-            return mimetypes.list[mimeType][i];
-          }
-        }
-        return mimetypes.list[mimeType][0] !== "*" ? mimetypes.list[mimeType][0] : "bin";
-      }
-      /**
-       * Returns content type for a file extension. If no suitable content types
-       * are found, 'application/octet-stream' is used as the default content type
-       *
-       * @param {String} extension Extension (or filename) to be checked for
-       * @return {String} Content type
-       */
-      detectMimeType(extension) {
-        extension = (extension || "").toString().toLowerCase().replace(/\s/g, "").replace(/^\./g, "").split(".").pop();
-        if (!hasOwn2(mimetypes.extensions, extension)) {
-          return "application/octet-stream";
-        }
-        if (typeof mimetypes.extensions[extension] === "string") {
-          return mimetypes.extensions[extension];
-        }
-        let mimeParts;
-        for (let i = 0, len = mimetypes.extensions[extension].length; i < len; i++) {
-          mimeParts = mimetypes.extensions[extension][i].split("/");
-          if (mimeParts[1] === extension) {
-            return mimetypes.extensions[extension][i];
-          }
-        }
-        return mimetypes.extensions[extension][0];
-      }
-      /**
-       * Folds long lines, useful for folding header lines (afterSpace=false) and
-       * flowed text (afterSpace=true)
-       *
-       * @param {String} str String to be folded
-       * @param {Number} [lineLength=76] Maximum length of a line
-       * @param {Boolean} afterSpace If true, leave a space in the end of a line
-       * @return {String} String with folded lines
-       */
-      foldLines(str, lineLength, afterSpace) {
-        str = (str || "").toString();
-        lineLength = lineLength || 76;
-        let pos = 0, len = str.length, result = "", line, match;
-        while (pos < len) {
-          line = str.substr(pos, lineLength);
-          if (line.length < lineLength) {
-            result += line;
-            break;
-          }
-          if (match = line.match(/^[^\n\r]*(\r?\n|\r)/)) {
-            line = match[0];
-            result += line;
-            pos += line.length;
-            continue;
-          } else if ((match = line.match(/(\s+)[^\s]*$/)) && match[0].length - (afterSpace ? (match[1] || "").length : 0) < line.length) {
-            line = line.substr(0, line.length - (match[0].length - (afterSpace ? (match[1] || "").length : 0)));
-          } else if (match = str.substr(pos + line.length).match(/^[^\s]+(\s*)/)) {
-            line = line + match[0].substr(0, match[0].length - (!afterSpace ? (match[1] || "").length : 0));
-          }
-          result += line;
-          pos += line.length;
-          if (pos < len) {
-            result += "\r\n";
-          }
-        }
-        return result;
-      }
-      /**
-       * Splits a mime encoded string. Needed for dividing mime words into smaller chunks
-       *
-       * @param {String} str Mime encoded string to be split up
-       * @param {Number} maxlen Maximum length of characters for one part (minimum 12)
-       * @return {Array} Split string
-       */
-      splitMimeEncodedString(str, maxlen) {
-        let curLine, match, chr, done, lines = [];
-        maxlen = Math.max(maxlen || 0, 12);
-        while (str.length) {
-          curLine = str.substr(0, maxlen);
-          if (match = curLine.match(/[=][0-9A-F]?$/i)) {
-            curLine = curLine.substr(0, match.index);
-          }
-          done = false;
-          while (!done) {
-            done = true;
-            if (match = str.substr(curLine.length).match(/^[=]([0-9A-F]{2})/i)) {
-              chr = parseInt(match[1], 16);
-              if (chr < 194 && chr > 127) {
-                curLine = curLine.substr(0, curLine.length - 3);
-                done = false;
-              }
-            }
-          }
-          if (curLine.length) {
-            lines.push(curLine);
-          }
-          str = str.substr(curLine.length);
-        }
-        return lines;
-      }
-      encodeURICharComponent(chr) {
-        let res = "";
-        let buf = Buffer2.from(chr, "utf-8");
-        for (let i = 0, len = buf.length; i < len; i++) {
-          let ord = buf[i].toString(16).toUpperCase();
-          res += "%" + (ord.length < 2 ? "0" : "") + ord;
-        }
-        return res;
-      }
-      safeEncodeURIComponent(str) {
-        str = (str || "").toString();
-        try {
-          str = encodeURIComponent(str);
-        } catch (E) {
-          return str.replace(/[^\x00-\x1F *'()<>@,;:\\"[\]?=\u007F-\uFFFF]+/g, "");
-        }
-        return str.replace(/[\x00-\x1F *'()<>@,;:\\"[\]?=\u007F-\uFFFF]/g, (chr) => this.encodeURICharComponent(chr));
-      }
-    };
-    module.exports = new Libmime();
-    module.exports.Libmime = Libmime;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/headers.js
-var require_headers2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/headers.js"(exports, module) {
-    "use strict";
-    var libmime3 = require_libmime2();
-    var Libmime = (
-      /** @type {any} */
-      libmime3.Libmime
-    );
-    var Headers2 = class {
-      /**
-       * @param {string | Buffer | HeaderLine[] | false} [headers] Raw header source or already parsed lines.
-       * @param {LibmimeOptions} [config] Optional libmime configuration.
-       */
-      constructor(headers2, config2) {
-        config2 = config2 || {};
-        if (Array.isArray(headers2)) {
-          this.changed = true;
-          this.headers = false;
-          this.parsed = true;
-          this.lines = headers2;
-        } else {
-          this.changed = false;
-          this.headers = headers2 || false;
-          this.parsed = false;
-          this.lines = false;
-        }
-        this.mbox = false;
-        this.http = false;
-        this.libmime = new Libmime({ Iconv: config2.Iconv });
-      }
-      /**
-       * @param {string} key
-       * @returns {boolean}
-       */
-      hasHeader(key) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        key = this._normalizeHeader(key);
-        return typeof lines.find((line) => line.key === key) === "object";
-      }
-      /**
-       * @param {string} key
-       * @returns {string[]}
-       */
-      get(key) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let headerLines = this._getLines();
-        key = this._normalizeHeader(key);
-        let lines = headerLines.filter((line) => line.key === key).map((line) => this._decodeHeaderValue(line.line));
-        return lines;
-      }
-      /**
-       * @param {string} key
-       * @returns {DecodedHeader[]}
-       */
-      getDecoded(key) {
-        return this.get(key).map((line) => this.libmime.decodeHeader(line)).filter((line) => line && line.value);
-      }
-      /**
-       * @param {string} key
-       * @returns {string}
-       */
-      getFirst(key) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        key = this._normalizeHeader(key);
-        let header3 = lines.find((line) => line.key === key);
-        if (!header3) {
-          return "";
-        }
-        return ((this.libmime.decodeHeader(this._decodeHeaderValue(header3.line)) || {}).value || "").toString().trim();
-      }
-      /**
-       * @returns {HeaderLine[]}
-       */
-      getList() {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        return this._getLines();
-      }
-      /**
-       * @param {string} key
-       * @param {string | number | Buffer} [value]
-       * @param {number} [index]
-       * @returns {void}
-       */
-      add(key, value, index) {
-        if (typeof value === "undefined") {
-          return;
-        }
-        if (typeof value === "number") {
-          value = value.toString();
-        }
-        if (typeof value === "string") {
-          value = Buffer.from(value);
-        }
-        value = value.toString("binary");
-        this.addFormatted(key, this.libmime.foldLines(key + ": " + value.replace(/[\r\n]/g, ""), 76, false), index);
-      }
-      /**
-       * @param {string} key
-       * @param {string | Buffer | false} [line]
-       * @param {number} [index]
-       * @returns {void}
-       */
-      addFormatted(key, line, index) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        index = index || 0;
-        this.changed = true;
-        if (!line) {
-          return;
-        }
-        if (typeof line !== "string") {
-          line = line.toString("binary");
-        }
-        line = this._normalizeInsertedLine(line);
-        if (!line) {
-          return;
-        }
-        let header3 = {
-          key: this._normalizeHeader(key),
-          line
-        };
-        if (index < 1) {
-          lines.unshift(header3);
-        } else if (index >= lines.length) {
-          lines.push(header3);
-        } else {
-          lines.splice(index, 0, header3);
-        }
-      }
-      /**
-       * @param {string} key
-       * @returns {void}
-       */
-      remove(key) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        key = this._normalizeHeader(key);
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].key === key) {
-            this.changed = true;
-            lines.splice(i, 1);
-          }
-        }
-      }
-      /**
-       * @param {string} key
-       * @param {string | number | Buffer} [value]
-       * @param {number} [relativeIndex]
-       * @returns {void}
-       */
-      update(key, value, relativeIndex) {
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        let keyName = key;
-        let index = 0;
-        key = this._normalizeHeader(key);
-        let relativeIndexCount = 0;
-        let relativeMatchFound = false;
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].key === key) {
-            if (relativeIndex && relativeIndex !== relativeIndexCount) {
-              relativeIndexCount++;
-              continue;
-            }
-            index = i;
-            this.changed = true;
-            lines.splice(i, 1);
-            if (relativeIndex) {
-              relativeMatchFound = true;
-              break;
-            }
-          }
-        }
-        if (relativeIndex && !relativeMatchFound) {
-          return;
-        }
-        this.add(keyName, value, index);
-      }
-      /**
-       * Serializes the headers. Unmodified headers are returned byte for byte as they
-       * were received, otherwise every line is rebuilt with `lineEnd` line endings.
-       *
-       * @param {string | false} [lineEnd] Line ending to use, defaults to CRLF.
-       * @returns {Buffer}
-       */
-      build(lineEnd) {
-        if (!this.changed && !lineEnd) {
-          return typeof this.headers === "string" ? Buffer.from(this.headers, "binary") : this.headers || Buffer.alloc(0);
-        }
-        if (!this.parsed) {
-          this._parseHeaders();
-        }
-        let lines = this._getLines();
-        const ending = lineEnd || "\r\n";
-        let headers2 = lines.map((line) => this._normalizeLineBreaks(line.line, ending)).filter((line) => line !== "").map((line) => this._buildHeaderLine(line)).reduce(
-          (joined, line, idx) => {
-            if (idx) {
-              joined.push(Buffer.from(ending, "binary"));
-            }
-            joined.push(line);
-            return joined;
-          },
-          /** @type {Buffer[]} */
-          []
-        );
-        headers2.push(Buffer.from(ending + ending, "binary"));
-        if (this.mbox) {
-          headers2.unshift(Buffer.from(this.mbox + ending, "binary"));
-        }
-        if (this.http) {
-          headers2.unshift(Buffer.from(this.http + ending, "binary"));
-        }
-        return Buffer.concat(headers2);
-      }
-      /**
-       * @param {string} key
-       * @returns {string}
-       */
-      _normalizeHeader(key) {
-        return (key || "").toLowerCase().trim();
-      }
-      /**
-       * Rewrites the line breaks of a header line so that the line can only ever parse
-       * back as the single header it was reported as. A line break followed by whitespace
-       * is folding and becomes `lineEnd`, every other line break would start a new header
-       * line and is dropped.
-       *
-       * A bare <CR> is never a line break for _parseHeaders, so promoting one here would
-       * emit a header line that was never reported as parsed.
-       *
-       * @param {string} line Header line to normalize.
-       * @param {string} lineEnd Line ending to fold with.
-       * @returns {string} Line with only folding line breaks left.
-       */
-      _normalizeLineBreaks(line, lineEnd) {
-        return line.replace(/^[\r\n]+/, "").replace(/\r\n|\r|\n/g, (match, offset, source) => match !== "\r" && this._isFoldingChar(source.charAt(offset + match.length)) ? lineEnd : "");
-      }
-      /**
-       * Prepares a caller supplied line for insertion. On top of the line break rules an
-       * inserted line has to stand on its own: a leading fold or indent would attach it to
-       * whichever header happens to precede it, and a leading line break would close the
-       * header block outright.
-       *
-       * Lines that were parsed out of a message keep their leading whitespace instead, so
-       * that rebuilding can never turn an indented continuation into a header of its own.
-       *
-       * An inserted line is normalized twice, here with CRLF and again in build() with the
-       * line ending the caller asked for. That is only sound because _normalizeLineBreaks is
-       * idempotent over its own output: the folds this pass emits are still recognized as
-       * folds by the next one. Any change to how a fold is represented has to keep that true.
-       *
-       * @param {string} line Formatted header line supplied by the caller.
-       * @returns {string} Line that inserts as exactly one header, or an empty string.
-       */
-      _normalizeInsertedLine(line) {
-        return this._normalizeLineBreaks(line.replace(/^[\r\n \t]+/, ""), "\r\n");
-      }
-      /**
-       * Tells whether a character continues the previous header line rather than
-       * starting a new one. Used by both the parser and the builder so that the two
-       * can not disagree on what folding is.
-       *
-       * @param {string} chr Character that follows a line break.
-       * @returns {boolean} True if the line break is folding.
-       */
-      _isFoldingChar(chr) {
-        return chr === " " || chr === "	";
-      }
-      /**
-       * @returns {HeaderLine[]}
-       */
-      _getLines() {
-        if (!this.lines) {
-          this.lines = [];
-        }
-        return this.lines;
-      }
-      /**
-       * @returns {void}
-       */
-      _parseHeaders() {
-        if (!this.headers) {
-          this.lines = [];
-          this.parsed = true;
-          return;
-        }
-        let rawLines = this.headers.toString("binary").replace(/[\r\n]+$/, "").split(/\r?\n/);
-        let i = 1;
-        let first2 = rawLines[0];
-        while (i < rawLines.length && this._isFoldingChar(rawLines[i].charAt(0))) {
-          first2 += "\r\n" + rawLines[i++];
-        }
-        let lines = [];
-        if (/^From /i.test(first2)) {
-          this.mbox = first2;
-        } else if (/^POST /i.test(first2)) {
-          this.http = first2;
-        } else {
-          lines.push({ key: this._normalizeHeader(first2.substr(0, first2.indexOf(":"))), line: first2 });
-        }
-        for (; i < rawLines.length; i++) {
-          let currentLine = rawLines[i];
-          if (this._isFoldingChar(currentLine.charAt(0))) {
-            let entry = lines[lines.length - 1];
-            entry.line += "\r\n" + currentLine;
-            if (!entry.key) {
-              entry.key = this._normalizeHeader(entry.line.substr(0, entry.line.indexOf(":")));
-            }
-          } else {
-            lines.push({ key: this._normalizeHeader(currentLine.substr(0, currentLine.indexOf(":"))), line: currentLine });
-          }
-        }
-        this.lines = lines;
-        this.parsed = true;
-      }
-      /**
-       * @param {string} line
-       * @returns {Buffer}
-       */
-      _buildHeaderLine(line) {
-        let value = this._decodeHeaderValue(line);
-        return Buffer.from(value, value === line ? "binary" : "utf8");
-      }
-      /**
-       * @param {string} str
-       * @returns {string}
-       */
-      _decodeHeaderValue(str) {
-        if (!str) {
-          return str;
-        }
-        let utf8 = Buffer.from(str, "binary").toString("utf8");
-        return utf8.includes("\uFFFD") ? str : utf8;
-      }
-    };
-    module.exports = Headers2;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/mime-node.js
-var require_mime_node2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/mime-node.js"(exports, module) {
-    "use strict";
-    var Headers2 = require_headers2();
-    var libmime3 = require_libmime2();
-    var libqp2 = require_libqp();
-    var libbase642 = require_libbase642();
-    var PassThrough7 = __require("stream").PassThrough;
-    var pathlib = __require("path");
-    var Libmime = (
-      /** @type {any} */
-      libmime3.Libmime
-    );
-    function stripComments2(value) {
-      if (value.indexOf("(") < 0) {
-        return value;
-      }
-      return value.split(/([\n\r\u2028\u2029])/).map((part) => {
-        let start = part.indexOf("(");
-        if (start < 0) {
-          return part;
-        }
-        let end = part.lastIndexOf(")");
-        return end > start ? part.slice(0, start) + part.slice(end + 1) : part;
-      }).join("");
-    }
-    var MimeNode2 = class {
-      /**
-       * @param {MimeNodeType | false} parentNode Parent node, or false for the root node.
-       * @param {SplitterOptions} [config] Splitter and libmime configuration.
-       */
-      constructor(parentNode, config2) {
-        this.type = "node";
-        this.root = !parentNode;
-        this.parentNode = parentNode;
-        this._parentBoundary = this.parentNode && this.parentNode._boundary;
-        this._parentBoundaryOwner = this.parentNode || false;
-        this._headersLines = [];
-        this._headerlen = 0;
-        this._parsedContentType = false;
-        this._parsedContentDisposition = false;
-        this._boundary = false;
-        this.multipart = false;
-        this.encoding = false;
-        this.headers = false;
-        this.contentType = false;
-        this.charset = false;
-        this.disposition = false;
-        this.filename = false;
-        this.flowed = false;
-        this.delSp = false;
-        this.config = config2 || {};
-        this.libmime = new Libmime({ Iconv: this.config.Iconv });
-        this.parentPartNumber = [];
-        this.partNr = false;
-        this.childPartNumbers = 0;
-        this.rfc822 = false;
-        this.messageNode = void 0;
-      }
-      /**
-       * @param {PartNumberItem} [provided]
-       * @returns {PartNumber}
-       */
-      getPartNr(provided) {
-        let partNr = this.partNr || [];
-        if (provided) {
-          return partNr.filter((nr) => !isNaN(Number(nr))).concat(provided);
-        }
-        let childPartNr = ++this.childPartNumbers;
-        return partNr.filter((nr) => !isNaN(Number(nr))).concat(childPartNr);
-      }
-      /**
-       * @param {Buffer | false} [line]
-       * @returns {void}
-       */
-      addHeaderChunk(line) {
-        if (!line) {
-          return;
-        }
-        this._headersLines.push(line);
-        this._headerlen += line.length;
-      }
-      /**
-       * @returns {void}
-       */
-      parseHeaders() {
-        if (this.headers) {
-          return;
-        }
-        this.headers = new Headers2(Buffer.concat(this._headersLines, this._headerlen), this.config);
-        let headers2 = this.headers;
-        this._parsedContentDisposition = this.libmime.parseHeaderValue(headers2.getFirst("Content-Disposition"));
-        let parsedContentDisposition = (
-          /** @type {StructuredHeader} */
-          this._parsedContentDisposition
-        );
-        let contentHeader;
-        if (headers2.get("Content-Type").length) {
-          contentHeader = headers2.getFirst("Content-Type");
-        } else {
-          if (parsedContentDisposition.params.filename) {
-            let extension = pathlib.parse(parsedContentDisposition.params.filename).ext.replace(/^\./, "");
-            if (extension) {
-              contentHeader = libmime3.detectMimeType(extension);
-            }
-          }
-          if (!contentHeader) {
-            if (/^attachment$/i.test(parsedContentDisposition.value)) {
-              contentHeader = "application/octet-stream";
-            } else {
-              contentHeader = "text/plain";
-            }
-          }
-        }
-        this._parsedContentType = this.libmime.parseHeaderValue(contentHeader);
-        let parsedContentType = (
-          /** @type {StructuredHeader} */
-          this._parsedContentType
-        );
-        this.encoding = stripComments2(headers2.getFirst("Content-Transfer-Encoding")).toLowerCase().trim();
-        this.contentType = (parsedContentType.value || "").toLowerCase().trim() || false;
-        this.charset = parsedContentType.params.charset || false;
-        this.disposition = (parsedContentDisposition.value || "").toLowerCase().trim() || false;
-        if (this.disposition) {
-          try {
-            this.disposition = this.libmime.decodeWords(this.disposition);
-          } catch (E) {
-          }
-        }
-        this.filename = parsedContentDisposition.params.filename || parsedContentType.params.name || false;
-        if (parsedContentType.params.format && parsedContentType.params.format.toLowerCase().trim() === "flowed") {
-          this.flowed = true;
-          if (parsedContentType.params.delsp && parsedContentType.params.delsp.toLowerCase().trim() === "yes") {
-            this.delSp = true;
-          }
-        }
-        if (this.filename) {
-          try {
-            this.filename = this.libmime.decodeWords(this.filename);
-          } catch (E) {
-          }
-        }
-        this.multipart = this.contentType && this.contentType.substr(0, this.contentType.indexOf("/")) === "multipart" && this.contentType.substr(this.contentType.indexOf("/") + 1) || false;
-        this._boundary = parsedContentType.params.boundary && Buffer.from(parsedContentType.params.boundary) || false;
-        this.rfc822 = this.contentType === "message/rfc822";
-        if (!this.parentNode || this.parentNode.rfc822) {
-          this.partNr = this.parentNode ? this.parentNode.getPartNr("TEXT") : ["TEXT"];
-        } else {
-          this.partNr = this.parentNode ? this.parentNode.getPartNr() : [];
-        }
-      }
-      /**
-       * @returns {Buffer}
-       */
-      getHeaders() {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        let headers2 = (
-          /** @type {HeadersType} */
-          this.headers
-        );
-        return headers2.build();
-      }
-      /**
-       * @param {string | false} [contentType]
-       * @returns {void}
-       */
-      setContentType(contentType) {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        let headers2 = (
-          /** @type {HeadersType} */
-          this.headers
-        );
-        let parsedContentType = (
-          /** @type {StructuredHeader} */
-          this._parsedContentType
-        );
-        contentType = (contentType || "").toLowerCase().trim();
-        if (contentType) {
-          parsedContentType.value = contentType;
-        }
-        if (!this.flowed && parsedContentType.params.format) {
-          delete parsedContentType.params.format;
-        }
-        if (!this.delSp && parsedContentType.params.delsp) {
-          delete parsedContentType.params.delsp;
-        }
-        headers2.update("Content-Type", this.libmime.buildHeaderValue(parsedContentType));
-      }
-      /**
-       * @param {string | false} [charset]
-       * @returns {void}
-       */
-      setCharset(charset) {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        let headers2 = (
-          /** @type {HeadersType} */
-          this.headers
-        );
-        let parsedContentType = (
-          /** @type {StructuredHeader} */
-          this._parsedContentType
-        );
-        charset = (charset || "").toLowerCase().trim();
-        if (charset === "ascii") {
-          charset = "";
-        }
-        if (!charset) {
-          if (!parsedContentType.value) {
-            return;
-          }
-          delete parsedContentType.params.charset;
-        } else {
-          parsedContentType.params.charset = charset;
-        }
-        if (!parsedContentType.value) {
-          parsedContentType.value = "text/plain";
-        }
-        headers2.update("Content-Type", this.libmime.buildHeaderValue(parsedContentType));
-      }
-      /**
-       * @param {string | false} [filename]
-       * @returns {void}
-       */
-      setFilename(filename) {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        let headers2 = (
-          /** @type {HeadersType} */
-          this.headers
-        );
-        let parsedContentType = (
-          /** @type {StructuredHeader} */
-          this._parsedContentType
-        );
-        let parsedContentDisposition = (
-          /** @type {StructuredHeader} */
-          this._parsedContentDisposition
-        );
-        this.filename = (filename || "").toLowerCase().trim();
-        if (parsedContentType.params.name) {
-          delete parsedContentType.params.name;
-          headers2.update("Content-Type", this.libmime.buildHeaderValue(parsedContentType));
-        }
-        if (!this.filename) {
-          if (!parsedContentDisposition.value) {
-            return;
-          }
-          delete parsedContentDisposition.params.filename;
-        } else {
-          parsedContentDisposition.params.filename = this.filename;
-        }
-        if (!parsedContentDisposition.value) {
-          parsedContentDisposition.value = "attachment";
-        }
-        headers2.update("Content-Disposition", this.libmime.buildHeaderValue(parsedContentDisposition));
-      }
-      /**
-       * @returns {import('stream').Transform | import('stream').PassThrough}
-       */
-      getDecoder() {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        switch (this.encoding) {
-          case "base64":
-            return new libbase642.Decoder();
-          case "quoted-printable":
-            return new libqp2.Decoder();
-          default:
-            return new PassThrough7();
-        }
-      }
-      /**
-       * @param {string | false} [encoding]
-       * @returns {import('stream').Transform | import('stream').PassThrough}
-       */
-      getEncoder(encoding) {
-        if (!this.headers) {
-          this.parseHeaders();
-        }
-        let headers2 = (
-          /** @type {HeadersType} */
-          this.headers
-        );
-        encoding = (encoding || "").toString().toLowerCase().trim();
-        if (encoding && encoding !== this.encoding) {
-          headers2.update("Content-Transfer-Encoding", encoding);
-        } else {
-          encoding = this.encoding;
-        }
-        switch (encoding) {
-          case "base64":
-            return new libbase642.Encoder();
-          case "quoted-printable":
-            return new libqp2.Encoder();
-          default:
-            return new PassThrough7();
-        }
-      }
-    };
-    module.exports = MimeNode2;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/message-splitter.js
-var require_message_splitter2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/message-splitter.js"(exports, module) {
-    "use strict";
-    var Transform12 = __require("stream").Transform;
-    var MimeNode2 = require_mime_node2();
-    var MAX_HEAD_SIZE = 1 * 1024 * 1024;
-    var MAX_CHILD_NODES = 1e3;
-    var MAX_PENDING_LINE_SIZE = 64 * 1024;
-    var MAX_PENDING_LINE_CHUNKS = 1024;
-    var BOUNDARY_LINE_SUFFIX = 2 + 2 + 2;
-    var BOUNDARY_LINE_OVERHEAD = BOUNDARY_LINE_SUFFIX + 2;
-    var YIELD_BYTES = 16 * 1024;
-    var HEAD = 1;
-    var BODY = 2;
-    function maxLenError(message) {
-      let err = (
-        /** @type {Error & {code: string}} */
-        new Error(message)
-      );
-      err.code = "EMAXLEN";
-      return err;
-    }
-    function trimBodyLineEnd(group, chunk, start, end) {
-      if (group.type !== "body" || !group.node || !group.node.parentNode) {
-        return end;
-      }
-      if (end > start && chunk[end - 1] === 10) {
-        end--;
-        if (end > start && chunk[end - 1] === 13) {
-          end--;
-        }
-      }
-      return end;
-    }
-    var MessageSplitter = class extends Transform12 {
-      /**
-       * @param {SplitterOptions} [config]
-       */
-      constructor(config2) {
-        let options = {
-          readableObjectMode: true,
-          writableObjectMode: false
-        };
-        super(options);
-        this.config = config2 || {};
-        this.maxHeadSize = this.config.maxHeadSize || MAX_HEAD_SIZE;
-        this.maxChildNodes = this.config.maxChildNodes || MAX_CHILD_NODES;
-        this.nodeCounter = 0;
-        this.node = /** @type {MimeNodeType} */
-        /** @type {unknown} */
-        null;
-        this.inEpilogue = false;
-        this.newNode();
-        this.lineChunks = [];
-        this.lineLength = 0;
-        this.hasFailed = false;
-        this.pendingLineTruncated = false;
-      }
-      /**
-       * Appends unterminated trailing data to the pending line.
-       *
-       * @param {Buffer} chunk Data that follows the last line break of a write.
-       * @returns {void}
-       */
-      appendPendingLine(chunk) {
-        if (!chunk.length) {
-          return;
-        }
-        this.lineChunks.push(chunk);
-        this.lineLength += chunk.length;
-        if (this.lineChunks.length >= MAX_PENDING_LINE_CHUNKS) {
-          this.lineChunks = [Buffer.concat(this.lineChunks, this.lineLength)];
-        }
-      }
-      /**
-       * Returns the pending line as a single buffer and clears the pending state.
-       *
-       * @returns {Buffer | false} Pending line contents or false if there was none.
-       */
-      takePendingLine() {
-        if (!this.lineLength) {
-          return false;
-        }
-        let line = this.lineChunks.length === 1 ? this.lineChunks[0] : Buffer.concat(this.lineChunks, this.lineLength);
-        this.lineChunks = [];
-        this.lineLength = 0;
-        return line;
-      }
-      /**
-       * @param {Buffer} chunk
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(chunk, encoding, callback) {
-        let pos = 0;
-        let i = 0;
-        let group = {
-          type: "none"
-        };
-        let groupstart = this.lineLength ? -this.lineLength : 0;
-        let groupend = 0;
-        let yieldPos = 0;
-        let inLine = false;
-        let resumeInLine = false;
-        let checkTrailingLinebreak = (data) => {
-          if (data.type === "body" && data.node.parentNode && data.value && data.value.length) {
-            if (data.value[data.value.length - 1] === 10) {
-              groupstart--;
-              groupend--;
-              pos--;
-              if (data.value.length > 1 && data.value[data.value.length - 2] === 13) {
-                groupstart--;
-                groupend--;
-                pos--;
-                if (groupstart < 0 && !this.lineLength) {
-                  this.appendPendingLine(Buffer.from([13]));
-                }
-                data.value = data.value.slice(0, data.value.length - 2);
-              } else {
-                data.value = data.value.slice(0, data.value.length - 1);
-              }
-            } else if (data.value[data.value.length - 1] === 13) {
-              groupstart--;
-              groupend--;
-              pos--;
-              data.value = data.value.slice(0, data.value.length - 1);
-            }
-          }
-        };
-        let iterateData;
-        let nextLine = () => {
-          if (inLine && i - yieldPos < YIELD_BYTES) {
-            resumeInLine = true;
-            return;
-          }
-          setImmediate(iterateData);
-        };
-        let onLine = (err, data, flush) => {
-          if (err) {
-            this.hasFailed = true;
-            return setImmediate(() => callback(err));
-          }
-          if (!data) {
-            return nextLine();
-          }
-          if (flush) {
-            if (group && group.type !== "none") {
-              groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
-              if (groupstart < groupend) {
-                group.value = chunk.slice(groupstart, groupend);
-                if (groupend < i && "value" in data) {
-                  data.value = chunk.slice(groupend, i);
-                }
-              }
-              this.push(group);
-              group = {
-                type: "none"
-              };
-              groupstart = groupend = i;
-            }
-            this.push(data);
-            groupend = i;
-            return nextLine();
-          }
-          if (data.type === group.type) {
-            groupend = i;
-          } else {
-            groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
-            if (group.type !== "none" && group.type !== "node") {
-              if (groupstart !== groupend) {
-                group.value = chunk.slice(groupstart, groupend);
-                if (group.value && group.value.length) {
-                  this.push(group);
-                  group = {
-                    type: "none"
-                  };
-                }
-              }
-            }
-            if (data.type === "node") {
-              this.push(data);
-              groupstart = i;
-              groupend = i;
-            } else if (groupstart < 0) {
-              groupstart = i;
-              groupend = i;
-              checkTrailingLinebreak(data);
-              if (data.value && data.value.length) {
-                this.push(data);
-              }
-            } else {
-              group = data;
-              groupstart = groupend;
-              groupend = i;
-            }
-          }
-          return nextLine();
-        };
-        iterateData = () => {
-          yieldPos = i;
-          while (i < chunk.length) {
-            if (chunk[i] !== 10) {
-              i++;
-              continue;
-            }
-            let start = Math.max(pos, 0);
-            pos = ++i;
-            inLine = true;
-            resumeInLine = false;
-            this.processLine(chunk.slice(start, i), false, onLine);
-            inLine = false;
-            if (!resumeInLine) {
-              return;
-            }
-          }
-          pos = trimBodyLineEnd(group, chunk, groupstart, pos);
-          if (group.type !== "none" && group.type !== "node" && pos > groupstart) {
-            group.value = chunk.slice(groupstart, pos);
-            if (group.value && group.value.length) {
-              this.push(group);
-              group = {
-                type: "none"
-              };
-            }
-          }
-          if (pos < chunk.length) {
-            this.appendPendingLine(chunk.slice(Math.max(pos, 0)));
-          }
-          let pendingLineError = this.enforcePendingLineLimit();
-          if (pendingLineError) {
-            this.hasFailed = true;
-            return callback(pendingLineError);
-          }
-          callback();
-        };
-        setImmediate(iterateData);
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        if (this.hasFailed) {
-          return callback();
-        }
-        this.processLine(false, true, (err, data) => {
-          if (err) {
-            return setImmediate(() => callback(err));
-          }
-          if (data && (data.type === "node" || data.value && data.value.length)) {
-            this.push(data);
-          }
-          callback();
-        });
-      }
-      /**
-       * @param {Buffer} line
-       * @param {number} startpos
-       * @param {Buffer} boundary
-       * @returns {1 | 2 | false}
-       */
-      compareBoundary(line, startpos, boundary) {
-        if (line.length < boundary.length + 3 + startpos || line.length > boundary.length + BOUNDARY_LINE_SUFFIX + startpos) {
-          return false;
-        }
-        for (let i = 0; i < boundary.length; i++) {
-          if (line[i + 2 + startpos] !== boundary[i]) {
-            return false;
-          }
-        }
-        let pos = 0;
-        for (let i = boundary.length + 2 + startpos; i < line.length; i++) {
-          let c = line[i];
-          if (pos === 0 && (c === 13 || c === 10)) {
-            return 1;
-          }
-          if (pos === 0 && c !== 45) {
-            return false;
-          }
-          if (pos === 1 && c !== 45) {
-            return false;
-          }
-          if (pos === 2 && c !== 13 && c !== 10) {
-            return false;
-          }
-          if (pos === 3 && c !== 10) {
-            return false;
-          }
-          pos++;
-        }
-        return 2;
-      }
-      /**
-       * @param {Buffer} line
-       * @returns {1 | 2 | 3 | 4 | false}
-       */
-      checkBoundary(line) {
-        let startpos = 0;
-        if (line.length >= 1 && (line[0] === 13 || line[0] === 10)) {
-          startpos++;
-          if (line.length >= 2 && line[0] === 13 && line[1] === 10) {
-            startpos++;
-          }
-        }
-        if (line.length < 4 || line[startpos] !== 45 || line[startpos + 1] !== 45) {
-          return false;
-        }
-        let boundary;
-        if (!this.inEpilogue && this.node._boundary && (boundary = this.compareBoundary(line, startpos, this.node._boundary))) {
-          return boundary;
-        }
-        if (this.node._parentBoundary && (boundary = this.compareBoundary(line, startpos, this.node._parentBoundary))) {
-          return (
-            /** @type {3 | 4} */
-            boundary + 2
-          );
-        }
-        return false;
-      }
-      /**
-       * Checks the header bytes collected for the current node against maxHeadSize.
-       *
-       * @param {number} [extra] Bytes that belong to the header block but are not stored yet.
-       * @returns {(Error & {code?: string}) | null} Error object if the limit was exceeded.
-       */
-      checkHeadSize(extra) {
-        if (this.node._headerlen + (extra || 0) > this.maxHeadSize) {
-          return maxLenError("Max header size for a MIME node exceeded");
-        }
-        return null;
-      }
-      /**
-       * Enforces the limits on the pending line so that it can not grow without bound.
-       * A line that is still short enough to become a boundary delimiter is always kept.
-       * Past that length it is a header line and counts against maxHeadSize, or it is
-       * body content, in which case it is pushed out rather than held in memory. Flushing
-       * marks the pending line truncated, so the tail of it is not tested as a delimiter.
-       *
-       * @returns {(Error & {code?: string}) | null} Error object if a limit was exceeded.
-       */
-      enforcePendingLineLimit() {
-        if (!this.lineLength) {
-          return null;
-        }
-        let maxBoundaryLength = Math.max(
-          this.node._boundary ? this.node._boundary.length : 0,
-          this.node._parentBoundary ? this.node._parentBoundary.length : 0
-        );
-        if (this.lineLength <= maxBoundaryLength + BOUNDARY_LINE_OVERHEAD) {
-          return null;
-        }
-        if (this.state === HEAD) {
-          return this.checkHeadSize(this.lineLength);
-        }
-        if (this.lineLength < MAX_PENDING_LINE_SIZE) {
-          return null;
-        }
-        let value = (
-          /** @type {Buffer} */
-          this.takePendingLine()
-        );
-        if (value[value.length - 1] === 13) {
-          this.appendPendingLine(Buffer.from([13]));
-          value = value.slice(0, value.length - 1);
-        }
-        this.push({
-          node: this.node,
-          type: this.node.multipart ? "data" : "body",
-          value
-        });
-        this.pendingLineTruncated = true;
-        return null;
-      }
-      /**
-       * @param {Buffer | false} line
-       * @param {boolean} final
-       * @param {ProcessLineCallback} next
-       * @returns {void}
-       */
-      processLine(line, final, next) {
-        let flush = false;
-        let truncatedLine = this.pendingLineTruncated;
-        this.pendingLineTruncated = false;
-        let pending2 = this.takePendingLine();
-        if (pending2) {
-          line = line ? Buffer.concat([pending2, line]) : pending2;
-        }
-        if (!line) {
-          line = Buffer.alloc(0);
-        }
-        if (this.nodeCounter > this.maxChildNodes) {
-          return next(maxLenError("Max allowed child nodes exceeded"));
-        }
-        let boundary = truncatedLine ? false : this.checkBoundary(line);
-        if (boundary) {
-          switch (boundary) {
-            case 1:
-              this.newNode(this.node);
-              flush = true;
-              break;
-            case 2:
-              break;
-            case 3: {
-              this.newNode(this.parentMultipartNode());
-              flush = true;
-              break;
-            }
-            case 4: {
-              if (this.node && this.node._headerlen && !this.node.headers) {
-                this.node.parseHeaders();
-                this.push(this.node);
-              }
-              let parentNode = this.parentMultipartNode();
-              if (parentNode) {
-                this.node = parentNode;
-                this.inEpilogue = true;
-              }
-              this.state = BODY;
-              break;
-            }
-          }
-          return next(
-            null,
-            {
-              node: this.node,
-              type: "data",
-              value: line
-            },
-            flush
-          );
-        }
-        switch (this.state) {
-          case HEAD: {
-            this.node.addHeaderChunk(line);
-            let headSizeError = this.checkHeadSize();
-            if (headSizeError) {
-              return next(headSizeError);
-            }
-            if (final || line.length === 1 && line[0] === 10 || line.length === 2 && line[0] === 13 && line[1] === 10) {
-              let currentNode = this.node;
-              currentNode.parseHeaders();
-              if (currentNode.contentType === "message/rfc822" && !this.config.ignoreEmbedded && (!currentNode.encoding || ["7bit", "8bit", "binary"].includes(currentNode.encoding)) && (this.config.defaultInlineEmbedded ? currentNode.disposition !== "attachment" : currentNode.disposition === "inline")) {
-                currentNode.messageNode = true;
-                this.newNode(currentNode);
-                if (currentNode.parentNode) {
-                  this.node._parentBoundary = currentNode.parentNode._boundary;
-                  this.node._parentBoundaryOwner = currentNode.parentNode;
-                }
-              } else {
-                if (currentNode.contentType === "message/rfc822") {
-                  currentNode.messageNode = false;
-                }
-                this.state = BODY;
-              }
-              return next(null, currentNode, flush);
-            }
-            return next();
-          }
-          case BODY: {
-            return next(
-              null,
-              {
-                node: this.node,
-                type: this.node.multipart ? "data" : "body",
-                value: line
-              },
-              flush
-            );
-          }
-        }
-        next(null, false);
-      }
-      /**
-       * Resolves the multipart node that owns the boundary of the current node, ie. the
-       * node a sibling delimiter or a closing delimiter of _parentBoundary refers to.
-       *
-       * @returns {MimeNodeType | false} Owner of _parentBoundary or false for the root node.
-       */
-      parentMultipartNode() {
-        return this.node._parentBoundaryOwner || false;
-      }
-      /**
-       * @param {MimeNodeType | false} [parent]
-       * @returns {void}
-       */
-      newNode(parent) {
-        this.node = /** @type {MimeNodeType} */
-        new MimeNode2(parent || false, this.config);
-        this.state = HEAD;
-        this.nodeCounter++;
-        this.inEpilogue = false;
-      }
-    };
-    module.exports = MessageSplitter;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/message-joiner.js
-var require_message_joiner2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/message-joiner.js"(exports, module) {
-    "use strict";
-    var Transform12 = __require("stream").Transform;
-    var MessageJoiner = class extends Transform12 {
-      /**
-       * Creates a joiner that accepts splitter objects and emits Buffer chunks.
-       */
-      constructor() {
-        let options = {
-          readableObjectMode: false,
-          writableObjectMode: true
-        };
-        super(options);
-      }
-      /**
-       * @param {SplitterChunk | Buffer} obj
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(obj, encoding, callback) {
-        if (Buffer.isBuffer(obj)) {
-          this.push(obj);
-        } else if (obj.type === "node") {
-          this.push(obj.getHeaders());
-        } else if (obj.value) {
-          this.push(obj.value);
-        }
-        return callback();
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        return callback();
-      }
-    };
-    module.exports = MessageJoiner;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/flowed-decoder.js
-var require_flowed_decoder2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/flowed-decoder.js"(exports, module) {
-    "use strict";
-    var Transform12 = __require("stream").Transform;
-    var libmime3 = require_libmime2();
-    var Libmime = (
-      /** @type {any} */
-      libmime3.Libmime
-    );
-    var FlowedDecoder2 = class extends Transform12 {
-      /**
-       * @param {FlowedDecoderOptions} [config] Flowed text and charset decoding settings.
-       */
-      constructor(config2) {
-        super();
-        this.config = config2 || {};
-        this.chunks = [];
-        this.chunklen = 0;
-        this.libmime = new Libmime({ Iconv: this.config.Iconv });
-      }
-      /**
-       * @param {Buffer | string} chunk
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(chunk, encoding, callback) {
-        if (!chunk || !chunk.length) {
-          return callback();
-        }
-        if (typeof chunk === "string") {
-          chunk = Buffer.from(chunk, encoding);
-        }
-        this.chunks.push(chunk);
-        this.chunklen += chunk.length;
-        callback();
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        if (this.chunklen) {
-          let currentBody = Buffer.concat(this.chunks, this.chunklen);
-          let content = this.libmime.decodeFlowed(currentBody.toString("binary"), this.config.delSp);
-          this.push(Buffer.from(content, "binary"));
-        }
-        return callback();
-      }
-    };
-    module.exports = FlowedDecoder2;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/node-rewriter.js
-var require_node_rewriter2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/node-rewriter.js"(exports, module) {
-    "use strict";
-    var Transform12 = __require("stream").Transform;
-    var FlowedDecoder2 = require_flowed_decoder2();
-    var NodeRewriter = class extends Transform12 {
-      /**
-       * @param {FilterFunc} filterFunc Function that receives a MIME node and returns true to rewrite it.
-       * @param {Function} [rewriteAction] Optional compatibility hook stored on the instance.
-       */
-      constructor(filterFunc, rewriteAction) {
-        let options = {
-          readableObjectMode: true,
-          writableObjectMode: true
-        };
-        super(options);
-        this.filterFunc = filterFunc;
-        this.rewriteAction = rewriteAction;
-        this.decoder = false;
-        this.encoder = false;
-        this.continue = false;
-      }
-      /**
-       * @param {RewriterInput} data
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(data, encoding, callback) {
-        this.processIncoming(data, callback);
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        if (this.decoder) {
-          return this.processIncoming(
-            {
-              type: "none"
-            },
-            callback
-          );
-        }
-        return callback();
-      }
-      /**
-       * @param {RewriterInput} data
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      processIncoming(data, callback) {
-        if (this.decoder && data.type === "body") {
-          if (!this.decoder.write(data.value)) {
-            this.decoder.once("drain", callback);
-            return;
-          } else {
-            return callback();
-          }
-        } else if (this.decoder && data.type !== "body") {
-          this.continue = () => {
-            this.continue = false;
-            this.decoder = false;
-            this.encoder = false;
-            this.processIncoming(data, callback);
-          };
-          this.decoder.end();
-          return;
-        } else if (data.type === "node" && this.filterFunc(data)) {
-          this.emit("node", this.createDecodePair(data));
-        } else if (this.readable && data.type !== "none") {
-          this.push(data);
-        }
-        callback();
-      }
-      /**
-       * @param {MimeNode} node
-       * @returns {RewriterNode}
-       */
-      createDecodePair(node2) {
-        this.decoder = /** @type {DecoderStream} */
-        node2.getDecoder();
-        if (["base64", "quoted-printable"].includes(node2.encoding || "")) {
-          this.encoder = node2.getEncoder();
-        } else {
-          this.encoder = node2.getEncoder("quoted-printable");
-        }
-        let lastByte = false;
-        let decoder = (
-          /** @type {DecoderStream} */
-          this.decoder
-        );
-        let encoder = (
-          /** @type {ContentStream} */
-          this.encoder
-        );
-        let firstChunk = true;
-        decoder.$reading = false;
-        let readFromEncoder = () => {
-          decoder.$reading = true;
-          let data = encoder.read();
-          if (data === null) {
-            decoder.$reading = false;
-            return;
-          }
-          if (firstChunk) {
-            firstChunk = false;
-            if (this.readable) {
-              this.push(node2);
-            }
-          }
-          let writeMore = true;
-          if (this.readable) {
-            writeMore = this.push({
-              node: node2,
-              type: "body",
-              value: data
-            });
-            lastByte = data && data.length && data[data.length - 1];
-          }
-          if (writeMore) {
-            return setImmediate(readFromEncoder);
-          } else {
-            encoder.pause();
-            setTimeout(() => {
-              encoder.resume();
-              setImmediate(readFromEncoder);
-            }, 100);
-          }
-        };
-        encoder.on("readable", () => {
-          if (!decoder.$reading) {
-            return readFromEncoder();
-          }
-        });
-        encoder.on("end", () => {
-          if (firstChunk) {
-            firstChunk = false;
-            if (this.readable) {
-              this.push(node2);
-            }
-          }
-          if (lastByte !== 10) {
-            this.push({
-              node: node2,
-              type: "body",
-              value: Buffer.from([10])
-            });
-          }
-          if (this.continue) {
-            return this.continue();
-          }
-        });
-        if (/^text\//.test(node2.contentType || "") && node2.flowed) {
-          let flowDecoder = decoder;
-          decoder = new FlowedDecoder2({
-            delSp: node2.delSp
-          });
-          flowDecoder.on(
-            "error",
-            /**
-             * Forwards flowed decoder errors to the replacement decoder.
-             *
-             * @param {Error} err Decoder error to forward.
-             * @returns {void}
-             */
-            (err) => {
-              decoder.emit("error", err);
-            }
-          );
-          flowDecoder.pipe(decoder);
-          node2.flowed = false;
-          node2.delSp = false;
-          node2.setContentType();
-        }
-        return {
-          node: node2,
-          decoder,
-          encoder
-        };
-      }
-    };
-    module.exports = NodeRewriter;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/node-streamer.js
-var require_node_streamer2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/node-streamer.js"(exports, module) {
-    "use strict";
-    var Transform12 = __require("stream").Transform;
-    var FlowedDecoder2 = require_flowed_decoder2();
-    var NodeStreamer = class extends Transform12 {
-      /**
-       * @param {FilterFunc} filterFunc Function that receives a MIME node and returns true to stream it.
-       * @param {Function} [streamAction] Optional compatibility hook stored on the instance.
-       */
-      constructor(filterFunc, streamAction) {
-        let options = {
-          readableObjectMode: true,
-          writableObjectMode: true
-        };
-        super(options);
-        this.filterFunc = filterFunc;
-        this.streamAction = streamAction;
-        this.decoder = false;
-        this.canContinue = false;
-        this.continue = false;
-      }
-      /**
-       * @param {RewriterInput} data
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(data, encoding, callback) {
-        this.processIncoming(data, callback);
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        if (this.decoder) {
-          return this.processIncoming(
-            {
-              type: "none"
-            },
-            callback
-          );
-        }
-        return callback();
-      }
-      /**
-       * @param {RewriterInput} data
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      processIncoming(data, callback) {
-        if (this.decoder && data.type === "body") {
-          this.push(data);
-          if (!this.decoder.write(data.value)) {
-            this.decoder.once("drain", callback);
-            return;
-          } else {
-            return callback();
-          }
-        } else if (this.decoder && data.type !== "body") {
-          let doContinue = () => {
-            this.continue = false;
-            this.decoder = false;
-            this.canContinue = false;
-            this.processIncoming(data, callback);
-          };
-          if (this.canContinue) {
-            setImmediate(doContinue);
-          } else {
-            this.continue = () => doContinue();
-          }
-          this.decoder.end();
-          return;
-        } else if (data.type === "node" && this.filterFunc(data)) {
-          this.push(data);
-          this.emit("node", this.createDecoder(data));
-        } else if (this.readable && data.type !== "none") {
-          this.push(data);
-        }
-        callback();
-      }
-      /**
-       * @param {MimeNode} node
-       * @returns {StreamerNode}
-       */
-      createDecoder(node2) {
-        this.decoder = /** @type {DecoderStream} */
-        node2.getDecoder();
-        let decoder = (
-          /** @type {DecoderStream} */
-          this.decoder
-        );
-        decoder.$reading = false;
-        if (/^text\//.test(node2.contentType || "") && node2.flowed) {
-          let flowDecoder = decoder;
-          decoder = new FlowedDecoder2({
-            delSp: node2.delSp
-          });
-          flowDecoder.on(
-            "error",
-            /**
-             * Forwards flowed decoder errors to the output decoder.
-             *
-             * @param {Error} err Decoder error to forward.
-             * @returns {void}
-             */
-            (err) => {
-              decoder.emit("error", err);
-            }
-          );
-          flowDecoder.pipe(decoder);
-        }
-        return {
-          node: node2,
-          decoder,
-          /**
-           * Marks the selected node stream as consumed so the passthrough can continue.
-           *
-           * @returns {void}
-           */
-          done: () => {
-            if (typeof this.continue === "function") {
-              this.continue();
-            } else {
-              this.canContinue = true;
-            }
-          }
-        };
-      }
-    };
-    module.exports = NodeStreamer;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/chunked-passthrough.js
-var require_chunked_passthrough2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/lib/chunked-passthrough.js"(exports, module) {
-    "use strict";
-    var { Transform: Transform12 } = __require("stream");
-    var ChunkedPassthrough = class extends Transform12 {
-      /**
-       * @param {import('..').ChunkedPassthroughOptions} [options]
-       */
-      constructor(options = {}) {
-        let config2 = {
-          readableObjectMode: true,
-          writableObjectMode: false
-        };
-        super(config2);
-        this.chunkSize = options.chunkSize || 64 * 1024;
-        this.buffer = Buffer.alloc(0);
-      }
-      /**
-       * @param {Buffer} chunk
-       * @param {BufferEncoding} encoding
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _transform(chunk, encoding, callback) {
-        this.buffer = Buffer.concat([this.buffer, chunk]);
-        if (this.buffer.length >= this.chunkSize) {
-          this.push(this.buffer);
-          this.buffer = Buffer.alloc(0);
-        }
-        callback();
-      }
-      /**
-       * @param {import('stream').TransformCallback} callback
-       * @returns {void}
-       */
-      _flush(callback) {
-        if (this.buffer.length > 0) {
-          this.push(this.buffer);
-          this.buffer = Buffer.alloc(0);
-        }
-        callback();
-      }
-    };
-    module.exports = ChunkedPassthrough;
-  }
-});
-
-// node_modules/mailparser/node_modules/@zone-eu/mailsplit/index.js
-var require_mailsplit2 = __commonJS({
-  "node_modules/mailparser/node_modules/@zone-eu/mailsplit/index.js"(exports, module) {
-    "use strict";
-    var MessageSplitter = require_message_splitter2();
-    var MessageJoiner = require_message_joiner2();
-    var NodeRewriter = require_node_rewriter2();
-    var NodeStreamer = require_node_streamer2();
-    var Headers2 = require_headers2();
-    var ChunkedPassthrough = require_chunked_passthrough2();
-    var MimeNode2 = require_mime_node2();
     module.exports = {
       Splitter: MessageSplitter,
       Joiner: MessageJoiner,
@@ -51194,14 +46218,14 @@ var require_tlds = __commonJS({
 var require_mail_parser = __commonJS({
   "node_modules/mailparser/lib/mail-parser.js"(exports, module) {
     "use strict";
-    var mailsplit = require_mailsplit2();
-    var libmime3 = require_libmime2();
+    var mailsplit = require_mailsplit();
+    var libmime3 = require_libmime();
     var addressparser2 = require_addressparser();
     var Transform12 = __require("stream").Transform;
     var Splitter = mailsplit.Splitter;
     var ChunkedPassthrough = mailsplit.ChunkedPassthrough;
     var punycode = require_punycode();
-    var FlowedDecoder2 = require_flowed_decoder2();
+    var FlowedDecoder2 = require_flowed_decoder();
     var StreamHash = require_stream_hash();
     var iconv2 = require_lib();
     var { htmlToText } = require_html_to_text();
@@ -83069,7 +78093,7 @@ function createConnectionLogger(options) {
 
 // node_modules/imapflow/dist/esm/package-info.js
 var name = "imapflow";
-var version2 = "2.2.1";
+var version2 = "2.2.10";
 
 // node_modules/imapflow/dist/esm/handler/imap-stream.js
 import { Transform } from "node:stream";
@@ -83078,6 +78102,11 @@ import { Transform } from "node:stream";
 var MAX_LITERAL_SIZE = 1024 * 1024 * 1024;
 var MAX_LINE_SIZE = MAX_LITERAL_SIZE;
 var MAX_RESPONSE_SIZE = 2 * MAX_LITERAL_SIZE;
+var ERROR_CONTEXT_LENGTH = 1024;
+var boundedInput = (input2) => ({
+  input: input2.slice(0, ERROR_CONTEXT_LENGTH),
+  inputLength: input2.length
+});
 var normalizeLimit = (value, defaultValue) => (Number.isInteger(value) || value === Infinity) && value >= 0 ? value : defaultValue;
 var createLiteralTooLargeError = (literalSize, maxSize, reason) => {
   const err = new Error(`Literal size ${literalSize} exceeds ${reason || `maximum allowed size of ${maxSize} bytes`}`);
@@ -83546,7 +78575,6 @@ var STATE_NORMAL = 3;
 var STATE_PARTIAL = 4;
 var STATE_SEQUENCE = 5;
 var STATE_STRING = 6;
-var RE_DIGITS = /^\d+$/;
 var RE_SINGLE_DIGIT = /^\d$/;
 var MAX_NODE_DEPTH = 25;
 var TokenParser = class {
@@ -83596,7 +78624,7 @@ var TokenParser = class {
       if (!node2.isClosed) {
         let error64 = new Error(`Unexpected end of input at position ${this.pos + this.str.length - 1} [E9]`);
         error64.code = "ParserError9";
-        error64.parserContext = { input: this.str, pos: this.pos + this.str.length - 1 };
+        error64.parserContext = { ...boundedInput(this.str), pos: this.pos + this.str.length - 1 };
         throw error64;
       }
       let type = (node2.type || "").toString().toUpperCase();
@@ -83669,7 +78697,7 @@ var TokenParser = class {
     if (node2.depth > MAX_NODE_DEPTH) {
       let error64 = new Error("Too much nesting in IMAP string");
       error64.code = "MAX_IMAP_NESTING_REACHED";
-      error64._imapStr = this.str;
+      error64._imapStr = this.str.slice(0, ERROR_CONTEXT_LENGTH);
       throw error64;
     }
     if (typeof startPos === "number") {
@@ -83695,16 +78723,56 @@ var TokenParser = class {
         i++;
       }
     };
+    const closesNode = (c, node2) => !!node2 && (c === ")" && node2.type === "LIST" || c === "]" && node2.type === "SECTION");
+    let tokenLength = 0;
+    let tokenLast = "";
+    let tokenPrev = "";
+    let tokenDigitsOnly = true;
+    let tokenHasStar = false;
+    let tokenHasDot = false;
+    const appendToToken = (c) => {
+      this.currentNode.value += c;
+      tokenLength++;
+      tokenPrev = tokenLast;
+      tokenLast = c;
+      tokenDigitsOnly = tokenDigitsOnly && RE_SINGLE_DIGIT.test(c);
+      tokenHasStar = tokenHasStar || c === "*";
+      tokenHasDot = tokenHasDot || c === ".";
+    };
+    const continueAsAtom = () => {
+      this.currentNode.type = "ATOM";
+      this.state = STATE_ATOM;
+      i--;
+    };
+    const startToken = (first2) => {
+      this.currentNode.value = "";
+      tokenLength = 0;
+      tokenLast = tokenPrev = "";
+      tokenDigitsOnly = true;
+      tokenHasStar = tokenHasDot = false;
+      if (first2) {
+        appendToToken(first2);
+      }
+    };
+    const takeLiteral = (literals) => {
+      if (!literals.length) {
+        let error64 = new Error(`Literal without data at position ${this.pos + i} [E35]`);
+        error64.code = "ParserError35";
+        error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
+        throw error64;
+      }
+      return literals.shift();
+    };
     const startAtom = () => {
       if (!imap_formal_syntax_default["ATOM-CHAR"]().includes(chr) && chr !== "\\" && chr !== "%" && chr.charCodeAt(0) < 128) {
         let error64 = new Error(`Unexpected char at position ${this.pos + i} [E13: ${JSON.stringify(chr)}]`);
         error64.code = "ParserError13";
-        error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+        error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
         throw error64;
       }
       this.currentNode = this.createNode(this.currentNode, this.pos + i);
       this.currentNode.type = "ATOM";
-      this.currentNode.value = chr;
+      startToken(chr);
       this.state = STATE_ATOM;
     };
     for (i = 0, len = this.str.length; i < len; i++) {
@@ -83730,7 +78798,7 @@ var TokenParser = class {
               if (this.currentNode.type !== "LIST") {
                 let error64 = new Error(`Unexpected list terminator ) at position ${this.pos + i} [E10]`);
                 error64.code = "ParserError10";
-                error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+                error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
                 throw error64;
               }
               this.currentNode.isClosed = true;
@@ -83743,7 +78811,7 @@ var TokenParser = class {
               if (this.currentNode.type !== "SECTION") {
                 let error64 = new Error(`Unexpected section terminator ] at position ${this.pos + i} [E11]`);
                 error64.code = "ParserError11";
-                error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+                error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
                 throw error64;
               }
               this.currentNode.isClosed = true;
@@ -83756,11 +78824,12 @@ var TokenParser = class {
               if (this.str.charAt(i - 1) !== "]") {
                 this.currentNode = this.createNode(this.currentNode, this.pos + i);
                 this.currentNode.type = "ATOM";
-                this.currentNode.value = chr;
+                startToken(chr);
                 this.state = STATE_ATOM;
               } else {
                 this.currentNode = this.createNode(this.currentNode, this.pos + i);
                 this.currentNode.type = "PARTIAL";
+                startToken();
                 this.state = STATE_PARTIAL;
                 this.currentNode.isClosed = false;
               }
@@ -83770,16 +78839,13 @@ var TokenParser = class {
             case "~": {
               let nextChr = this.str.charAt(i + 1);
               if (nextChr !== "{") {
-                if (imap_formal_syntax_default["ATOM-CHAR"]().includes(nextChr)) {
-                  this.currentNode = this.createNode(this.currentNode, this.pos + i);
-                  this.currentNode.type = "ATOM";
-                  this.currentNode.value = chr;
-                  this.state = STATE_ATOM;
+                if (imap_formal_syntax_default["ATOM-CHAR"]().includes(nextChr) || nextChr === " " || nextChr === "" || closesNode(nextChr, this.currentNode)) {
+                  startAtom();
                   break;
                 }
                 let error64 = new Error(`Unexpected literal8 marker at position ${this.pos + i} [E12]`);
                 error64.code = "ParserError12";
-                error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+                error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
                 throw error64;
               }
               this.expectedLiteralType = "literal8";
@@ -83798,7 +78864,7 @@ var TokenParser = class {
             case "*":
               this.currentNode = this.createNode(this.currentNode, this.pos + i);
               this.currentNode.type = "SEQUENCE";
-              this.currentNode.value = chr;
+              startToken(chr);
               this.currentNode.isClosed = false;
               this.state = STATE_SEQUENCE;
               break;
@@ -83855,7 +78921,7 @@ var TokenParser = class {
             this.state = STATE_NORMAL;
             break;
           }
-          if (this.currentNode.parentNode && (chr === ")" && this.currentNode.parentNode.type === "LIST" || chr === "]" && this.currentNode.parentNode.type === "SECTION")) {
+          if (closesNode(chr, this.currentNode.parentNode)) {
             this.currentNode.endPos = this.pos + i - 1;
             this.currentNode = this.currentNode.parentNode;
             this.currentNode.isClosed = true;
@@ -83876,12 +78942,12 @@ var TokenParser = class {
               break;
             }
           }
-          if ((chr === "," || chr === ":") && RE_DIGITS.test(this.currentNode.value)) {
+          if ((chr === "," || chr === ":") && tokenLength && tokenDigitsOnly) {
             this.currentNode.type = "SEQUENCE";
             this.currentNode.isClosed = true;
             this.state = STATE_SEQUENCE;
           }
-          if (chr === "[" && ["BODY", "BODY.PEEK", "BINARY", "BINARY.PEEK"].includes(this.currentNode.value.toUpperCase())) {
+          if (chr === "[" && tokenLength <= 11 && ["BODY", "BODY.PEEK", "BINARY", "BINARY.PEEK"].includes(this.currentNode.value.toUpperCase())) {
             this.currentNode.endPos = this.pos + i;
             this.currentNode = this.createNode(this.currentNode.parentNode, this.pos + i);
             this.currentNode.type = "SECTION";
@@ -83890,18 +78956,18 @@ var TokenParser = class {
             break;
           }
           if (!imap_formal_syntax_default["ATOM-CHAR"]().includes(chr) && chr.charCodeAt(0) < 128 && // allow 8bit (presumably unicode) bytes
-          chr !== "]" && !(chr === "*" && this.currentNode.value === "\\") && (!this.parent || !this.parent.command || !["NO", "BAD", "OK"].includes(this.parent.command))) {
+          chr !== "]" && !(chr === "*" && this.currentNode.value === "\\") && (!this.parent || !this.parent.command || !["NO", "BAD", "OK"].includes(this.parent.command.toUpperCase()))) {
             let error64 = new Error(`Unexpected char at position ${this.pos + i} [E16: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError16";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           } else if (this.currentNode.value === "\\*") {
             let error64 = new Error(`Unexpected char at position ${this.pos + i} [E17: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError17";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
-          this.currentNode.value += chr;
+          appendToToken(chr);
           break;
         case STATE_STRING:
           if (chr === '"') {
@@ -83917,7 +78983,7 @@ var TokenParser = class {
             if (i >= len) {
               let error64 = new Error(`Unexpected end of input at position ${this.pos + i} [E18]`);
               error64.code = "ParserError18";
-              error64.parserContext = { input: this.str, pos: this.pos + i };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i };
               throw error64;
             }
             chr = this.str.charAt(i);
@@ -83926,10 +78992,10 @@ var TokenParser = class {
           break;
         case STATE_PARTIAL:
           if (chr === ">") {
-            if (this.currentNode.value.at(-1) === ".") {
+            if (tokenLast === ".") {
               let error64 = new Error(`Unexpected end of partial at position ${this.pos + i} [E19]`);
               error64.code = "ParserError19";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
             this.currentNode.endPos = this.pos + i;
@@ -83939,25 +79005,25 @@ var TokenParser = class {
             checkSP();
             break;
           }
-          if (chr === "." && (this.currentNode.value === "" || this.currentNode.value.includes("."))) {
+          if (chr === "." && (!tokenLength || tokenHasDot)) {
             let error64 = new Error(`Unexpected partial separator . at position ${this.pos + i} [E20]`);
             error64.code = "ParserError20";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
           if (!imap_formal_syntax_default.DIGIT().includes(chr) && chr !== ".") {
             let error64 = new Error(`Unexpected char at position ${this.pos + i} [E21: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError21";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
-          if ((this.currentNode.value === "0" || this.currentNode.value.endsWith(".0")) && chr !== ".") {
+          if (tokenLast === "0" && (tokenLength === 1 || tokenPrev === ".") && chr !== ".") {
             let error64 = new Error(`Invalid partial at position ${this.pos + i} [E22: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError22";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
-          this.currentNode.value += chr;
+          appendToToken(chr);
           break;
         case STATE_LITERAL:
           if (this.currentNode.started) {
@@ -83981,7 +79047,7 @@ var TokenParser = class {
             if (!("literalLength" in this.currentNode)) {
               let error64 = new Error(`Unexpected literal prefix end char } at position ${this.pos + i} [E23]`);
               error64.code = "ParserError23";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
             if (this.str.charAt(i + 1) === "\n") {
@@ -83991,13 +79057,13 @@ var TokenParser = class {
             } else {
               let error64 = new Error(`Unexpected char at position ${this.pos + i} [E24: ${JSON.stringify(chr)}]`);
               error64.code = "ParserError24";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
             this.currentNode.literalLength = Number(this.currentNode.literalLength);
             if (!this.currentNode.literalLength) {
-              if (this.options.literals && this.options.literals.length) {
-                this.currentNode.value = this.options.literals.shift();
+              if (this.options.literals) {
+                this.currentNode.value = takeLiteral(this.options.literals);
               }
               this.currentNode.endPos = this.pos + i;
               this.currentNode.isClosed = true;
@@ -84005,7 +79071,7 @@ var TokenParser = class {
               this.state = STATE_NORMAL;
               checkSP();
             } else if (this.options.literals) {
-              this.currentNode.value = this.options.literals.shift();
+              this.currentNode.value = takeLiteral(this.options.literals);
               this.currentNode.endPos = this.pos + i + this.currentNode.value.length;
               this.currentNode.started = false;
               this.currentNode.isClosed = true;
@@ -84018,7 +79084,7 @@ var TokenParser = class {
               if (literalLength > this.maxLiteralSize || literalLength > available) {
                 let overMax = literalLength > this.maxLiteralSize;
                 let error64 = createLiteralTooLargeError(literalLength, overMax ? this.maxLiteralSize : available, overMax ? null : `the ${available} bytes available in the input`);
-                error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+                error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
                 throw error64;
               }
               this.currentNode.started = true;
@@ -84030,88 +79096,110 @@ var TokenParser = class {
           if (!imap_formal_syntax_default.DIGIT().includes(chr)) {
             let error64 = new Error(`Unexpected char at position ${this.pos + i} [E25: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError25";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
           if (this.currentNode.literalLength === "0") {
             let error64 = new Error(`Invalid literal at position ${this.pos + i} [E26]`);
             error64.code = "ParserError26";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
           this.currentNode.literalLength = (this.currentNode.literalLength || "") + chr;
           break;
-        case STATE_SEQUENCE:
-          if (chr === " ") {
-            if (!RE_SINGLE_DIGIT.test(this.currentNode.value.at(-1)) && this.currentNode.value.at(-1) !== "*") {
-              let error64 = new Error(`Unexpected whitespace at position ${this.pos + i} [E27]`);
+        case STATE_SEQUENCE: {
+          let closesParent = closesNode(chr, this.currentNode.parentNode);
+          if (chr === " " || closesParent) {
+            if (!RE_SINGLE_DIGIT.test(tokenLast) && tokenLast !== "*") {
+              if (!tokenHasStar) {
+                continueAsAtom();
+                break;
+              }
+              let error64 = new Error(`Unexpected end of sequence at position ${this.pos + i} [E27: ${JSON.stringify(chr)}]`);
               error64.code = "ParserError27";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
-            if (this.currentNode.value !== "*" && this.currentNode.value.at(-1) === "*" && this.currentNode.value.at(-2) !== ":") {
-              let error64 = new Error(`Unexpected whitespace at position ${this.pos + i} [E28]`);
+            if (this.currentNode.value !== "*" && tokenLast === "*" && tokenPrev !== ":") {
+              let error64 = new Error(`Unexpected end of sequence at position ${this.pos + i} [E28: ${JSON.stringify(chr)}]`);
               error64.code = "ParserError28";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
             this.currentNode.isClosed = true;
             this.currentNode.endPos = this.pos + i - 1;
             this.currentNode = this.currentNode.parentNode;
             this.state = STATE_NORMAL;
-            break;
-          } else if (this.currentNode.parentNode && chr === "]" && this.currentNode.parentNode.type === "SECTION") {
-            this.currentNode.endPos = this.pos + i - 1;
-            this.currentNode = this.currentNode.parentNode;
-            this.currentNode.isClosed = true;
-            this.currentNode.endPos = this.pos + i;
-            this.currentNode = this.currentNode.parentNode;
-            this.state = STATE_NORMAL;
-            checkSP();
+            if (closesParent) {
+              this.currentNode.isClosed = true;
+              this.currentNode.endPos = this.pos + i;
+              this.currentNode = this.currentNode.parentNode;
+              checkSP();
+            }
             break;
           }
           if (chr === ":") {
-            if (!RE_SINGLE_DIGIT.test(this.currentNode.value.at(-1)) && this.currentNode.value.at(-1) !== "*") {
+            if (!RE_SINGLE_DIGIT.test(tokenLast) && tokenLast !== "*") {
+              if (!tokenHasStar) {
+                continueAsAtom();
+                break;
+              }
               let error64 = new Error(`Unexpected range separator : at position ${this.pos + i} [E29]`);
               error64.code = "ParserError29";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
           } else if (chr === "*") {
-            if (![",", ":"].includes(this.currentNode.value.at(-1))) {
+            if (![",", ":"].includes(tokenLast)) {
               let error64 = new Error(`Unexpected range wildcard at position ${this.pos + i} [E30]`);
               error64.code = "ParserError30";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
           } else if (chr === ",") {
-            if (!RE_SINGLE_DIGIT.test(this.currentNode.value.at(-1)) && this.currentNode.value.at(-1) !== "*") {
+            if (!RE_SINGLE_DIGIT.test(tokenLast) && tokenLast !== "*") {
+              if (!tokenHasStar) {
+                continueAsAtom();
+                break;
+              }
               let error64 = new Error(`Unexpected sequence separator , at position ${this.pos + i} [E31]`);
               error64.code = "ParserError31";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
-            if (this.currentNode.value.at(-1) === "*" && this.currentNode.value.at(-2) !== ":") {
+            if (tokenLast === "*" && tokenPrev !== ":") {
               let error64 = new Error(`Unexpected sequence separator , at position ${this.pos + i} [E32]`);
               error64.code = "ParserError32";
-              error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+              error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
               throw error64;
             }
           } else if (!RE_SINGLE_DIGIT.test(chr)) {
+            if (!tokenHasStar) {
+              continueAsAtom();
+              break;
+            }
             let error64 = new Error(`Unexpected char at position ${this.pos + i} [E33: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError33";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
-          if (RE_SINGLE_DIGIT.test(chr) && this.currentNode.value.at(-1) === "*") {
+          if (RE_SINGLE_DIGIT.test(chr) && tokenLast === "*") {
             let error64 = new Error(`Unexpected number at position ${this.pos + i} [E34: ${JSON.stringify(chr)}]`);
             error64.code = "ParserError34";
-            error64.parserContext = { input: this.str, pos: this.pos + i, chr };
+            error64.parserContext = { ...boundedInput(this.str), pos: this.pos + i, chr };
             throw error64;
           }
-          this.currentNode.value += chr;
+          appendToToken(chr);
           break;
+        }
       }
+    }
+    if (this.state === STATE_SEQUENCE && (tokenLast === ":" || tokenLast === ",") && !tokenHasStar) {
+      this.currentNode.type = "ATOM";
+    }
+    if (this.state === STATE_SEQUENCE && !this.currentNode.isClosed && (RE_SINGLE_DIGIT.test(tokenLast) || tokenLast === "*" && tokenPrev === ":")) {
+      this.currentNode.isClosed = true;
+      this.currentNode.endPos = this.pos + this.str.length - 1;
     }
   }
 };
@@ -84131,6 +79219,22 @@ var ParserInstance = class {
     this.options = options || {};
     this.remainder = this.input;
     this.pos = 0;
+  }
+  /**
+   * The context a parse error carries: a bounded prefix of the input (and of the element that
+   * failed, when there is one) with their full lengths, and the position.
+   *
+   * @param element - The element that failed to parse
+   * @returns The context to attach to the error
+   */
+  errorContext(element) {
+    let context = { ...boundedInput(this.input), pos: this.pos };
+    if (element !== void 0) {
+      let bounded = boundedInput(element);
+      context.element = bounded.input;
+      context.elementLength = bounded.inputLength;
+    }
+    return context;
   }
   /**
    * Extracts and returns the IMAP tag from the beginning of the response.
@@ -84216,7 +79320,7 @@ var ParserInstance = class {
     if (/^\s/.test(this.remainder)) {
       let error64 = new Error(`Unexpected whitespace at position ${this.pos} [E1]`);
       error64.code = "ParserError1";
-      error64.parserContext = { input: this.input, pos: this.pos };
+      error64.parserContext = this.errorContext();
       throw error64;
     }
     if (match = this.remainder.match(/^\s*[^\s]+(?=\s|$)/)) {
@@ -84226,9 +79330,7 @@ var ParserInstance = class {
           let error65 = new Error(`Server returned an error: ${this.input}`);
           error65.code = "ParserErrorExchange";
           error65.parserContext = {
-            input: this.input,
-            element,
-            pos: this.pos,
+            ...this.errorContext(element),
             value: {
               tag: "*",
               command: "BAD",
@@ -84239,13 +79341,13 @@ var ParserInstance = class {
         }
         let error64 = new Error(`Unexpected char at position ${this.pos + errPos} [E2: ${JSON.stringify(element.charAt(errPos))}]`);
         error64.code = "ParserError2";
-        error64.parserContext = { input: this.input, element, pos: this.pos };
+        error64.parserContext = this.errorContext(element);
         throw error64;
       }
     } else {
       let error64 = new Error(`Unexpected end of input at position ${this.pos} [E3]`);
       error64.code = "ParserError3";
-      error64.parserContext = { input: this.input, pos: this.pos };
+      error64.parserContext = this.errorContext();
       throw error64;
     }
     this.pos += match[0].length;
@@ -84265,13 +79367,13 @@ var ParserInstance = class {
       }
       let error64 = new Error(`Unexpected end of input at position ${this.pos} [E4]`);
       error64.code = "ParserError4";
-      error64.parserContext = { input: this.input, pos: this.pos };
+      error64.parserContext = this.errorContext();
       throw error64;
     }
     if (imap_formal_syntax_default.verify(this.remainder.charAt(0), imap_formal_syntax_default.SP()) >= 0) {
       let error64 = new Error(`Unexpected char at position ${this.pos} [E5: ${JSON.stringify(this.remainder.charAt(0))}]`);
       error64.code = "ParserError5";
-      error64.parserContext = { input: this.input, element: this.remainder, pos: this.pos };
+      error64.parserContext = this.errorContext(this.remainder);
       throw error64;
     }
     this.pos++;
@@ -84289,13 +79391,13 @@ var ParserInstance = class {
     if (!this.remainder.length) {
       let error64 = new Error(`Unexpected end of input at position ${this.pos} [E6]`);
       error64.code = "ParserError6";
-      error64.parserContext = { input: this.input, pos: this.pos };
+      error64.parserContext = this.errorContext();
       throw error64;
     }
     if (/^\s/.test(this.remainder)) {
       let error64 = new Error(`Unexpected whitespace at position ${this.pos} [E7]`);
       error64.code = "ParserError7";
-      error64.parserContext = { input: this.input, element: this.remainder, pos: this.pos };
+      error64.parserContext = this.errorContext(this.remainder);
       throw error64;
     }
     const tokenParser = new TokenParser(this, this.pos, this.remainder, this.options);
@@ -84364,6 +79466,8 @@ var safeNumber = (value) => {
   let num = Math.round(Number(value));
   return Number.isSafeInteger(num) && num >= 0 ? num : 0;
 };
+var LOG_VALUE_LIMIT = 100;
+var logPlaceholder = (length, kind) => `"(* ${length}B ${kind} *)"`;
 var NOT_QUOTABLE = /[\r\n\0]/;
 var CRLF = /[\r\n]/;
 var quoteString = (value) => {
@@ -84401,24 +79505,22 @@ async function compiler(response, options) {
   let resp = [].concat(emitEntry(response.tag, { returnEmpty: true }) || []).concat(response.command ? emitEntry(" " + response.command) : []);
   let val;
   let lastType;
+  let afterOpener = false;
   let walk = async (node2, options2) => {
     options2 = options2 || {};
-    let lastRespEntry = resp.length && resp[resp.length - 1];
-    let lastRespByte = lastRespEntry && lastRespEntry.length && lastRespEntry[lastRespEntry.length - 1] || "";
-    if (typeof lastRespByte === "number") {
-      lastRespByte = String.fromCharCode(lastRespByte);
-    }
-    if (lastType === "LITERAL" || !["(", "<", "["].includes(lastRespByte) && resp.length) {
+    if (lastType === "LITERAL" || !afterOpener && resp.length) {
       if (!options2.subArray) {
         resp.push(emitEntry(" "));
       }
     }
+    afterOpener = false;
     if (node2 && node2.buffer && !Buffer.isBuffer(node2)) {
       node2 = node2.buffer;
     }
     if (Array.isArray(node2)) {
       lastType = "LIST";
       resp.push(emitEntry("("));
+      afterOpener = true;
       let subArray = node2.length > 1 && Array.isArray(node2[0]);
       for (let child of node2) {
         if (subArray && !Array.isArray(child)) {
@@ -84427,6 +79529,7 @@ async function compiler(response, options) {
         await walk(child, { subArray });
       }
       resp.push(emitEntry(")"));
+      afterOpener = false;
       return;
     }
     if (!node2 && typeof node2 !== "string" && typeof node2 !== "number" && !Buffer.isBuffer(node2)) {
@@ -84434,8 +79537,8 @@ async function compiler(response, options) {
       return;
     }
     if (typeof node2 === "string" || Buffer.isBuffer(node2)) {
-      if (isLogging && node2.length > 100) {
-        resp.push(emitEntry('"(* ' + node2.length + 'B string *)"'));
+      if (isLogging && node2.length > LOG_VALUE_LIMIT) {
+        resp.push(emitEntry(logPlaceholder(node2.length, "string")));
       } else {
         resp.push(emitEntry(isLogging ? JSON.stringify(node2.toString()) : quoteString(node2.toString())));
       }
@@ -84453,7 +79556,7 @@ async function compiler(response, options) {
     switch (node2.type.toUpperCase()) {
       case "LITERAL":
         if (isLogging) {
-          resp.push(emitEntry('"(* ' + node2.value.length + 'B literal *)"'));
+          resp.push(emitEntry(logPlaceholder(node2.value.length, "literal")));
         } else {
           let literalLength = !node2.value ? 0 : Buffer.isBuffer(node2.value) ? node2.value.length : Buffer.byteLength(node2.value.toString());
           let usePlus = literalPlus || literalMinus && literalLength <= 4096;
@@ -84471,23 +79574,23 @@ async function compiler(response, options) {
         }
         break;
       case "STRING":
-        if (isLogging && node2.value.length > 100) {
-          resp.push(emitEntry('"(* ' + node2.value.length + 'B string *)"'));
+        if (isLogging && node2.value.length > LOG_VALUE_LIMIT) {
+          resp.push(emitEntry(logPlaceholder(node2.value.length, "string")));
         } else {
           val = (node2.value || "").toString();
           resp.push(emitEntry(isLogging ? JSON.stringify(val) : quoteString(val)));
         }
         break;
       case "SEQUENCE":
-        if (!isLogging && (typeof node2.value === "string" || typeof node2.value === "number" || Buffer.isBuffer(node2.value))) {
-          val = node2.value.toString();
-          if (val && !isValidSequenceSet(val)) {
+        if (!isLogging) {
+          val = node2.value === null || node2.value === void 0 ? "" : node2.value.toString();
+          if (!isValidSequenceSet(val)) {
             let error64 = new Error("Invalid sequence set value");
             error64.code = "InvalidSequenceSet";
             throw error64;
           }
-        }
-        if (node2.value) {
+          resp.push(emitEntry(val, { raw: true }));
+        } else if (node2.value) {
           resp.push(emitEntry(node2.value, { raw: true }));
         }
         break;
@@ -84508,17 +79611,21 @@ async function compiler(response, options) {
       case "SECTION":
         val = (node2.value || "").toString();
         if (!node2.section || val) {
-          if (node2.value === "" || imap_formal_syntax_default.verify(val.charAt(0) === "\\" ? val.slice(1) : val, imap_formal_syntax_default["ATOM-CHAR"]()) >= 0) {
+          if (isLogging && val.length > LOG_VALUE_LIMIT) {
+            val = logPlaceholder(val.length, "atom");
+          } else if (node2.value === "" || imap_formal_syntax_default.verify(val.charAt(0) === "\\" ? val.slice(1) : val, imap_formal_syntax_default["ATOM-CHAR"]()) >= 0) {
             val = isLogging ? JSON.stringify(val) : quoteString(val);
           }
           resp.push(emitEntry(val));
         }
         if (node2.section) {
           resp.push(emitEntry("["));
+          afterOpener = true;
           for (let child of node2.section) {
             await walk(child);
           }
           resp.push(emitEntry("]"));
+          afterOpener = false;
         }
         if (node2.partial) {
           resp.push(emitEntry(`<${node2.partial.map(safeNumber).join(".")}>`));
@@ -84536,7 +79643,7 @@ async function compiler(response, options) {
     respParts.push(resp);
   }
   const compiled = respParts.map((part) => Buffer.concat(part));
-  return asArray ? compiled : compiled.flatMap((entry) => entry);
+  return asArray ? compiled : compiled.length === 1 ? compiled[0] : Buffer.concat(compiled);
 }
 var imap_compiler_default = compiler;
 
@@ -85050,6 +80157,9 @@ function logConnectionError(connection, msg, err) {
   let routine = !!err && CONNECTION_GONE_CODES.has(err.code) && !err.reason;
   connection.log[routine ? "debug" : "warn"]({ msg, err, cid: connection.id });
 }
+function isServerRefusal(err) {
+  return !!err && (err.responseStatus === "NO" || err.responseStatus === "BAD");
+}
 function isRev2Active(connection) {
   return connection.enabled.has("IMAP4REV2") || connection.capabilities.has("IMAP4rev2") && !connection.capabilities.has("IMAP4rev1");
 }
@@ -85079,7 +80189,7 @@ function buildStatusQueryAttributes(connection, statusQuery) {
         }
         break;
       case "HIGHESTMODSEQ":
-        if (connection.capabilities.has("CONDSTORE")) {
+        if (connection.capabilities.has("CONDSTORE") || connection.capabilities.has("QRESYNC")) {
           attributes.push({ type: "ATOM", value: key.toUpperCase() });
         }
         break;
@@ -85220,7 +80330,8 @@ function getFolderTree(folders) {
     }
     return node2;
   };
-  for (let folder of folders) {
+  let byDepth = [...folders].sort((a, b) => (a.parent ? a.parent.length : 0) - (b.parent ? b.parent.length : 0));
+  for (let folder of byDepth) {
     let parent = getTreeNode(folder.parent);
     let existing = parent.folders && parent.folders.find((existing2) => existing2.name === folder.name);
     if (existing) {
@@ -85296,17 +80407,49 @@ function getColorFlags(color) {
   }
   return result;
 }
-async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm) {
+function mergeFetchRows(rows) {
+  if (rows.length === 1) {
+    return rows[0];
+  }
+  let merged = {};
+  let partialOrigins;
+  for (let row of rows) {
+    let { bodyParts, binaryParts, ...rest } = row;
+    Object.assign(merged, rest);
+    bodyParts?.forEach((value, key) => (merged.bodyParts ??= /* @__PURE__ */ new Map()).set(key, value));
+    binaryParts?.forEach((key) => (merged.binaryParts ??= /* @__PURE__ */ new Set()).add(key));
+    row.partialOrigins?.forEach((value, key) => (partialOrigins ??= /* @__PURE__ */ new Map()).set(key, value));
+  }
+  if (partialOrigins) {
+    Object.defineProperty(merged, "partialOrigins", { value: partialOrigins, writable: true, configurable: true });
+  }
+  return merged;
+}
+async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm, connection) {
   let map4 = {};
   map4.seq = parseUintValue(untagged.command, MAX_UINT32_DIGITS) || void 0;
   let key;
+  let origin = false;
+  let partialOrigins;
+  let recordOrigin = (sectionKey) => {
+    if (origin !== false) {
+      if (!partialOrigins) {
+        partialOrigins = /* @__PURE__ */ new Map();
+      }
+      partialOrigins.set(sectionKey, origin);
+    }
+  };
   let attributes = untagged.attributes && untagged.attributes[1] || [];
   for (let i = 0, len = attributes.length; i < len; i++) {
     let attribute = attributes[i];
     if (i % 2 === 0) {
+      origin = false;
       key = (await imap_compiler_default({
         attributes: [attribute]
-      })).toString().toLowerCase().replace(/<\d+(\.\d+)?>$/, "");
+      })).toString().toLowerCase().replace(/<(\d+)(\.\d+)?>$/, (match, start) => {
+        origin = parseUintValue(start, MAX_UINT32_DIGITS);
+        return "";
+      });
       continue;
     }
     if (typeof key !== "string") {
@@ -85340,6 +80483,7 @@ async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm) {
       case "body[]":
       case "binary[]":
         map4.source = getBuffer(attribute);
+        recordOrigin("");
         break;
       case "uid":
         map4.uid = getUint(attribute, MAX_UINT32_DIGITS) || void 0;
@@ -85371,7 +80515,7 @@ async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm) {
         map4.threadId = getString(attribute);
         break;
       case "x-gm-labels":
-        map4.labels = new Set(getArray(attribute));
+        map4.labels = new Set(getArray(attribute).map((label) => connection ? decodePath(connection, label) : label));
         break;
       case "rfc822.size":
         map4.size = getUint(attribute) || 0;
@@ -85416,6 +80560,7 @@ async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm) {
             map4.bodyParts = /* @__PURE__ */ new Map();
           }
           map4.bodyParts.set(partKey, value);
+          recordOrigin(partKey);
           if (match[1].toLowerCase() === "binary") {
             if (!map4.binaryParts) {
               map4.binaryParts = /* @__PURE__ */ new Set();
@@ -85437,6 +80582,9 @@ async function formatMessageResponse(untagged, mailbox2, idHashAlgorithm) {
       }
     }
     map4.id = map4.emailId || createHash2(idHashAlgorithm || "md5").update([path4, mailbox2.uidValidity?.toString() || "", map4.uid.toString()].join(":")).digest("hex");
+  }
+  if (partialOrigins) {
+    Object.defineProperty(map4, "partialOrigins", { value: partialOrigins, writable: true, configurable: true });
   }
   if (map4.flags) {
     let flagColor = getFlagColor(map4.flags);
@@ -85727,7 +80875,12 @@ function formatDateTime(value) {
   let timeStr = date5.toISOString().substring(11, 19);
   return `${dateStr} ${timeStr} +0000`;
 }
+var atomChars = imap_formal_syntax_default["ATOM-CHAR"];
 function formatFlag(flag) {
+  let atom = flag.charAt(0) === "\\" ? flag.slice(1) : flag;
+  if (!atom || imap_formal_syntax_default.verify(atom, atomChars()) >= 0) {
+    return false;
+  }
   switch (flag.toLowerCase()) {
     case "\\recent":
       return false;
@@ -85756,7 +80909,17 @@ function getStringList(list2) {
   if (!Array.isArray(list2)) {
     return [];
   }
-  return list2.map((entry) => entry && typeof entry.value === "string" ? entry.value : false).filter((entry) => entry);
+  let strings = [];
+  for (let entry of list2) {
+    let value = entry && entry.value;
+    if (Buffer.isBuffer(value)) {
+      value = value.toString();
+    }
+    if (value && typeof value === "string") {
+      strings.push(value);
+    }
+  }
+  return strings;
 }
 function parseBigIntValue(value, maxDigits) {
   if (!isDecimalString(value, maxDigits || MAX_NUMBER64_DIGITS)) {
@@ -86087,11 +81250,8 @@ var httpConnect = async ({ logger: logger2, proxyUrl, secureProxy, proxyHost, pr
   });
 };
 var resolveIPv4 = async (hostname3, deadline) => {
-  let addresses = await deadline.race(dns.promises.resolve4(hostname3));
-  if (!addresses || !addresses.length) {
-    throw proxyError(`Could not resolve an IPv4 address for ${hostname3}`, "EPROXY");
-  }
-  return addresses[0];
+  let { address: address2 } = await deadline.race(dns.promises.lookup(hostname3, { family: 4 }));
+  return address2;
 };
 var socksConnect = async ({ logger: logger2, proxyUrl, protocol, proxyHost, proxyPort, host, port, deadline }) => {
   let proxyType = protocol === "socks4" || protocol === "socks4a" ? 4 : 5;
@@ -86121,8 +81281,8 @@ var socksConnect = async ({ logger: logger2, proxyUrl, protocol, proxyHost, prox
       set_tcp_nodelay: true
     };
     if (proxyUrl.username || proxyUrl.password) {
-      connectionOpts.proxy.userId = proxyUrl.username;
-      connectionOpts.proxy.password = proxyUrl.password;
+      connectionOpts.proxy.userId = decodeUserInfo(proxyUrl.username);
+      connectionOpts.proxy.password = decodeUserInfo(proxyUrl.password);
     }
     let remaining = deadline.remaining();
     if (!remaining) {
@@ -86206,6 +81366,87 @@ var import_libbase64 = __toESM(require_libbase64(), 1);
 var import_mailsplit = __toESM(require_mailsplit(), 1);
 var import_flowed_decoder = __toESM(require_flowed_decoder(), 1);
 import { PassThrough } from "node:stream";
+var DRAIN_WAIT_EVENTS = ["drain", "error", "close"];
+var isEmptySection = (value) => !value?.length;
+var droppedSection = (mime, content, mimeRequest, contentRequest) => {
+  if (isEmptySection(mime) === isEmptySection(content)) {
+    return void 0;
+  }
+  return isEmptySection(content) ? contentRequest : mimeRequest;
+};
+var partialStarts = (requests) => {
+  let starts = /* @__PURE__ */ new Map();
+  for (let request of requests) {
+    if (typeof request !== "string") {
+      starts.set(request.key, Number(request.start) || 0);
+    }
+  }
+  return starts;
+};
+var MAX_FOREIGN_ANSWERS = 3;
+var requestedUid = (range, options) => options.uid && /^\d+$/.test(String(range)) ? Number(range) : void 0;
+var isForeignAnswer = (response, expected) => {
+  if (expected.uid && response.uid && response.uid !== expected.uid) {
+    return true;
+  }
+  for (let [key, start] of expected.origins) {
+    let origin = response.partialOrigins && response.partialOrigins.get(key);
+    if (typeof origin === "number" && origin !== start) {
+      return true;
+    }
+  }
+  return false;
+};
+async function fetchExpected(client, range, query, options, expected) {
+  for (let attempt = 1; ; attempt++) {
+    let response = await client.fetchOne(range, query, options);
+    if (!response || !isForeignAnswer(response, expected)) {
+      return response;
+    }
+    client.log.warn({
+      msg: "Server answered with data of another request, asking again",
+      uid: response.uid,
+      origins: response.partialOrigins && Object.fromEntries(response.partialOrigins),
+      attempt,
+      cid: client.id
+    });
+    if (attempt >= MAX_FOREIGN_ANSWERS) {
+      let err = new Error("Server kept answering with data of another request");
+      err.code = "DownloadIncomplete";
+      err.cid = client.id;
+      throw err;
+    }
+  }
+}
+async function refetchDroppedSections(client, response, range, options, sections) {
+  if (!sections.length) {
+    return;
+  }
+  client.log.debug({
+    msg: "Server answered a body section empty while its companion section was not, asking it again separately",
+    sections: sections.map((section) => typeof section === "string" ? section : section.key),
+    cid: client.id
+  });
+  let uid2 = response.uid;
+  let retry = await fetchExpected(client, uid2 || range, { uid: true, bodyParts: sections }, uid2 ? { ...options, uid: true } : options, {
+    uid: uid2,
+    origins: partialStarts(sections)
+  });
+  if (!retry) {
+    return;
+  }
+  if (retry.headers) {
+    response.headers = retry.headers;
+  }
+  for (let [key, value] of retry.bodyParts || []) {
+    (response.bodyParts ??= /* @__PURE__ */ new Map()).set(key, value);
+    if (retry.binaryParts && retry.binaryParts.has(key)) {
+      (response.binaryParts ??= /* @__PURE__ */ new Set()).add(key);
+    } else if (response.binaryParts) {
+      response.binaryParts.delete(key);
+    }
+  }
+}
 async function downloadMessage(client, range, part, options) {
   if (!client.mailbox) {
     return {};
@@ -86229,13 +81470,14 @@ async function downloadMessage(client, range, part, options) {
       range = uid2;
       downloadOptions.uid = true;
     }
-    if (!response2.bodyStructure.childNodes) {
+    if (!response2.bodyStructure?.childNodes) {
       part = "TEXT";
     }
   }
   let getNextPart = async (query) => {
     query = query || {};
     let mimeKey;
+    let contentRequest;
     if (!part) {
       query.source = {
         start: processed,
@@ -86255,13 +81497,18 @@ async function downloadMessage(client, range, part, options) {
           query.bodyParts.push(mimeKey);
         }
       }
-      query.bodyParts.push({
+      contentRequest = {
         key: part,
         start: processed,
         maxLength: chunkSize
-      });
+      };
+      query.bodyParts.push(contentRequest);
     }
-    let response2 = await client.fetchOne(range, query, downloadOptions);
+    let expected = {
+      uid: uid2 || requestedUid(range, downloadOptions),
+      origins: /* @__PURE__ */ new Map([[part || "", processed]])
+    };
+    let response2 = await fetchExpected(client, range, query, downloadOptions, expected);
     if (!response2) {
       return { response: false, chunk: false };
     }
@@ -86269,6 +81516,12 @@ async function downloadMessage(client, range, part, options) {
       uid2 = response2.uid;
       range = uid2;
       downloadOptions.uid = true;
+    }
+    if (mimeKey && contentRequest) {
+      let dropped = droppedSection(mimeKey === "header" ? response2.headers : response2.bodyParts?.get(mimeKey), response2.bodyParts?.get(part), mimeKey, contentRequest);
+      if (dropped) {
+        await refetchDroppedSections(client, response2, range, downloadOptions, [dropped]);
+      }
     }
     let chunk2 = !part ? response2.source : response2.bodyParts && response2.bodyParts.get(part);
     if (!chunk2) {
@@ -86404,7 +81657,35 @@ async function downloadMessage(client, range, part, options) {
     return stream.write(chunk2);
   };
   let maxTotalBytes = normalizeByteLimit(meta3.expectedSize ? meta3.expectedSize * 2 + chunkSize : 0);
-  let fetchAllParts = async () => {
+  let waitForDrain = () => new Promise((resolve8, reject) => {
+    const finish = (err) => {
+      for (let event of DRAIN_WAIT_EVENTS) {
+        stream.removeListener(event, finish);
+      }
+      if (err) {
+        reject(err);
+      } else {
+        resolve8();
+      }
+    };
+    for (let event of DRAIN_WAIT_EVENTS) {
+      stream.once(event, finish);
+    }
+  });
+  let writeAndDrain = async (chunk2) => {
+    if (writeChunk(chunk2) !== false) {
+      return;
+    }
+    try {
+      await waitForDrain();
+    } catch (err) {
+      if (!fetchAborted) {
+        throw err;
+      }
+    }
+  };
+  let fetchAllParts = async (head) => {
+    await writeAndDrain(head);
     while (hasMore && !isLimited() && !fetchAborted) {
       if (processed >= maxTotalBytes) {
         let err = new Error("Download exceeded the expected message size");
@@ -86414,7 +81695,7 @@ async function downloadMessage(client, range, part, options) {
         throw err;
       }
       let { response: response2, chunk: chunk2 } = await getNextPart();
-      if (fetchAborted) {
+      if (fetchAborted || output3.destroyed) {
         break;
       }
       if (response2 === false) {
@@ -86426,32 +81707,7 @@ async function downloadMessage(client, range, part, options) {
       if (!chunk2) {
         break;
       }
-      if (writeChunk(chunk2) === false) {
-        try {
-          await new Promise((resolve8, reject) => {
-            const finish = (err) => {
-              for (let event of ["drain", "error", "close"]) {
-                stream.removeListener(event, finish);
-              }
-              if (err) {
-                reject(err);
-              } else {
-                resolve8();
-              }
-            };
-            stream.once("drain", finish);
-            stream.once("error", finish);
-            stream.once("close", finish);
-          });
-        } catch (err) {
-          if (!fetchAborted) {
-            throw err;
-          }
-        }
-        if (fetchAborted) {
-          break;
-        }
-      }
+      await writeAndDrain(chunk2);
     }
   };
   client._openDownloads++;
@@ -86463,8 +81719,8 @@ async function downloadMessage(client, range, part, options) {
       client.autoidle();
     }
   };
-  let runFetchAllParts = () => {
-    fetchAllParts().catch((err) => {
+  let runFetchAllParts = (head) => {
+    fetchAllParts(head).catch((err) => {
       if (!fetchAborted && stream && !stream.destroyed) {
         stream.emit("error", err);
       } else {
@@ -86483,30 +81739,7 @@ async function downloadMessage(client, range, part, options) {
       }
     }).catch((err) => client.log.error({ msg: "Failed to fail the download stream", err, cid: client.id }));
   };
-  setImmediate(() => {
-    let writeResult;
-    try {
-      writeResult = writeChunk(chunk);
-    } catch (err) {
-      stream.emit("error", err);
-      finishDownload();
-      if (!fetchAborted && stream && !stream.destroyed) {
-        stream.end();
-      }
-      return;
-    }
-    if (!writeResult) {
-      stream.once("drain", () => {
-        if (!fetchAborted) {
-          runFetchAllParts();
-        } else {
-          finishDownload();
-        }
-      });
-    } else {
-      runFetchAllParts();
-    }
-  });
+  setImmediate(() => runFetchAllParts(chunk));
   return {
     meta: meta3,
     content: output3
@@ -86516,19 +81749,31 @@ async function downloadMessageParts(client, range, parts, options) {
   if (!client.mailbox) {
     return {};
   }
-  let downloadOptions = Object.assign({
-    chunkSize: 64 * 1024,
-    maxBytes: Infinity
-  }, options || {});
+  let downloadOptions = options || {};
+  let maxBytes = normalizeByteLimit(downloadOptions.maxBytes);
   let query = { bodyParts: [] };
+  let contentRequests = /* @__PURE__ */ new Map();
   for (let part of parts) {
     query.bodyParts.push(part + ".mime");
-    query.bodyParts.push(part);
+    let contentRequest = maxBytes > 4294967295 ? part : { key: part, start: 0, maxLength: maxBytes };
+    contentRequests.set(part, contentRequest);
+    query.bodyParts.push(contentRequest);
   }
-  let response = await client.fetchOne(range, query, downloadOptions);
+  let response = await fetchExpected(client, range, query, downloadOptions, {
+    uid: requestedUid(range, downloadOptions),
+    origins: partialStarts(query.bodyParts)
+  });
   if (!response || !response.bodyParts) {
     return {};
   }
+  let dropped = [];
+  for (let [part, contentRequest] of contentRequests) {
+    let section = droppedSection(response.bodyParts.get(part + ".mime"), response.bodyParts.get(part), part + ".mime", contentRequest);
+    if (section) {
+      dropped.push(section);
+    }
+  }
+  await refetchDroppedSections(client, response, range, downloadOptions, dropped);
   let data = {};
   for (let [part, content] of response.bodyParts) {
     let keyParts = part.split(".mime");
@@ -86537,6 +81782,16 @@ async function downloadMessageParts(client, range, parts, options) {
     }
     if (keyParts.length === 1) {
       let key = keyParts[0];
+      if (content.length > maxBytes) {
+        client.log.warn({
+          msg: "Server returned more than the requested window, truncating the part",
+          part: key,
+          maxBytes,
+          received: content.length,
+          cid: client.id
+        });
+        content = content.subarray(0, maxBytes);
+      }
       if (!data[key]) {
         data[key] = { content };
       } else {
@@ -86629,7 +81884,10 @@ async function id(connection, clientInfo) {
             if (i % 2 === 0) {
               key = val.value;
             } else if (typeof key === "string" && typeof val.value === "string") {
-              map4[key.toLowerCase().trim()] = val.value;
+              let name4 = key.toLowerCase().trim();
+              if (!isUnsafeKey(name4)) {
+                map4[name4] = val.value;
+              }
             }
           });
         }
@@ -86689,7 +81947,7 @@ async function namespace(connection) {
   }
   let response;
   try {
-    let map4 = {};
+    let map4 = { personal: [], other: false, shared: false };
     response = await connection.exec("NAMESPACE", false, {
       untagged: {
         // The NAMESPACE response (RFC 2342) contains exactly three sections:
@@ -86701,18 +81959,18 @@ async function namespace(connection) {
           if (!untagged.attributes || !untagged.attributes.length) {
             return;
           }
-          map4.personal = getNamsepaceInfo(untagged.attributes[0]);
+          map4.personal = getNamsepaceInfo(untagged.attributes[0]) || [];
           map4.other = getNamsepaceInfo(untagged.attributes[1]);
           map4.shared = getNamsepaceInfo(untagged.attributes[2]);
         }
       }
     });
+    response.next();
     connection.namespaces = map4;
     if (!connection.namespaces.personal[0]) {
       connection.namespaces.personal[0] = { prefix: "", delimiter: "." };
     }
     connection.namespaces.personal[0].prefix = connection.namespaces.personal[0].prefix || "";
-    response.next();
     connection.namespace = connection.namespaces.personal[0];
     return connection.namespace;
   } catch (err) {
@@ -86787,13 +82045,16 @@ async function login(connection, username, password) {
     if (errorCode) {
       err.serverResponseCode = errorCode;
     }
-    err.authenticationFailed = true;
+    if (isServerRefusal(err)) {
+      err.authenticationFailed = true;
+    }
     err.response = await getErrorText(err.response);
     throw err;
   }
 }
 
 // node_modules/imapflow/dist/esm/commands/logout.js
+var LOGOUT_TIMEOUT = 10 * 1e3;
 async function logout(connection) {
   if (connection.state === connection.states.LOGOUT) {
     return false;
@@ -86804,6 +82065,7 @@ async function logout(connection) {
     return false;
   }
   let response;
+  let timer = setTimeout(() => connection.close(), LOGOUT_TIMEOUT);
   try {
     response = await connection.exec("LOGOUT");
     return true;
@@ -86814,6 +82076,7 @@ async function logout(connection) {
     connection.log.warn({ err, cid: connection.id });
     return false;
   } finally {
+    clearTimer(timer);
     connection.state = connection.states.LOGOUT;
     if (response && typeof response.next === "function") {
       response.next();
@@ -86939,6 +82202,7 @@ var GENERIC_TOKENS = new Set([
 ].map((token2) => token2.toLowerCase().normalize("NFKC")));
 var TOKEN_SPLIT = /[\s\-_/.,()[\]]+/;
 var flags = ["\\All", "\\Archive", "\\Drafts", "\\Flagged", "\\Junk", "\\Sent", "\\Trash"];
+var LOWERCASE_FLAGS = flags.map((flag) => flag.toLowerCase());
 var names = {
   "\\Sent": [
     "aika",
@@ -87723,11 +82987,13 @@ for (let flag of Object.keys(names)) {
   }
 }
 function normalizeName(name4) {
-  return name4.toLowerCase().replace(/\u200e/g, "").trim().normalize("NFKC");
+  return name4.toLowerCase().replace(/[\u200e\u200f]/g, "").trim().normalize("NFKC");
 }
 var specialUse = (hasSpecialUseExtension, folder) => {
   if (hasSpecialUseExtension) {
-    const flag2 = flags.find((flag3) => folder.flags.has(flag3));
+    const listed = /* @__PURE__ */ new Set();
+    folder.flags.forEach((flag3) => listed.add(flag3.toLowerCase()));
+    const flag2 = flags.find((flag3, i) => listed.has(LOWERCASE_FLAGS[i]));
     if (flag2) {
       return { flag: flag2, source: "extension" };
     }
@@ -87971,6 +83237,12 @@ async function list(connection, reference, mailbox2, options) {
       }
     }
     let runLsub = async () => {
+      let entriesByPath = /* @__PURE__ */ new Map();
+      for (let entry of entries) {
+        if (!entriesByPath.has(entry.path)) {
+          entriesByPath.set(entry.path, entry);
+        }
+      }
       let response = await connection.exec("LSUB", [encodePath(connection, normalizedReference), encodePath(connection, normalizedMailbox)], {
         untagged: {
           LSUB: async (untagged) => {
@@ -87994,7 +83266,7 @@ async function list(connection, reference, mailbox2, options) {
             entry.parentPath = entry.delimiter && entry.path ? entry.path.substring(0, entry.path.lastIndexOf(entry.delimiter)) : "";
             entry.parent = entry.delimiter ? entry.path.split(entry.delimiter) : [entry.path];
             entry.name = entry.parent.pop();
-            let existing = entries.find((existing2) => existing2.path === entry.path);
+            let existing = entriesByPath.get(entry.path);
             if (existing) {
               existing.subscribed = true;
               entry.flags.forEach((flag) => existing.flags.add(flag));
@@ -88116,6 +83388,9 @@ async function enable(connection, extensionList) {
       }
     });
     connection.enabled = /* @__PURE__ */ new Set([...connection.enabled, ...enabled]);
+    if (connection.enabled.has("QRESYNC")) {
+      connection.enabled.add("CONDSTORE");
+    }
     response.next();
     return connection.enabled;
   } catch (err) {
@@ -88285,6 +83560,8 @@ async function select(connection, pathInput, options) {
     connection.state = connection.states.SELECTED;
     if (!currentMailbox || currentMailbox.path !== path4) {
       emitSafe(connection, "mailboxOpen", connection.mailbox);
+    } else if (typeof map4.exists === "number" && map4.exists !== currentMailbox.exists) {
+      emitSafe(connection, "exists", { path: path4, count: map4.exists, prevCount: currentMailbox.exists });
     }
     response.next();
     return map4;
@@ -88314,11 +83591,13 @@ async function fetch2(connection, range, query, options) {
   const commandKey = canUseBinary && options.binary && !connection.disableBinary ? "BINARY" : "BODY";
   const maxRetries = 4;
   const baseDelay = 1e3;
+  let maxDelivered = 0;
   for (let retryCount = 0; ; retryCount++) {
     let messages = {
       count: 0,
       list: []
     };
+    let consumerError = null;
     let response;
     try {
       let attributes = [{ type: "SEQUENCE", value: (range || "*").toString() }];
@@ -88335,12 +83614,25 @@ async function fetch2(connection, range, query, options) {
         };
         queryStructure.push(bodyPeek);
       };
-      ["all", "fast", "full", "uid", "flags", "bodyStructure", "envelope", "internalDate"].forEach((key) => {
-        if (query[key]) {
+      let full = !!query.full;
+      let all2 = !!query.all || full;
+      let fast = !!query.fast || all2;
+      let items = {
+        flags: query.flags || fast,
+        internalDate: query.internalDate || fast,
+        size: query.size || fast,
+        envelope: query.envelope || all2,
+        bodyStructure: query.bodyStructure || full
+      };
+      if (query.uid) {
+        queryStructure.push({ type: "ATOM", value: "UID" });
+      }
+      ["flags", "bodyStructure", "envelope", "internalDate"].forEach((key) => {
+        if (items[key]) {
           queryStructure.push({ type: "ATOM", value: key.toUpperCase() });
         }
       });
-      if (query.size) {
+      if (items.size) {
         queryStructure.push({ type: "ATOM", value: "RFC822.SIZE" });
       }
       if (query.source) {
@@ -88440,17 +83732,29 @@ async function fetch2(connection, range, query, options) {
           // (useful for large result sets). Otherwise, collect all into messages.list.
           FETCH: async (untagged) => {
             messages.count++;
-            let formatted = await formatMessageResponse(untagged, mailbox2, connection.idHashAlgorithm);
+            if (consumerError) {
+              return;
+            }
+            let formatted = await formatMessageResponse(untagged, mailbox2, connection.idHashAlgorithm, connection);
             if (typeof options.onUntaggedFetch === "function") {
-              await new Promise((resolve8, reject) => {
-                options.onUntaggedFetch(formatted, (err) => {
-                  if (err) {
-                    reject(err);
-                  } else {
-                    resolve8();
-                  }
+              let key = options.uid ? formatted.uid || formatted.seq : formatted.seq;
+              if (retryCount && key <= maxDelivered) {
+                return;
+              }
+              maxDelivered = Math.max(maxDelivered, key);
+              try {
+                await new Promise((resolve8, reject) => {
+                  options.onUntaggedFetch(formatted, (err) => {
+                    if (err) {
+                      reject(err);
+                    } else {
+                      resolve8();
+                    }
+                  });
                 });
-              });
+              } catch (err) {
+                consumerError = err;
+              }
             } else {
               messages.list.push(formatted);
             }
@@ -88458,6 +83762,9 @@ async function fetch2(connection, range, query, options) {
         }
       });
       response.next();
+      if (consumerError) {
+        throw consumerError;
+      }
       return messages;
     } catch (err) {
       if (err.code === "ETHROTTLE" && retryCount < maxRetries - 1) {
@@ -88544,7 +83851,7 @@ async function deleteMailbox(connection, path4) {
   path4 = normalizePath(connection, path4);
   let selected = getSelectedMailbox(connection);
   if (selected && selected.path === path4) {
-    await connection.run("CLOSE");
+    await connection.run("CLOSE", { unselect: true });
   }
   let response;
   try {
@@ -88569,7 +83876,7 @@ async function rename(connection, path4, newPath) {
   newPath = normalizePath(connection, newPath);
   let selected = getSelectedMailbox(connection);
   if (selected && selected.path === path4) {
-    await connection.run("CLOSE");
+    await connection.run("CLOSE", { unselect: true });
   }
   let response;
   try {
@@ -88590,13 +83897,13 @@ async function rename(connection, path4, newPath) {
 }
 
 // node_modules/imapflow/dist/esm/commands/close.js
-async function close(connection) {
+async function close(connection, options) {
   if (connection.state !== connection.states.SELECTED) {
     return;
   }
   let response;
   try {
-    response = await connection.exec("CLOSE");
+    response = await connection.exec(options?.unselect && hasCapability(connection, "UNSELECT") ? "UNSELECT" : "CLOSE");
     response.next();
     let currentMailbox = connection.mailbox;
     connection.mailbox = false;
@@ -88641,18 +83948,19 @@ async function unsubscribe(connection, path4) {
 
 // node_modules/imapflow/dist/esm/commands/store.js
 async function store(connection, range, flags2, options) {
+  options = options || {};
   let mailbox2 = getSelectedMailbox(connection);
   if (!mailbox2 || !range || options.useLabels && !connection.capabilities.has("X-GM-EXT-1")) {
     return false;
   }
-  options = options || {};
   let operation = "FLAGS";
   if (options.useLabels) {
     operation = "X-GM-LABELS";
   } else if (options.silent) {
     operation = `${operation}.SILENT`;
   }
-  switch ((options.operation || "").toLowerCase()) {
+  const operationName = (options.operation || "").toLowerCase();
+  switch (operationName) {
     case "set":
       break;
     case "remove":
@@ -88663,21 +83971,30 @@ async function store(connection, range, flags2, options) {
       operation = `+${operation}`;
       break;
   }
+  const clearAll = operationName === "set" && Array.isArray(flags2) && !flags2.length;
+  const flagSource = options.useLabels ? false : mailbox2;
+  const dropped = [];
   flags2 = (Array.isArray(flags2) ? flags2 : [].concat(flags2 || [])).map((flag) => {
-    let formatted = formatFlag(flag);
-    if (!canUseFlag(mailbox2, formatted) && options.operation !== "remove") {
+    let formatted = options.useLabels && flag && flag.charAt(0) !== "\\" ? encodePath(connection, flag) : formatFlag(flag);
+    if (!formatted || !canUseFlag(flagSource, formatted) && operationName !== "remove") {
+      dropped.push(flag);
       return false;
     }
     return formatted;
   }).filter((flag) => !!flag);
-  if (!flags2.length && options.operation !== "set") {
+  if (dropped.length) {
+    connection.log.warn({
+      msg: "Dropped flags the mailbox does not accept",
+      cid: connection.id,
+      path: mailbox2.path,
+      operation,
+      dropped
+    });
+  }
+  if (!flags2.length && !clearAll) {
     return false;
   }
-  let attributes = [
-    { type: "SEQUENCE", value: range },
-    { type: "ATOM", value: operation },
-    flags2.map((flag) => ({ type: "ATOM", value: flag }))
-  ];
+  let attributes = [{ type: "SEQUENCE", value: range }];
   if (options.unchangedSince && connection.enabled.has("CONDSTORE") && !mailbox2.noModseq) {
     attributes.push([
       {
@@ -88690,6 +84007,7 @@ async function store(connection, range, flags2, options) {
       }
     ]);
   }
+  attributes.push({ type: "ATOM", value: operation }, flags2.map((flag) => ({ type: "ATOM", value: flag })));
   let response;
   try {
     response = await connection.exec(options.uid ? "UID STORE" : "STORE", attributes);
@@ -88702,6 +84020,7 @@ async function store(connection, range, flags2, options) {
 }
 
 // node_modules/imapflow/dist/esm/search-compiler.js
+var UNICODE_PATTERN = /[^\x00-\x7F]/;
 var setBoolOpt = (attributes, term, value) => {
   if (!value) {
     if (/^un/i.test(term)) {
@@ -88713,15 +84032,13 @@ var setBoolOpt = (attributes, term, value) => {
   attributes.push({ type: "ATOM", value: term.toUpperCase() });
 };
 var toSequenceValue = (value) => [].concat(value).join(",");
+var toSearchValue = (value) => UNICODE_PATTERN.test(value) && !value.includes("\0") ? { type: "LITERAL", value: Buffer.from(value) } : { type: "ATOM", value };
 var setOpt = (attributes, term, value) => {
-  if (value === false || value === null) {
-    attributes.push({ type: "ATOM", value: "NOT" });
-  }
   attributes.push({ type: "ATOM", value: term.toUpperCase() });
   if (Array.isArray(value)) {
-    value.forEach((entry) => attributes.push({ type: "ATOM", value: (entry || "").toString() }));
+    value.forEach((entry) => attributes.push(toSearchValue((entry || "").toString())));
   } else {
-    attributes.push({ type: "ATOM", value: value.toString() });
+    attributes.push(toSearchValue(value.toString()));
   }
 };
 var processDateField = (attributes, term, value) => {
@@ -88738,21 +84055,14 @@ var processDateField = (attributes, term, value) => {
   }
   setOpt(attributes, term, formatted);
 };
-var UNICODE_PATTERN = /[^\x00-\x7F]/;
 var fail = (code, message) => {
   let error64 = new Error(message);
   error64.code = code;
   throw error64;
 };
-var isUnicodeString = (str) => {
-  if (!str || typeof str !== "string") {
-    return false;
-  }
-  return UNICODE_PATTERN.test(str);
-};
+var hasLiteral = (attributes) => attributes.some((attr) => Array.isArray(attr) ? hasLiteral(attr) : attr.type === "LITERAL");
 var searchCompiler = (connection, query) => {
   const attributes = [];
-  let hasUnicode = false;
   const walk = (params) => {
     let walkOperand = (operator, obj) => {
       let startIdx = attributes.length;
@@ -88823,9 +84133,6 @@ var searchCompiler = (connection, query) => {
         case "SUBJECT":
         case "TEXT":
         case "TO":
-          if (isUnicodeString(params[term])) {
-            hasUnicode = true;
-          }
           if (params[term]) {
             setOpt(attributes, term, params[term]);
           }
@@ -88841,21 +84148,27 @@ var searchCompiler = (connection, query) => {
           break;
         // Email ID support (OBJECTID or Gmail extension)
         case "EMAILID":
+          if (!params[term]) {
+            break;
+          }
           if (connection.capabilities.has("OBJECTID")) {
             setOpt(attributes, "EMAILID", params[term]);
           } else if (connection.capabilities.has("X-GM-EXT-1")) {
             setOpt(attributes, "X-GM-MSGID", params[term]);
-          } else if (params[term]) {
+          } else {
             fail("MissingServerExtension", "Server does not support OBJECTID or X-GM-EXT-1 extension required for EMAILID");
           }
           break;
         // Thread ID support (OBJECTID or Gmail extension)
         case "THREADID":
+          if (!params[term]) {
+            break;
+          }
           if (connection.capabilities.has("OBJECTID")) {
             setOpt(attributes, "THREADID", params[term]);
           } else if (connection.capabilities.has("X-GM-EXT-1")) {
             setOpt(attributes, "X-GM-THRID", params[term]);
-          } else if (params[term]) {
+          } else {
             fail("MissingServerExtension", "Server does not support OBJECTID or X-GM-EXT-1 extension required for THREADID");
           }
           break;
@@ -88863,9 +84176,6 @@ var searchCompiler = (connection, query) => {
         case "GMRAW":
         case "GMAILRAW":
           if (connection.capabilities.has("X-GM-EXT-1")) {
-            if (isUnicodeString(params[term])) {
-              hasUnicode = true;
-            }
             setOpt(attributes, "X-GM-RAW", params[term]);
           } else {
             fail("MissingServerExtension", "Server does not support X-GM-EXT-1 extension required for X-GM-RAW");
@@ -88900,9 +84210,6 @@ var searchCompiler = (connection, query) => {
             fail("MissingServerExtension", "Server does not support X-GM-EXT-1 extension required for label search");
           }
           let rawQuery = rawParts.join(" ");
-          if (isUnicodeString(rawQuery)) {
-            hasUnicode = true;
-          }
           setOpt(attributes, "X-GM-RAW", rawQuery);
           break;
         }
@@ -88914,9 +84221,8 @@ var searchCompiler = (connection, query) => {
             if (!value) {
               break;
             }
-            if (connection.capabilities.has("WITHIN")) {
-              const now = Date.now();
-              const withinSeconds = Math.round(Math.max(0, now - value.getTime()) / 1e3);
+            const withinSeconds = Math.round((Date.now() - value.getTime()) / 1e3);
+            if (connection.capabilities.has("WITHIN") && withinSeconds >= 1) {
               const withinKeyword = term.toUpperCase() === "BEFORE" ? "OLDER" : "YOUNGER";
               setOpt(attributes, withinKeyword, withinSeconds.toString());
               break;
@@ -88935,7 +84241,13 @@ var searchCompiler = (connection, query) => {
         case "KEYWORD":
         case "UNKEYWORD":
           {
+            if (typeof params[term] !== "string") {
+              fail("InvalidSearchQuery", `Search value for ${term.toLowerCase()} must be a string`);
+            }
             let flag = formatFlag(params[term]);
+            if (flag === false) {
+              fail("InvalidSearchQuery", /^\\recent$/i.test(params[term]) ? `${params[term]} can not be searched as a keyword, use the "recent" search key instead` : `${params[term]} is not a valid keyword`);
+            }
             if (flag) {
               setOpt(attributes, term, flag);
             }
@@ -88952,16 +84264,17 @@ var searchCompiler = (connection, query) => {
               if (typeof value !== "string") {
                 return;
               }
-              if (isUnicodeString(value)) {
-                hasUnicode = true;
-              }
               setOpt(attributes, term, [header3.toUpperCase().trim(), value]);
             });
           }
           break;
         // NOT operator
+        // A falsy operand means no NOT clause (`not: cond && {...}`). Any other one goes
+        // through walkOperand(), which refuses a value that is not a query object or
+        // compiles to nothing: dropping it would turn the filter into a search that
+        // matches everything
         case "NOT":
-          if (params[term] && typeof params[term] === "object") {
+          if (params[term]) {
             attributes.push({ type: "ATOM", value: "NOT" });
             walkOperand("NOT", params[term]);
           }
@@ -88973,8 +84286,8 @@ var searchCompiler = (connection, query) => {
               break;
             }
             if (params[term].length === 1) {
-              if (typeof params[term][0] === "object" && params[term][0]) {
-                walk(params[term][0]);
+              if (params[term][0]) {
+                walkOperand("OR", params[term][0]);
               }
               break;
             }
@@ -89011,11 +84324,13 @@ var searchCompiler = (connection, query) => {
             walkOrTree(genOrTree(params[term]));
           }
           break;
+        default:
+          fail("InvalidSearchQuery", `Unknown search key "${term}"`);
       }
     });
   };
   walk(query);
-  if (hasUnicode && !connection.enabled.has("UTF8=ACCEPT")) {
+  if (!connection.enabled.has("UTF8=ACCEPT") && hasLiteral(attributes)) {
     attributes.unshift({ type: "ATOM", value: "UTF-8" });
     attributes.unshift({ type: "ATOM", value: "CHARSET" });
   }
@@ -89076,9 +84391,13 @@ function parseEsearchResponse(attrs) {
         const items = Array.isArray(listToken) ? listToken : null;
         if (!items || items.length < 2)
           break;
+        const range = items[0]?.value;
+        if (typeof range !== "string")
+          break;
+        const messages = items[1]?.value;
         result.partial = {
-          range: items[0].value,
-          messages: items[1].value
+          range,
+          messages: typeof messages === "string" ? messages : ""
         };
         break;
       }
@@ -89306,7 +84625,26 @@ async function append(connection, destination, content, flags2, idate) {
   destination = normalizePath(connection, destination);
   let selected = getSelectedMailbox(connection);
   const targetMailbox = selected && comparePaths(connection, selected.path, destination) ? selected : false;
-  flags2 = (Array.isArray(flags2) ? flags2 : [].concat(flags2 || [])).map((flag) => flag && formatFlag(flag.toString())).filter((flag) => !!flag && canUseFlag(connection.mailbox, flag));
+  const flagSource = targetMailbox && !targetMailbox.readOnly ? targetMailbox : false;
+  const dropped = [];
+  flags2 = (Array.isArray(flags2) ? flags2 : [].concat(flags2 || [])).map((flag) => {
+    const formatted = flag && formatFlag(flag.toString());
+    if (!formatted || !canUseFlag(flagSource, formatted)) {
+      if (flag) {
+        dropped.push(flag.toString());
+      }
+      return false;
+    }
+    return formatted;
+  }).filter((flag) => !!flag);
+  if (dropped.length) {
+    connection.log.warn({
+      msg: "Dropped flags the mailbox does not accept",
+      cid: connection.id,
+      path: destination,
+      dropped
+    });
+  }
   let attributes = [{ type: "ATOM", value: encodePath(connection, destination) }];
   idate = idate ? formatDateTime(idate) : false;
   if (flags2.length || idate) {
@@ -89376,9 +84714,13 @@ async function append(connection, destination, content, flags2, idate) {
       }
     }
     if (map4.seq && !map4.uid) {
-      let list2 = await connection.search({ seq: map4.seq }, { uid: true });
-      if (Array.isArray(list2) && list2.length) {
-        map4.uid = list2[0];
+      try {
+        let list2 = await connection.search({ seq: map4.seq }, { uid: true });
+        if (Array.isArray(list2) && list2.length) {
+          map4.uid = list2[0];
+        }
+      } catch (err) {
+        logConnectionError(connection, "Failed to look up the UID of the appended message", err);
       }
     }
     return map4;
@@ -89448,7 +84790,10 @@ async function status(connection, path4, query) {
     return map4;
   } catch (err) {
     if (err.responseStatus === "NO") {
-      let folders = await connection.run("LIST", "", path4, { listOnly: true });
+      let folders = await connection.run("LIST", "", path4, { listOnly: true }).catch((listErr) => {
+        logConnectionError(connection, "Failed to check if the mailbox exists", listErr);
+        return false;
+      });
       if (folders && !folders.length) {
         let error64 = new Error(`Mailbox doesn't exist: ${path4}`);
         error64.code = "NotFound";
@@ -89462,6 +84807,12 @@ async function status(connection, path4, query) {
 }
 
 // node_modules/imapflow/dist/esm/commands/copyuid-parser.js
+var UID_SET_ELEMENT = /^\d+(:\d+)?$/;
+var isUidSet = (value) => typeof value === "string" && value.split(",").every((part) => UID_SET_ELEMENT.test(part));
+var uidSetValues = (attribute) => {
+  const value = attribute && attribute.value;
+  return isUidSet(value) ? expandRange2(value) : false;
+};
 function parseCopyUid(response, map4) {
   let section = response.attributes && response.attributes[0] && response.attributes[0].section;
   let responseCode = section && section.length && section[0] && typeof section[0].value === "string" ? section[0].value : "";
@@ -89473,8 +84824,8 @@ function parseCopyUid(response, map4) {
   if (uidValidity !== false) {
     map4.uidValidity = uidValidity;
   }
-  const sourceUids = codeSection[2] && typeof codeSection[2].value === "string" ? expandRange2(codeSection[2].value) : false;
-  const destinationUids = codeSection[3] && typeof codeSection[3].value === "string" ? expandRange2(codeSection[3].value) : false;
+  const sourceUids = uidSetValues(codeSection[2]);
+  const destinationUids = uidSetValues(codeSection[3]);
   if (sourceUids && destinationUids && sourceUids.length === destinationUids.length) {
     map4.uidMap = new Map(sourceUids.map((uid2, i) => [uid2, destinationUids[i]]));
   }
@@ -89573,7 +84924,7 @@ async function quota(connection, path4) {
   if (!isAuthenticatedState(connection) || !path4) {
     return;
   }
-  if (!connection.capabilities.has("QUOTA")) {
+  if (!connection.capabilities.has("QUOTA") && ![...connection.capabilities.keys()].some((capability2) => capability2.startsWith("QUOTA=RES-"))) {
     return false;
   }
   path4 = normalizePath(connection, path4);
@@ -89687,8 +85038,8 @@ async function runIdle(connection) {
           path: connection.mailbox && connection.mailbox.path,
           cid: connection.id
         });
-        connection.write("DONE");
         doneSent = true;
+        connection.write("DONE");
         releaseIdling();
         if (connection.preCheck === ownPreCheck) {
           connection.preCheck = false;
@@ -89745,7 +85096,10 @@ async function runIdle(connection) {
     return;
   } catch (err) {
     logConnectionError(connection, "IDLE session failed", err);
-    let refusedByServer = ["NO", "BAD"].includes(err.responseStatus);
+    let refusedByServer = isServerRefusal(err);
+    if (refusedByServer) {
+      connection.skipIdle = true;
+    }
     if (preCheckWaitQueue.length && !refusedByServer) {
       let waiterError = restampConnectionError(err, { rejectedFrom: "preCheckWaiter" });
       while (preCheckWaitQueue.length) {
@@ -89868,7 +85222,7 @@ async function idle(connection, maxIdleTime) {
   if (connection.state !== connection.states.SELECTED) {
     return;
   }
-  if (hasCapability(connection, "IDLE")) {
+  if (hasCapability(connection, "IDLE") && !connection.skipIdle) {
     let idleTimer;
     let stillIdling = false;
     for (; ; ) {
@@ -89886,7 +85240,8 @@ async function idle(connection, maxIdleTime) {
       }
       let resp = await runIdle(connection);
       clearTimeout(idleTimer);
-      if (!stillIdling) {
+      const canRestart = stillIdling && !connection.requestQueue.length && !!getSelectedMailbox(connection) && connection.usable;
+      if (!canRestart) {
         return resp;
       }
       stillIdling = false;
@@ -89901,7 +85256,9 @@ async function handleAuthError(err, errorResponse) {
   if (errorCode) {
     err.serverResponseCode = errorCode;
   }
-  err.authenticationFailed = true;
+  if (isServerRefusal(err)) {
+    err.authenticationFailed = true;
+  }
   err.response = await getErrorText(err.response);
   if (errorResponse) {
     err.oauthError = errorResponse;
@@ -89928,15 +85285,24 @@ async function authOauth(connection, username, accessToken) {
     command2 = "XOAUTH2";
     breaker2 = "";
   }
+  let encoded = Buffer.from(oauthbearer).toString("base64");
+  let payloadPending = !connection.capabilities.has("SASL-IR");
   let errorResponse = false;
   try {
-    let response = await connection.exec("AUTHENTICATE", [
-      { type: "ATOM", value: command2 },
-      { type: "ATOM", value: Buffer.from(oauthbearer).toString("base64"), sensitive: true }
-    ], {
+    let attributes = [{ type: "ATOM", value: command2 }];
+    if (!payloadPending) {
+      attributes.push({ type: "ATOM", value: encoded, sensitive: true });
+    }
+    let response = await connection.exec("AUTHENTICATE", attributes, {
       // Server sends a "+" continuation if auth fails, with a base64 JSON error payload.
       // We decode it for diagnostics, then send the breaker to terminate the exchange.
       onPlusTag: async (resp) => {
+        if (payloadPending) {
+          payloadPending = false;
+          connection.log.debug({ src: "c", msg: "(* value hidden *)", comment: `Encoded response for AUTH=${command2}`, cid: connection.id });
+          connection.write(encoded);
+          return;
+        }
         if (resp.attributes && resp.attributes[0] && resp.attributes[0].type === "TEXT") {
           try {
             errorResponse = JSON.parse(Buffer.from(resp.attributes[0].value, "base64").toString());
@@ -89963,20 +85329,21 @@ async function authOauth(connection, username, accessToken) {
 async function authLogin(connection, username, password) {
   let errorResponse = false;
   try {
+    let usernameSent = false;
     let response = await connection.exec("AUTHENTICATE", [{ type: "ATOM", value: "LOGIN" }], {
       onPlusTag: async (resp) => {
-        if (resp.attributes && resp.attributes[0] && resp.attributes[0].type === "TEXT") {
-          let question = Buffer.from(resp.attributes[0].value, "base64").toString().toLowerCase().replace(/[:\x00]*$/, "");
-          if (question === "username" || question === "user name") {
-            let encodedUsername = Buffer.from(username).toString("base64");
-            connection.log.debug({ src: "c", msg: encodedUsername, comment: `Encoded username for AUTH=LOGIN`, cid: connection.id });
-            connection.write(encodedUsername);
-          } else if (question === "password") {
-            connection.log.debug({ src: "c", msg: "(* value hidden *)", comment: `Encoded password for AUTH=LOGIN`, cid: connection.id });
-            connection.write(Buffer.from(password).toString("base64"));
-          } else {
-            throw new Error(`Unknown LOGIN question "${question}"`);
-          }
+        let question = resp.attributes && resp.attributes[0] && resp.attributes[0].type === "TEXT" ? Buffer.from(resp.attributes[0].value, "base64").toString().toLowerCase().replace(/[:\x00]*$/, "") : "";
+        if (question === "username" || question === "user name" || !question && !usernameSent) {
+          let encodedUsername = Buffer.from(username).toString("base64");
+          connection.log.debug({ src: "c", msg: encodedUsername, comment: `Encoded username for AUTH=LOGIN`, cid: connection.id });
+          connection.write(encodedUsername);
+          usernameSent = true;
+        } else if (question === "password") {
+          connection.log.debug({ src: "c", msg: "(* value hidden *)", comment: `Encoded password for AUTH=LOGIN`, cid: connection.id });
+          connection.write(Buffer.from(password).toString("base64"));
+        } else {
+          connection.log.warn({ msg: "Unknown AUTH=LOGIN challenge, cancelling", question, cid: connection.id });
+          connection.write("*");
         }
       }
     });
@@ -90188,6 +85555,7 @@ var ImapFlow = class extends EventEmitter2 {
     this.requestTagMap = /* @__PURE__ */ new Map();
     this.requestQueue = [];
     this.currentRequest = false;
+    this.parkedRelease = null;
     this._unknownTagCount = 0;
     this._nextUnknownTagWarn = 1;
     this.writeBytesCounter = 0;
@@ -90217,6 +85585,8 @@ var ImapFlow = class extends EventEmitter2 {
     this.autoIdleDelay = normalizeAutoIdleDelay(this.options.autoIdleDelay, this.socketTimeout, this.log, this.id);
     this._lastPollAt = 0;
     this._openDownloads = 0;
+    this._recoveryPending = false;
+    this._processingResponse = false;
     this.missingIdleCommand = (this.options.missingIdleCommand || "").toString().toUpperCase().trim() || "NOOP";
     this.disableBinary = !!this.options.disableBinary;
     this.idHashAlgorithm = this.options.idHashAlgorithm || "md5";
@@ -90224,6 +85594,7 @@ var ImapFlow = class extends EventEmitter2 {
     this.skipListStatusArgs = false;
     this.skipListAuxArgs = false;
     this.skipLsub = false;
+    this.skipIdle = false;
     this.skipRev2 = !!this.options.disableIMAP4rev2;
     this._streamerErrorHandler = (err) => {
       if (["Z_BUF_ERROR", "ECONNRESET", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH"].includes(err.code)) {
@@ -90345,14 +85716,7 @@ var ImapFlow = class extends EventEmitter2 {
   /** @internal */
   async send(data) {
     if (this.state === this.states.LOGOUT) {
-      if (data.tag) {
-        let request = this.requestTagMap.get(data.tag);
-        if (request) {
-          this.requestTagMap.delete(data.tag);
-          request.reject(this.createNoConnectionError(false, { rejectedFrom: "sendAfterLogout", command: request.command }));
-        }
-      }
-      return;
+      throw this.createNoConnectionError(false, { rejectedFrom: "sendAfterLogout", command: data.command });
     }
     this.rawSensitiveCommand = RAW_SENSITIVE_COMMANDS.has(typeof data.command === "string" ? data.command.toUpperCase() : "") || hasSensitiveAttribute(data.attributes);
     let compiled = await imap_compiler_default(data, {
@@ -90361,11 +85725,13 @@ var ImapFlow = class extends EventEmitter2 {
       literalMinus: hasCapability(this, "LITERAL-") || this.capabilities.has("LITERAL+")
     });
     this.commandParts = compiled;
-    let logCompiled = await imap_compiler_default(data, {
-      isLogging: true
-    });
     let options = data.options || {};
-    this.log.debug({ src: "c", msg: logCompiled.toString(), cid: this.id, comment: options.comment });
+    if (this.isLogLevelEnabled("debug")) {
+      let logCompiled = await imap_compiler_default(data, {
+        isLogging: true
+      });
+      this.log.debug({ src: "c", msg: logCompiled.toString(), cid: this.id, comment: options.comment });
+    }
     this.write(this.commandParts.shift());
     if (this.currentRequest && this.currentRequest.tag === data.tag) {
       this.currentRequest.sent = true;
@@ -90391,7 +85757,6 @@ var ImapFlow = class extends EventEmitter2 {
         });
         return;
       } catch (err) {
-        this.commandParts = [];
         this.rejectCurrentRequest(err);
       }
     }
@@ -90498,16 +85863,53 @@ var ImapFlow = class extends EventEmitter2 {
   // a way that leaves the command's outcome unknown.
   /** @internal */
   rejectCurrentRequest(err) {
+    let request = this.takeCurrentRequest();
+    if (request) {
+      request.reject(err);
+    }
+  }
+  /**
+   * Takes the in-flight command off the connection: its tag map entry, and the literal parts it
+   * still had to send (a tagged NO before the "+" of a refused APPEND leaves them behind, and
+   * they must neither stay referenced nor answer a later continuation). The parts are dropped
+   * whether or not a command is still current, as a failed dispatch may have cleared it already.
+   *
+   * @returns The pending request entry, if the command was still current
+   * @internal
+   */
+  takeCurrentRequest() {
+    this.commandParts = [];
     if (!this.currentRequest) {
-      return;
+      return void 0;
     }
     let tag2 = this.currentRequest.tag;
     this.currentRequest = false;
     let request = this.requestTagMap.get(tag2);
-    if (request) {
-      this.requestTagMap.delete(tag2);
-      request.reject(err);
-    }
+    this.requestTagMap.delete(tag2);
+    return request;
+  }
+  /**
+   * Resolves a command's promise with its tagged response and parks the reader until the
+   * command's handler calls next(). The release is kept in parkedRelease so a handler that
+   * throws before calling next() can be unparked (see releaseOrphanedResponse()); every path
+   * that resolves a command this way goes through here for that reason.
+   *
+   * @param request - Pending request entry
+   * @param parsed - Parsed tagged response
+   * @param hasTrailingData - Whether more input was already buffered after this line
+   * @internal
+   */
+  resolveParked(request, parsed, hasTrailingData) {
+    return new Promise((resolve8) => {
+      let release = () => {
+        if (this.parkedRelease === release) {
+          this.parkedRelease = null;
+        }
+        resolve8();
+      };
+      this.parkedRelease = release;
+      request.resolve({ response: parsed, next: release, hasTrailingData });
+    });
   }
   /**
    * Waits out a throttle back-off.
@@ -90541,6 +85943,7 @@ var ImapFlow = class extends EventEmitter2 {
     while ((data = this.streamer.read()) !== null) {
       let keepReading;
       try {
+        this._processingResponse = true;
         keepReading = await this.handleResponse(data);
       } catch (err) {
         keepReading = false;
@@ -90551,6 +85954,7 @@ var ImapFlow = class extends EventEmitter2 {
         this.rejectCurrentRequest(error64);
         this.failProtocol(error64);
       } finally {
+        this._processingResponse = false;
         this.releaseStreamData(data);
       }
       if (!keepReading) {
@@ -90618,13 +86022,12 @@ var ImapFlow = class extends EventEmitter2 {
         this.log.warn({ err, cid: this.id });
       }
     }
-    let logCompiled = await imap_compiler_default(parsed, {
-      isLogging: true
-    });
-    if (/^\d+$/.test(parsed.command || "") && parsed.attributes && parsed.attributes[0] && parsed.attributes[0].value === "FETCH") {
-      this.log.trace({ src: "s", msg: logCompiled.toString(), cid: this.id, nullBytesRemoved: parsed.nullBytesRemoved });
-    } else {
-      this.log.debug({ src: "s", msg: logCompiled.toString(), cid: this.id, nullBytesRemoved: parsed.nullBytesRemoved });
+    let logLevel = /^\d+$/.test(parsed.command || "") && parsed.attributes && parsed.attributes[0] && parsed.attributes[0].value === "FETCH" ? "trace" : "debug";
+    if (this.isLogLevelEnabled(logLevel)) {
+      let logCompiled = await imap_compiler_default(parsed, {
+        isLogging: true
+      });
+      this.log[logLevel]({ src: "s", msg: logCompiled.toString(), cid: this.id, nullBytesRemoved: parsed.nullBytesRemoved });
     }
     if (parsed.tag === "+" && this.currentRequest && this.currentRequest.options && typeof this.currentRequest.options.onPlusTag === "function") {
       try {
@@ -90679,9 +86082,7 @@ var ImapFlow = class extends EventEmitter2 {
     }
     if (parsed.tag && !["*", "+"].includes(parsed.tag)) {
       if (this.currentRequest && this.currentRequest.tag === parsed.tag && this.currentRequest.sent) {
-        let request = this.requestTagMap.get(parsed.tag);
-        this.requestTagMap.delete(parsed.tag);
-        this.currentRequest = false;
+        let request = this.takeCurrentRequest();
         if (request) {
           await this.settleRequest(request, parsed, !!data.trailingAfterLine);
         }
@@ -90726,7 +86127,7 @@ var ImapFlow = class extends EventEmitter2 {
     switch ((parsed.command || "").toUpperCase()) {
       case "OK":
       case "BYE":
-        await new Promise((resolve8) => request.resolve({ response: parsed, next: resolve8, hasTrailingData }));
+        await this.resolveParked(request, parsed, hasTrailingData);
         break;
       case "NO":
       case "BAD": {
@@ -90744,7 +86145,7 @@ var ImapFlow = class extends EventEmitter2 {
           err.responseText = txt;
           if (err.responseStatus === "NO" && txt.includes("Some of the requested messages no longer exist")) {
             this.log.warn({ msg: "Partial FETCH response", cid: this.id, err });
-            await new Promise((resolve8) => request.resolve({ response: parsed, next: resolve8 }));
+            await this.resolveParked(request, parsed);
             break;
           }
           let throttleDelay = false;
@@ -90811,6 +86212,16 @@ var ImapFlow = class extends EventEmitter2 {
     if (typeof socket.setKeepAlive === "function") {
       socket.setKeepAlive(true, 5 * 1e3);
     }
+    this.armSocketTimeout(socket);
+  }
+  /**
+   * Arms the inactivity watchdog on a socket. Guarded the same way as the rest of
+   * configureSocket(): other runtimes stub socket features.
+   *
+   * @param socket - The socket to arm
+   * @internal
+   */
+  armSocketTimeout(socket) {
     if (typeof socket.setTimeout === "function") {
       socket.setTimeout(this.socketTimeout);
     }
@@ -90825,24 +86236,36 @@ var ImapFlow = class extends EventEmitter2 {
     this._socketClose = this._socketClose || (() => this.close());
     this._socketEnd = this._socketEnd || (() => this.close());
     this._socketTimeout = this._socketTimeout || (() => {
-      const err = new Error("Socket timeout");
-      err.code = "ETIMEOUT";
-      const quietExpected = this.idling || this._openDownloads || this.currentLock;
+      const timeoutError = () => {
+        const err = new Error("Socket timeout");
+        err.code = "ETIMEOUT";
+        return err;
+      };
+      if (!this.usable || !this.socket || this.socket.destroyed) {
+        this.emitError(timeoutError());
+        return;
+      }
+      if (this._processingResponse) {
+        this.log.debug({ msg: "Socket timeout while a response is being processed", cid: this.id });
+        this.armSocketTimeout(this.socket);
+        return;
+      }
+      const quietExpected = this.idling || this._openDownloads || this.currentLock || this._throttleWaits.size;
       const commandStuck = this.currentRequest && !(this.idling && this.currentRequest.command === "IDLE");
-      if (quietExpected && !commandStuck) {
-        if (!this.usable || !this.socket || this.socket.destroyed) {
-          this.emitError(err);
-          return;
-        }
-        this.run("NOOP").catch((err2) => {
-          this.log.warn({ msg: "Connection recovery failed after timeout", err: err2, cid: this.id });
+      if (quietExpected && !commandStuck && !this._recoveryPending) {
+        this._recoveryPending = true;
+        this.armSocketTimeout(this.socket);
+        this.run("NOOP").catch((err) => {
+          this.log.warn({ msg: "Connection recovery failed after timeout", err, cid: this.id });
           if (!this.isClosed) {
             this.close();
           }
+        }).finally(() => {
+          this._recoveryPending = false;
         });
       } else {
         this.log.debug({ msg: "Socket timeout", cid: this.id });
-        this.emitError(err);
+        this.emitError(timeoutError());
       }
     });
     const socket = this.socket;
@@ -91031,6 +86454,12 @@ var ImapFlow = class extends EventEmitter2 {
       err.tlsFailed = true;
       throw err;
     }
+    this.log.warn({
+      msg: "Server does not support STARTTLS, continuing over an unencrypted connection",
+      host: this.host,
+      port: this.port,
+      cid: this.id
+    });
     return false;
   }
   /**
@@ -91081,13 +86510,15 @@ var ImapFlow = class extends EventEmitter2 {
         // of the IP - accepting any "localhost" certificate for any IP-hosted
         // server, and rejecting legitimate IP-SAN certificates.
         host: this.host,
-        servername: this.servername,
         port: this.port
-      }, this.options.tls || {});
+      }, this.tlsServername(), this.options.tls || {});
       this.clearSocketHandlers();
       let settled = false;
       const settle2 = (err, result) => {
         if (settled) {
+          if (err) {
+            this.log.debug({ msg: "Socket error after the TLS upgrade was settled", err, cid: this.id });
+          }
           return;
         }
         settled = true;
@@ -91095,9 +86526,11 @@ var ImapFlow = class extends EventEmitter2 {
         this.upgradeTimeout = null;
         this.upgrading = false;
         this._upgradeReject = null;
-        socketPlain.removeListener("error", settle2);
-        if (this.socket && this.socket !== socketPlain) {
-          this.socket.removeListener("error", settle2);
+        if (!err) {
+          socketPlain.removeListener("error", settle2);
+          if (this.socket && this.socket !== socketPlain) {
+            this.socket.removeListener("error", settle2);
+          }
         }
         if (err) {
           clearTimer(this.connectTimeout);
@@ -91108,7 +86541,7 @@ var ImapFlow = class extends EventEmitter2 {
         resolve8(result);
       };
       this._upgradeReject = settle2;
-      socketPlain.once("error", settle2);
+      socketPlain.on("error", settle2);
       this.upgradeTimeout = setTimeout(() => {
         let err = new Error("Failed to upgrade connection in required time");
         err.code = "UPGRADE_TIMEOUT";
@@ -91154,7 +86587,7 @@ var ImapFlow = class extends EventEmitter2 {
         return;
       }
       this.socket = tlsSocket;
-      tlsSocket.once("error", settle2);
+      tlsSocket.on("error", settle2);
       this.writeSocket = tlsSocket;
     });
     if (upgraded) {
@@ -91218,7 +86651,7 @@ var ImapFlow = class extends EventEmitter2 {
     throw new AuthenticationFailure("No matching authentication method");
   }
   /** @internal */
-  beginSession(onUnhandledError) {
+  beginSession() {
     clearTimer(this.greetingTimeout);
     this.greetingReceived = true;
     this.untaggedHandlers.OK = null;
@@ -91234,21 +86667,22 @@ var ImapFlow = class extends EventEmitter2 {
         return resolve8();
       }
     }).catch((err) => {
-      this.log.error({ err, cid: this.id });
+      this.closeAfter();
       if (typeof this.initialReject === "function") {
+        this.log.error({ err, cid: this.id });
         clearTimer(this.greetingTimeout);
         let reject = this.initialReject;
         this.initialResolve = false;
         this.initialReject = false;
         return reject(err);
       }
-      onUnhandledError(err);
+      logConnectionError(this, "Session setup failed", err);
     });
   }
   /** @internal */
   async initialOK(message) {
     this.greeting = getTextValues(message.attributes).filter((entry) => entry).join("");
-    this.beginSession((err) => this.emitError(err));
+    this.beginSession();
   }
   /** @internal */
   async initialPREAUTH() {
@@ -91257,10 +86691,7 @@ var ImapFlow = class extends EventEmitter2 {
     }
     this.state = this.states.AUTHENTICATED;
     this.authenticated = true;
-    this.beginSession((err) => {
-      this.log.error({ err, cid: this.id });
-      this.closeAfter();
-    });
+    this.beginSession();
   }
   /** @internal */
   async serverBye(parsed) {
@@ -91268,7 +86699,8 @@ var ImapFlow = class extends EventEmitter2 {
     this.byeReason = reason || "Server closed connection";
     this.untaggedHandlers.BYE = null;
     this.state = this.states.LOGOUT;
-    if (!this.greetingReceived) {
+    const answersLogout = !!this.currentRequest && this.currentRequest.command.toUpperCase() === "LOGOUT";
+    if (!this.greetingReceived || !answersLogout) {
       this.closeAfter();
     }
   }
@@ -91323,7 +86755,7 @@ var ImapFlow = class extends EventEmitter2 {
     }
     let prevCount = this.mailbox.exists;
     this.mailbox.exists = count2;
-    this.emit("exists", {
+    emitSafe(this, "exists", {
       path: this.mailbox.path,
       count: count2,
       prevCount
@@ -91334,7 +86766,7 @@ var ImapFlow = class extends EventEmitter2 {
   /** @internal */
   async notifyExpunge(payload) {
     if (typeof this.options.expungeHandler !== "function") {
-      this.emit("expunge", payload);
+      emitSafe(this, "expunge", payload);
       return;
     }
     try {
@@ -91381,12 +86813,16 @@ var ImapFlow = class extends EventEmitter2 {
       uids = untagged.attributes[0].value;
     }
     let uidList = expandRange2(uids);
+    let earlier = tags.includes("EARLIER");
+    if (!earlier) {
+      mailbox2.exists = Math.max(0, mailbox2.exists - uidList.length);
+    }
     for (let uid2 of uidList) {
       let payload = {
         path: mailbox2.path,
         uid: uid2,
         vanished: true,
-        earlier: tags.includes("EARLIER")
+        earlier
       };
       await this.notifyExpunge(payload);
     }
@@ -91397,7 +86833,7 @@ var ImapFlow = class extends EventEmitter2 {
     if (!mailbox2) {
       return;
     }
-    let message = await formatMessageResponse(untagged, mailbox2, this.idHashAlgorithm);
+    let message = await formatMessageResponse(untagged, mailbox2, this.idHashAlgorithm, this);
     if (message.flags) {
       let updateEvent = {
         path: mailbox2.path,
@@ -91413,7 +86849,7 @@ var ImapFlow = class extends EventEmitter2 {
       if (message.flagColor) {
         updateEvent.flagColor = message.flagColor;
       }
-      this.emit("flags", updateEvent);
+      emitSafe(this, "flags", updateEvent);
     }
   }
   /** @internal */
@@ -91425,6 +86861,12 @@ var ImapFlow = class extends EventEmitter2 {
       return await this.mailboxOpen(path4);
     }
     return true;
+  }
+  // servername for tls.connect(), left out for an IP literal host (this.servername is false then):
+  // Node treats a false value like a missing one, but Bun throws a TypeError for it
+  /** @internal */
+  tlsServername() {
+    return this.servername ? { servername: this.servername } : {};
   }
   // Normalizes a message range from various input formats into an IMAP-compatible
   // sequence string (e.g., "1:5,7,10:*"). Handles: numbers, "*", {all:true},
@@ -91460,6 +86902,9 @@ var ImapFlow = class extends EventEmitter2 {
       value = value.join(",");
     }
     if (!value) {
+      return false;
+    }
+    if (!options.uid && this.mailbox && !this.mailbox.exists) {
       return false;
     }
     return value;
@@ -91520,9 +86965,8 @@ var ImapFlow = class extends EventEmitter2 {
     let connector = this.secureConnection ? tls2 : net2;
     let opts = Object.assign({
       host: this.host,
-      servername: this.servername,
       port: this.port
-    }, this.options.tls || {});
+    }, this.tlsServername(), this.options.tls || {});
     this.untaggedHandlers.OK = (...args) => this.initialOK(...args);
     this.untaggedHandlers.BYE = (...args) => this.serverBye(...args);
     this.untaggedHandlers.PREAUTH = () => this.initialPREAUTH();
@@ -91564,6 +87008,9 @@ var ImapFlow = class extends EventEmitter2 {
         reject(err);
       }, deadline.remaining());
       let onConnect = () => {
+        if (this.isClosed || !this.socket) {
+          return;
+        }
         try {
           clearTimer(this.connectTimeout);
           detachEarlyErrorHandler(socket);
@@ -91686,7 +87133,9 @@ var ImapFlow = class extends EventEmitter2 {
       this.idling = false;
       this.closeConnectSteps();
       if (typeof this.preCheck === "function") {
-        this.preCheck().catch((err) => logConnectionError(this, "Failed to break IDLE while closing", err));
+        let preCheck = this.preCheck;
+        this.preCheck = false;
+        preCheck().catch((err) => logConnectionError(this, "Failed to break IDLE while closing", err));
       }
       let closedMailbox = false;
       if (!this.isClosed) {
@@ -91770,6 +87219,7 @@ var ImapFlow = class extends EventEmitter2 {
    */
   closeRequests() {
     let pendingRequests = [];
+    this.commandParts = [];
     if (this.currentRequest && this.requestTagMap.has(this.currentRequest.tag)) {
       let tag2 = this.currentRequest.tag;
       let request = this.requestTagMap.get(tag2);
@@ -92090,7 +87540,7 @@ var ImapFlow = class extends EventEmitter2 {
    * Sets flags for a message or message range
    *
    * @param range Range to filter the messages
-   * @param flags Array of flags to set. Only flags that are permitted to set are used, other flags are ignored
+   * @param flags Array of flags to set. Only flags that are permitted to set are used, other flags are ignored. An empty array clears every flag, but a non-empty array with nothing usable in it is refused rather than clearing the message
    * @param options Store options
    * @returns Did the operation succeed or not
    *
@@ -92475,7 +87925,14 @@ var ImapFlow = class extends EventEmitter2 {
     if (!response || !response.list || !response.list.length) {
       return false;
     }
-    return response.list[0];
+    let rows = response.list;
+    let requested = parseUintValue(String(seq), MAX_UINT32_DIGITS);
+    let target = requested === false ? rows[0] : rows.find((row) => (options && options.uid ? row.uid : row.seq) === requested);
+    if (!target) {
+      return false;
+    }
+    let { seq: targetSeq, uid: targetUid } = target;
+    return targetSeq ? mergeFetchRows(rows.filter((row) => row.seq === targetSeq && (!row.uid || !targetUid || row.uid === targetUid))) : target;
   }
   /**
    * Download either full rfc822 formatted message or a specific bodystructure part as a Stream.
@@ -92558,7 +88015,33 @@ var ImapFlow = class extends EventEmitter2 {
       throw this.createNoConnectionError(false, { rejectedFrom: "noSocket", command: command2 });
     }
     let handler = this.commands.get(command2);
-    return await handler(this, ...args);
+    try {
+      return await handler(this, ...args);
+    } finally {
+      this.releaseOrphanedResponse(command2);
+    }
+  }
+  /**
+   * Safety net for the `next()` contract of settleRequest(): a command handler that throws or
+   * returns between the resolution of its exec() and the `next()` call would leave the reader
+   * loop parked, stalling every later command until the socket timeout. Checked one macrotask
+   * after the handler settled, so a concurrently running handler whose response has just been
+   * resolved gets to release it itself first.
+   *
+   * @param command Command name, for the log entry.
+   * @internal
+   */
+  releaseOrphanedResponse(command2) {
+    let release = this.parkedRelease;
+    if (!release) {
+      return;
+    }
+    setImmediate(() => {
+      if (this.parkedRelease === release) {
+        this.log.warn({ msg: "Command handler did not release its response", command: command2, cid: this.id });
+        release();
+      }
+    });
   }
   // Mailbox lock queue processor. Implements a mutex pattern: only one lock
   // is active at a time. When the active lock is released, the next queued
@@ -92668,6 +88151,9 @@ var ImapFlow = class extends EventEmitter2 {
         }
         try {
           await this.mailboxOpen(path4, options);
+          if (!this.mailbox) {
+            throw this.createNoConnectionError(false, { rejectedFrom: "mailboxLock", path: path4 });
+          }
           this.log.trace({
             msg: "Mailbox lock acquired [selected]",
             path: path4,
@@ -92761,26 +88247,25 @@ var ImapFlow = class extends EventEmitter2 {
     } else if (this.options.logger !== false) {
       mainLogger = createConnectionLogger({ cid: this.id, logRaw: this.options.logRaw });
     }
+    const reachesLogger = (level) => this.options.logger !== false && (typeof mainLogger[level] === "function" || level === "error" || level === "fatal");
     let synteticLogger = {};
     let levels = ["trace", "debug", "info", "warn", "error", "fatal"];
     for (let level of levels) {
       synteticLogger[level] = (...args) => {
-        if (this.options.logger !== false) {
+        if (reachesLogger(level)) {
           const logMethod = mainLogger[level];
-          if (typeof logMethod !== "function") {
-            if (level === "fatal" || level === "error") {
-              let entry = args[0];
-              try {
-                if (entry && typeof entry === "object" && entry.err) {
-                  entry = Object.assign({}, entry, { err: flattenLoggedError(entry.err) });
-                }
-                console.error(JSON.stringify(entry));
-              } catch {
-                console.error(entry);
-              }
-            }
-          } else {
+          if (typeof logMethod === "function") {
             logMethod.apply(mainLogger, args);
+          } else {
+            let entry = args[0];
+            try {
+              if (entry && typeof entry === "object" && entry.err) {
+                entry = Object.assign({}, entry, { err: flattenLoggedError(entry.err) });
+              }
+              console.error(JSON.stringify(entry));
+            } catch {
+              console.error(entry);
+            }
           }
         }
         if (this.emitLogs && args && args[0] && typeof args[0] === "object") {
@@ -92795,7 +88280,18 @@ var ImapFlow = class extends EventEmitter2 {
         }
       };
     }
+    synteticLogger.isLevelEnabled = (level) => this.emitLogs || (typeof mainLogger.isLevelEnabled === "function" ? !!mainLogger.isLevelEnabled(level) : reachesLogger(level));
     return synteticLogger;
+  }
+  /**
+   * Whether a log entry at this level reaches anyone, so the caller can skip building an
+   * expensive one. A logger assigned to `log` from outside may lack the method, and then
+   * every level counts as enabled.
+   *
+   * @internal
+   */
+  isLogLevelEnabled(level) {
+    return typeof this.log.isLevelEnabled === "function" ? this.log.isLevelEnabled(level) : true;
   }
   /**
    * Detaches sockets from the IMAP pipeline. Useful for upgrading the connection
