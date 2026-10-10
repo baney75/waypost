@@ -174,9 +174,12 @@ test('result limit is disclosed and dates ordered', async t => {
 
 test('historic unbounded recurrence discloses its safety cutoff', async t => {
   const config=await fixture(t,`BEGIN:VEVENT\nUID:old-recurring\nDTSTART:19500101T090000Z\nDURATION:PT1H\nRRULE:FREQ=DAILY\nSUMMARY:Historic recurring fixture\nEND:VEVENT`);
-  const result=await calendarEvents(config,query);
+  // The 2 s per-event time guard is machine dependent: a slow or busy runner trips it before the 20,000
+  // occurrence cap. Lift it here so this test checks the cap and nothing else.
+  const result=await calendarEvents(config,query,{eventBudgetMs:10*60*1000});
   assert.equal(result.partial,true);
   assert.equal(result.events.length,0);
+  assert.equal(result.skippedCount,undefined);
   assert.match(result.reason,/20,000/);
 });
 

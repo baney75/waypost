@@ -135,7 +135,8 @@ function exactEnd(item:ICAL.Event, start:ICAL.Time, end:ICAL.Time):number {
   return timestamp(nominal) + sign * (duration.hours * 3600 + duration.minutes * 60 + duration.seconds) * 1000;
 }
 type SnapshotEvent = {uid:string; summary:string; description:string; location:string; start:string; end:string; allDay:boolean; timezone?:string; startLocal?:string; endLocal?:string; source:string; recurrence:boolean};
-export async function calendarEvents(config: Config, input: unknown) {
+// `options.eventBudgetMs` exists so tests can take the wall-clock guard out of play; callers outside tests use the default.
+export async function calendarEvents(config: Config, input: unknown, options: {eventBudgetMs?: number} = {}) {
   const query = calendarEventsSchema.parse(input);
   if (!config.calendar || !(config.calendar.files.length || config.calendar.feeds?.length)) throw new WaypostError('CALENDAR_UNCONFIGURED', 'Connect a local ICS export or Proton calendar share link first.');
   const from = Date.parse(query.from), to = Date.parse(query.to);
@@ -311,7 +312,7 @@ export async function calendarEvents(config: Config, input: unknown) {
         cutoff = Math.max(cutoff, recurrenceMs + 1, to + Math.max(0, recurrenceMs - timestamp(item.startDate)));
       }
       const iterator = event.iterator();
-      const deadline = Date.now() + EVENT_BUDGET_MS;
+      const deadline = Date.now() + (options.eventBudgetMs ?? EVENT_BUDGET_MS);
       while (true) {
         if (++examined > MAX_OCCURRENCES) { partial = true; break; }
         if (Date.now() > deadline) throw new WaypostError('CALENDAR_RECURRENCE', 'Expanding this recurrence took too long; it was skipped. Export expanded events instead.');
