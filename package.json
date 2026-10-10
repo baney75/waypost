@@ -43,7 +43,7 @@
     "commander": "15.0.0",
     "html-to-text": "10.0.1",
     "ical.js": "2.2.1",
-    "imapflow": "2.2.1",
+    "imapflow": "2.2.10",
     "mailparser": "3.9.36",
     "nodemailer": "10.0.13",
     "zod": "4.6.5"
