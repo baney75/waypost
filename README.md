@@ -164,3 +164,9 @@ npm run verify
 The tests use synthetic data. They drive the MCP server over stdio against a real IMAP server ([pymap](https://pypi.org/project/pymap/), `pipx install pymap==0.36.7`), and run the extension in Chromium when it is installed. Account-level checks require the configured official services. See [Verification](docs/verification.md) for the release’s observed coverage.
 
 [MIT](LICENSE) · [Privacy](docs/privacy.md) · [Contributing](CONTRIBUTING.md)
+
+## Sponsors
+
+<!-- sponsors:start -->
+No sponsors yet. [Sponsor on GitHub](https://github.com/sponsors/baney75) and your name appears here automatically.
+<!-- sponsors:end -->

@@ -1,0 +1,15 @@
+# Credits GitHub sponsors in README.md daily and in release notes when a release is published.
+# The logic lives in https://github.com/baney75/.github so every repository stays in step.
+name: Sponsors
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+  release:
+    types: [published]
+permissions: {}
+jobs:
+  sponsors:
+    uses: baney75/.github/.github/workflows/sponsors.yml@main
+    permissions:
+      contents: write
