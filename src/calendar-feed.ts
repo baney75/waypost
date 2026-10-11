@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import type { Config } from './config.js';
 import { WaypostError } from './errors.js';
+import { execFile } from 'node:child_process';
 import { runExecutable } from './process.js';
 
 const MAX_BYTES=10*1024*1024;
@@ -83,10 +84,15 @@ export async function loadCalendarFeed(key:string,load:()=>Promise<{content:stri
 export const KEYCHAIN_TOOL='/usr/bin/security';
 export async function readKeychainCalendarUrl(feed:{keychainService:string;keychainAccount:string},timeoutMs:number,tool=KEYCHAIN_TOOL):Promise<string>{
   if(process.platform!=='darwin'&&tool===KEYCHAIN_TOOL)throw new WaypostError('KEYCHAIN_UNAVAILABLE','Keychain calendar links need macOS.');
-  let output:string;
-  try{output=await runExecutable(tool,['find-generic-password','-s',feed.keychainService,'-a',feed.keychainAccount,'-w'],timeoutMs,16*1024);}
-  catch{throw new WaypostError('CALENDAR_KEYCHAIN','No calendar link was found in the login keychain under that service and account. The keychain response was not logged.');}
-  return calendarFeedUrl(output.trim());
+  // Fixed argv, no shell; stdout is the secret and stderr is discarded. Exit 44 means the item does not exist.
+  const {code,stdout}=await new Promise<{code:number|null;stdout:string}>(resolve=>{
+    execFile(tool,['find-generic-password','-s',feed.keychainService,'-a',feed.keychainAccount,'-w'],{shell:false,timeout:timeoutMs,maxBuffer:16*1024,encoding:'utf8'},(error,out)=>{
+      resolve({code:error?(typeof error.code==='number'?error.code:-1):0,stdout:error?'':String(out)});
+    });
+  });
+  if(code===44)throw new WaypostError('CALENDAR_KEYCHAIN','No calendar link was found in the login keychain under that service and account.');
+  if(code!==0)throw new WaypostError('KEYCHAIN_LOCKED','The login keychain is locked, access was denied, or it did not answer in time. Unlock it in this user session and retry. Nothing was logged.');
+  return calendarFeedUrl(stdout.trim());
 }
 export function feedKey(feed:NonNullable<Config['calendar']>['feeds'][number]){
   return 'urlFile' in feed?`file:${feed.urlFile}`:'keychainService' in feed?`keychain:${feed.keychainService}:${feed.keychainAccount}`:passFeedKey(feed);
