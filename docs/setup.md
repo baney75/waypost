@@ -104,6 +104,13 @@ waypost connect calendar --url-file /absolute/private/personal-calendar.url --na
 waypost calendar agenda --days 7
 ```
 
+On macOS you can keep the link in the login keychain instead of a file. `security` prompts for the value, so the URL never reaches shell history:
+
+```sh
+security add-generic-password -U -s com.baney.vault-proton-calendar -a proton-calendar-feed -w
+waypost connect calendar --keychain-service com.baney.vault-proton-calendar --keychain-account proton-calendar-feed --name Personal
+```
+
 Alternatively, pipe the link with `--url-stdin --name Personal`; Waypost saves it in a private `calendar-links` directory beside its config. Do not put the URL in command arguments, shell history, agent messages, or public logs. Reconnecting the same name replaces its configuration. An old link file is retained; revoke its link in Proton before removing it if no longer used.
 
 Every query fetches the approved link anew and reports `fetchedAt`. Proton may delay updates by up to eight hours; this is not immediate synchronization. A failed fetch returns an error without silently using stale data. Only the official Proton HTTPS ICS endpoint is accepted; redirects are rejected. Other subscribed calendars cannot be re-exported or shared through Proton. Query their original service separately.

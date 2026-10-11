@@ -80,6 +80,7 @@ Install locally with `npm install -g .`, or replace `waypost` below with `node r
 waypost drive list --path /my-files
 waypost mail list --mailbox INBOX --limit 5
 waypost calendar agenda --days 7
+waypost call waypost_briefing --input '{"days":7,"mail":8}'   # events + newest mail in one call
 waypost calendar prepare --summary "Project review" \
   --start 2026-10-05T14:00:00Z --end 2026-10-05T14:30:00Z
 ```
