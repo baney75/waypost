@@ -20,13 +20,13 @@ test('artifact writes cannot escape their directory or overwrite a file',async()
 test('Drive enforces exact root and traversal boundaries before execution',async()=>{
   const root=await workspace();const conf={...config(root),drive:{executable:'/unused',root:'/my-files/Work',writeEnabled:false}};
   assert.equal(remotePath(conf,'/my-files/Work/one.txt'),'/my-files/Work/one.txt');
-  for(const path of ['/my-files/Workshop/one','/my-files/Work/../secret','/my-files2/Work','/my-files/Work\\/one','/my-files/Work\n--help'])assert.throws(()=>remotePath(conf,path));
+  for(const path of ['/my-files/Workshop/one','/my-files/Work/../secret','/my-files2/Work','/my-files/Work\\one','/my-files/Work\n--help'])assert.throws(()=>remotePath(conf,path));
   await assert.rejects(driveUpload(conf,{file:'/unused',parent:'/my-files/Work'}),{code:'WRITE_DISABLED'});
 });
 test('Drive CLI gets an argv array, never a shell; error output stays private',async()=>{
-  const root=await workspace();const executable=join(root,'drive');await writeFile(executable,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2)}));\n',{mode:0o700});
+  const root=await workspace();const executable=join(root,'drive');await writeFile(executable,'#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify([{type:"file",name:{ok:true,value:JSON.stringify(process.argv.slice(2))}}]));\n',{mode:0o700});
   const conf={...config(root),drive:{executable,root:'/my-files',writeEnabled:false}};const item='/my-files/report; $(touch /tmp/waypost-should-not-exist)';
-  assert.deepEqual((await driveList(conf,{path:item})).args,['filesystem','list',item,'--json']);
+  assert.deepEqual(JSON.parse((await driveList(conf,{path:item})).entries[0].name),['filesystem','list',item,'--json']);
   await writeFile(executable,'#!/usr/bin/env node\nconsole.error("PRIVATE_PASSWORD=not-a-real-secret");process.exit(1);\n');
   await assert.rejects(driveList(conf,{path:'/my-files'}),error=>!error.message.includes('PRIVATE_PASSWORD')&&error.code==='SERVICE_FAILED');
 });
@@ -43,4 +43,15 @@ test('CLI invalid inputs fail without leaking implementation exception details',
 
 test('service setup preserves existing policy and scopes without storing secrets',async()=>{
   const {connectCalendar,connectDrive}=await import('../dist/connect.js');const root=await workspace();const file=join(root,'config.json');await initConfig(file);const snapshot=join(root,'calendar.ics');await writeFile(snapshot,'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n');await connectCalendar(file,snapshot);const executable=join(root,'drive');await writeFile(executable,'#!/usr/bin/env node\n',{mode:0o700});await connectDrive(file,executable,false);const saved=await loadConfig(file);assert.deepEqual(saved.calendar.files,[await realpath(snapshot)]);assert.equal(saved.drive.writeEnabled,false);assert.equal((await stat(file)).mode&0o777,0o600);assert.ok(!(await readFile(file,'utf8')).includes('password'));
+});
+test('Drive CLI failures map to actionable codes without leaking other stderr lines',async()=>{
+  const root=await workspace();const executable=join(root,'drive');
+  await writeFile(executable,'#!/usr/bin/env node\nconsole.error("Node not found: missing");console.error("PRIVATE second line");process.exit(1);\n',{mode:0o700});
+  const conf={...config(root),drive:{executable,root:'/my-files',writeEnabled:false}};
+  await assert.rejects(driveList(conf,{path:'/my-files/missing'}),error=>error.code==='DRIVE_NOT_FOUND'&&error.message.includes('/my-files/missing')&&!error.message.includes('PRIVATE'));
+});
+test('input errors list each invalid field',()=>{
+  const result=spawnSync(process.execPath,['dist/cli.js','call','mail_list','--input','{"limit":"x","bogus":1}'],{encoding:'utf8'});
+  const error=JSON.parse(result.stderr).error;assert.equal(error.code,'INPUT_INVALID');
+  assert.ok(error.issues.some(issue=>issue.path==='limit'));assert.ok(error.issues.some(issue=>/bogus/.test(issue.message)));
 });

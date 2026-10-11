@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Waypost Codes",
+  "description": "Fill one-time verification codes from your Proton Mail, through Waypost on this computer.",
+  "version": "0.5.0",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw3EPG2end0O+yThgNctxV/fv6DScbCm6Kb+YJB4tCsCzk8UJk1Y8cqhdfcid74w9gmAUsJFPtI8mTKH7pcNLXx0iga3cYC1r7klDJcG846C0X+ss1Jbqxq1VMyS/ozOVQS4RdYqTGZBDfSkUODEsnZIXpTpiGBWX3bxP17iGeF8aT83wx0b6Y/aguQgs+1BR+5+VEI1iKwRlO9tCqN64dG4/W3pkMfRhTeqLx0Koge67fBRJQCH7mAcCETKijTWXpaW8BoXQ04v4aX5PeSrTWCoEEn5+7ah3FyMJCpzGalnBhu/Ge12Fu0vyMtgVJsO4r9ukiwftvumhIdBdKUlJjQIDAQAB",
+  "permissions": ["nativeMessaging", "activeTab", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Fill a verification code", "default_popup": "popup.html", "default_icon": { "48": "icon-48.png", "128": "icon-128.png" } },
+  "icons": { "48": "icon-48.png", "128": "icon-128.png" }
+}

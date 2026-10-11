@@ -184,7 +184,8 @@ test('list search forwards sender and dates and does not read a body', async t =
   assert.equal(result.searched,true);
   assert.equal(result.bodyFetched,false);
   assert.deepEqual(await f.calls(),[['recent','--mailbox=INBOX','--limit=5','--from=sender@example.com','--since=2026-03-01','--before=2026-03-07']]);
-  await assert.rejects(mailList(f.config,{from:'not an address'}));
+  await assert.rejects(mailList(f.config,{from:'line\nbreak'}));
+  await assert.rejects(mailList(f.config,{subject:'Unsupported by helper'}),{code:'MAIL_HELPER_UNSUPPORTED'});
 });
 
 test('helper rejects a shared writable parent before any code executes',async()=>{

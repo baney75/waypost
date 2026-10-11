@@ -1,0 +1,60 @@
+name: Rebuild runtime
+# runtime/waypost.mjs is committed so a clone works with `node runtime/waypost.mjs mcp` and
+# the plugin install needs no build step. Dependabot merges change dependencies but cannot
+# rebuild the bundle, so this rebuilds it on main and commits the result if it changed.
+# The build runs newly merged dependency code, so it gets a read-only token and no stored
+# credentials. Only the commit job can write, and it runs no project code.
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - src/**
+      - tsconfig.json
+permissions:
+  contents: read
+concurrency:
+  group: rebuild-runtime
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime
+          path: runtime/waypost.mjs
+          retention-days: 1
+  commit:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: runtime
+          path: runtime
+      - name: Commit the rebuilt bundle
+        run: |
+          if git diff --quiet -- runtime/waypost.mjs; then echo "Bundle is current."; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add runtime/waypost.mjs
+          git commit -m "Rebuild runtime bundle from merged sources"
+          # Fails rather than overwrite if main moved; the next push to main reruns this.
+          git push origin HEAD:main

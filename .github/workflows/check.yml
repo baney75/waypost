@@ -18,7 +18,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Install the IMAP test server for the end-to-end test
+        run: pipx install pymap==0.36.7
       - run: npm run verify
+        env:
+          WAYPOST_REQUIRE_E2E: '1'
+      # Pull requests only: Dependabot cannot rebuild the bundle, and on main the merge
+      # commit is checked before rebuild-runtime.yml commits the fresh bundle.
       - name: Check committed runtime matches source
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         run: git diff --exit-code -- runtime/waypost.mjs
       - run: npm pack --dry-run
