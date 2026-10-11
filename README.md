@@ -138,6 +138,7 @@ waypost mail mailboxes
 waypost mail list --subject invoice --since 2026-09-01 --limit 20
 waypost mail read --uid 123
 waypost calendar agenda --days 7 --timezone Europe/London
+waypost call waypost_briefing --input '{"days":7,"mail":8}'   # events + newest mail in one call
 waypost calendar prepare --summary "Project review" \
   --start 2026-10-05T09:00:00 --end 2026-10-05T09:30:00 --timezone Europe/London \
   --rrule "FREQ=WEEKLY;COUNT=4"

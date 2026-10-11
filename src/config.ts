@@ -27,6 +27,7 @@ export const configSchema = z.object({
   }).strict().optional(),
   calendar: z.object({files:z.array(absolutePath).max(20).default([]),feeds:z.array(z.union([
     z.object({name:z.string().min(1).max(80),urlFile:absolutePath}).strict(),
+    z.object({name:z.string().min(1).max(80),keychainService:z.string().min(1).max(200).regex(/^[\w.@-]+$/),keychainAccount:z.string().min(1).max(200).regex(/^[\w.@-]+$/)}).strict(),
     z.object({name:z.string().min(1).max(80),passItem:z.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u),vault:z.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u)}).strict(),
   ])).max(10).default([])}).strict().optional(),
   pass: z.object({executable:absolutePath}).strict().optional(),
