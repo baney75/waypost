@@ -31,14 +31,16 @@ test('organizing is off unless enabled, and unavailable on the read-only helper 
   }
 });
 
-test('a batch needs confirm: true; one message does not',async()=>{
+test('every organize call needs confirm: true, even for one message',async()=>{
   const input={mailbox:'INBOX',uids:[1,2]};
   await assert.rejects(mailFlag(enabled,{...input,starred:true}),{code:'CONFIRMATION_REQUIRED'});
   await assert.rejects(mailMark(enabled,{...input,read:false}),{code:'CONFIRMATION_REQUIRED'});
   await assert.rejects(mailMove(enabled,{...input,to:'Archive'}),{code:'CONFIRMATION_REQUIRED'});
   await assert.rejects(mailLabel(enabled,{...input,label:'Receipts'}),{code:'CONFIRMATION_REQUIRED'});
-  // A single UID passes the gate and reaches the (unreachable) connection instead.
-  await assert.rejects(mailFlag(enabled,{mailbox:'INBOX',uids:[1],starred:true}),error=>error.code!=='CONFIRMATION_REQUIRED'&&error.code!=='MAIL_ORGANIZE_DISABLED');
+  // One message from an injected email must not move without approval either.
+  await assert.rejects(mailFlag(enabled,{mailbox:'INBOX',uids:[1],starred:true}),{code:'CONFIRMATION_REQUIRED'});
+  // With confirm it passes the gate and reaches the (unreachable) connection instead.
+  await assert.rejects(mailFlag(enabled,{mailbox:'INBOX',uids:[1],starred:true,confirm:true}),error=>error.code!=='CONFIRMATION_REQUIRED'&&error.code!=='MAIL_ORGANIZE_DISABLED');
 });
 
 test('mail_move refuses Trash, Spam, Sent, Drafts, Starred, All Mail and labels before connecting',async()=>{
@@ -121,19 +123,19 @@ test('organizing against a real IMAP server: star, read, batch, move, label, aud
   const flagsOf=async uid=>(await snapshot(server)).find(row=>row.uid===uid)?.flags;
 
   // Star and unstar one message; nothing else changes.
-  const starred=await mailFlag(config,{mailbox:'INBOX',uids:[urgent],starred:true});
+  const starred=await mailFlag(config,{mailbox:'INBOX',uids:[urgent],starred:true,confirm:true});
   assert.deepEqual([starred.changed,starred.missing,starred.starred,starred.permanentDelete],[[urgent],[],true,false]);
   assert.ok((await flagsOf(urgent)).includes('\\Flagged'));
   assert.ok(!(await flagsOf(lunch)).includes('\\Flagged'));
-  await mailFlag(config,{mailbox:'INBOX',uids:[urgent],starred:false});
+  await mailFlag(config,{mailbox:'INBOX',uids:[urgent],starred:false,confirm:true});
   assert.ok(!(await flagsOf(urgent)).includes('\\Flagged'));
 
   // Read state is visible through mail_list.
-  const readResult=await mailMark(config,{mailbox:'INBOX',uids:[lunch],read:true});
+  const readResult=await mailMark(config,{mailbox:'INBOX',uids:[lunch],read:true,confirm:true});
   assert.equal(readResult.read,true);
   const listed=(await mailList(config,{mailbox:'INBOX',limit:10})).messages;
   assert.deepEqual(Object.fromEntries(listed.map(row=>[row.subject,row.seen])),{'Urgent: sign this':false,'Lunch plans':true,'Term dates':false,'Receipt 4471':false});
-  await mailMark(config,{mailbox:'INBOX',uids:[lunch],read:false});
+  await mailMark(config,{mailbox:'INBOX',uids:[lunch],read:false,confirm:true});
   assert.equal((await mailList(config,{mailbox:'INBOX',limit:10})).messages.every(row=>!row.seen),true);
 
   // A batch with confirm changes every present UID and reports the missing one.
@@ -143,26 +145,26 @@ test('organizing against a real IMAP server: star, read, batch, move, label, aud
   assert.deepEqual([batch.changed,batch.missing],[[urgent,lunch],[99999]]);
   assert.ok((await flagsOf(lunch)).includes('\\Flagged'));
   await assert.rejects(mailFlag(config,{mailbox:'INBOX',uids:[99998,99999],starred:true,confirm:true}),{code:'MAIL_NOT_FOUND'});
-  await assert.rejects(mailFlag(config,{mailbox:'Folders/Nope',uids:[1],starred:true}),{code:'MAIL_MAILBOX_NOT_FOUND'});
+  await assert.rejects(mailFlag(config,{mailbox:'Folders/Nope',uids:[1],starred:true,confirm:true}),{code:'MAIL_MAILBOX_NOT_FOUND'});
 
   // Moves into protected folders are refused even though the folders may exist; a normal move relocates the message.
-  await assert.rejects(mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Trash'}),{code:'MAIL_MOVE_REFUSED'});
+  await assert.rejects(mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Trash',confirm:true}),{code:'MAIL_MOVE_REFUSED'});
   assert.ok(await flagsOf(receipt),'the message is still in the inbox');
-  await assert.rejects(mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Folders/Missing'}),{code:'MAIL_MAILBOX_NOT_FOUND'});
-  const moved=await mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Folders/Receipts'});
+  await assert.rejects(mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Folders/Missing',confirm:true}),{code:'MAIL_MAILBOX_NOT_FOUND'});
+  const moved=await mailMove(config,{mailbox:'INBOX',uids:[receipt],to:'Folders/Receipts',confirm:true});
   assert.deepEqual([moved.moved,moved.missing,moved.to],[[receipt],[],'Folders/Receipts']);
   assert.equal(await flagsOf(receipt),undefined,'gone from the inbox');
   assert.deepEqual((await snapshot(server,'Folders/Receipts')).map(row=>row.subject),['Receipt 4471']);
   assert.equal((await snapshot(server)).length,3);
 
   // A label is a copy into Labels/<name>: the original stays.
-  const labeled=await mailLabel(config,{mailbox:'INBOX',uids:[term],label:'Receipts'});
+  const labeled=await mailLabel(config,{mailbox:'INBOX',uids:[term],label:'Receipts',confirm:true});
   assert.deepEqual([labeled.labeled,labeled.label],[[term],'Labels/Receipts']);
   assert.deepEqual((await snapshot(server,'Labels/Receipts')).map(row=>row.subject),['Term dates']);
   assert.ok(await flagsOf(term),'the original stays in the inbox');
-  await mailLabel(config,{mailbox:'INBOX',uids:[lunch],label:'Labels/Receipts'});
+  await mailLabel(config,{mailbox:'INBOX',uids:[lunch],label:'Labels/Receipts',confirm:true});
   assert.equal((await snapshot(server,'Labels/Receipts')).length,2);
-  await assert.rejects(mailLabel(config,{mailbox:'INBOX',uids:[term],label:'Nonexistent'}),{code:'MAIL_MAILBOX_NOT_FOUND'});
+  await assert.rejects(mailLabel(config,{mailbox:'INBOX',uids:[term],label:'Nonexistent',confirm:true}),{code:'MAIL_MAILBOX_NOT_FOUND'});
 
   // Triage explains the saved filter against the real message headers and changes nothing.
   const before=JSON.stringify(await snapshot(server));

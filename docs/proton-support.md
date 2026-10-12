@@ -34,7 +34,7 @@ Proton documents [ICS import](https://proton.me/support/how-to-import-calendar-t
 
 Full-view sharing URLs include decryption material and are treated as secrets. Waypost reads them from an owner-only file, a Proton Pass item, or the macOS login keychain, and never writes them to logs or tool results. Links are read-only and cannot cover external calendars subscribed inside Proton. Waypost generates a new UID for each prepared event.
 
-**Agent edits to your own events.** An agent cannot change a native Proton event. By default `calendar_propose` adopts the event: it copies it into the Agents calendar with the change and prepares a note asking you to delete the original. Until the original leaves the share link, agents see only the agent copy, so nothing is double-booked. Mode `delete` prepares a note asking you to delete an event and marks it `pendingRetirement`. A calendar connected with `--read-only` (for example a shared family calendar) is never adopted, changed, invited against or migrated.
+**Agent edits to your own events.** An agent cannot change a native Proton event. By default `calendar_propose` adopts the event: it copies it into the Agents calendar with the change and prepares a note asking you to delete the original. Until the original leaves the share link, agents see only the agent copy, so nothing is double-booked. If the agent copy is deleted, the original shows again. Mode `delete` prepares a note asking you to delete an event and marks it `pendingRetirement`. A calendar connected with `--read-only` (for example a shared family calendar) is never adopted, changed, invited against or migrated.
 
 ## Sending addresses
 

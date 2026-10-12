@@ -32,5 +32,7 @@ let pending:Promise<unknown>=Promise.resolve();
 export function callTool(config:Config,name:string,input:unknown):Promise<unknown> {
   const tool=tools.find(t=>t.name===name);
   if(!tool) return Promise.reject(new WaypostError('UNKNOWN_TOOL','Unknown tool. Run waypost tools to see available commands.'));
+  // Reads run at once, so one slow read cannot stall other remote clients. Writes still run one at a time.
+  if(tool.readOnly)return tool.call(config,input);
   const next=pending.then(()=>tool.call(config,input));pending=next.catch(()=>undefined);return next;
 }

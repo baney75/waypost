@@ -52,7 +52,7 @@ export const configSchema = z.object({
     port: z.number().int().min(1).max(65535).default(8787),
     publicUrl: z.url({protocol:/^https?$/}).refine(value => { const url = new URL(value); return !url.search && !url.hash && !url.username && !url.password && url.pathname === '/' && (url.protocol === 'https:' || ['localhost','127.0.0.1','[::1]'].includes(url.hostname)); }, 'Use an https:// origin with no path (http:// only for localhost).'),
     stateDir: absolutePath,
-    redirectOrigins: z.array(z.url()).max(10).default(['https://claude.ai','https://claude.com']),
+    redirectUris: z.array(z.url()).max(10).default(['https://claude.ai/api/mcp/auth_callback','https://claude.com/api/mcp/auth_callback']),
     // Extra Host names that reach this server, such as a Tailscale Funnel name behind a proxy. publicUrl stays the issuer.
     allowedHosts: z.array(z.string().regex(/^[a-z0-9.-]{1,253}(?::\d{1,5})?$/)).max(10).default([]),
     tools: z.array(z.string().regex(/^[a-z_]{1,64}$/)).max(100).optional(),

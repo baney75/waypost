@@ -73,7 +73,10 @@ test('stop, discard, :copy, setflag/removeflag, size and not behave', () => {
 test('matches globs, regex and unsupported relational tests are explicit', () => {
   const msg = message({subject: 'Invoice 2026-10'}, {from: 'billing@shop.example'});
   assert.deepEqual(evaluateSieve('if header :matches "subject" "Invoice*" { fileinto "Receipts"; }', msg).folders, ['Receipts']);
-  assert.deepEqual(evaluateSieve('if header :regex "subject" "^invoice \\\\d{4}" { fileinto "Receipts"; }', msg).folders, ['Receipts']);
+  // :regex could backtrack for minutes on a hostile header, so it is reported as unsupported, never run.
+  const regex = evaluateSieve('if header :regex "subject" "^invoice \\\\d{4}" { fileinto "Receipts"; }', msg);
+  assert.deepEqual(regex.folders, []);
+  assert.ok(regex.unsupported.includes(':regex matching'));
   assert.deepEqual(evaluateSieve('if address :localpart :is "from" "billing" { fileinto "Receipts"; }', msg).folders, ['Receipts']);
   const relational = evaluateSieve('if header :count "ge" "subject" "1" { fileinto "X"; }', msg);
   assert.deepEqual(relational.folders, []);

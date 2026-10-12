@@ -160,7 +160,7 @@ To move a whole calendar over at once, export it from Proton and run `waypost ca
 
 ## Mail organizing and triage
 
-Set `"organizeEnabled": true` in the `mail` block to allow `mail_flag`, `mail_mark`, `mail_move` and `mail_label`. A change to more than one message still needs `confirm: true`. There is no delete, and moves to Trash, Spam, Sent, Drafts, Starred and All Mail are refused.
+Set `"organizeEnabled": true` in the `mail` block to allow `mail_flag`, `mail_mark`, `mail_move` and `mail_label`. Every call still needs `confirm: true`. There is no delete, and moves to Trash, Spam, Sent, Drafts, Starred and All Mail are refused.
 
 For `mail_triage`, open the filter in Proton (**Settings → Filters → Edit**, Sieve view), copy its script to a private file, and set `"triageSieve": "/absolute/path/filter.sieve"` in the `mail` block. The tool explains what that copy does to a message; it never changes mail.
 

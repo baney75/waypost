@@ -27,6 +27,8 @@ umask 077
 cat > secrets/tunnel_token     # paste the token, press Enter, then Ctrl-D
 ```
 
+The containers run as user 1000. If your own user id is not 1000 (check with `id -u`), run `sudo chown 1000:1000 secrets/*` after creating each secret file.
+
 On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
 
 **Tailscale Funnel instead.** Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the small proxy in `cloudflare-worker/` and add the Funnel hostname to `http.allowedHosts`.
@@ -85,6 +87,8 @@ Add `--read-only` for any calendar agents must never touch, such as a shared fam
 ## 7. Add mail (optional, 3 minutes)
 
 ```sh
+umask 077
+touch secrets/bridge_username secrets/bridge_password   # compose needs the files to exist before Bridge first runs
 docker compose -f compose.yaml -f compose.mail.yaml build bridge
 docker compose -f compose.yaml -f compose.mail.yaml run --rm -it bridge init
 ```
@@ -92,10 +96,9 @@ docker compose -f compose.yaml -f compose.mail.yaml run --rm -it bridge init
 In the Bridge prompt type `login` and sign in with your Proton account, then `info` to see the IMAP/SMTP username and password Bridge generated, then `exit`. Save those two values (never your Proton password):
 
 ```sh
-umask 077
 cat > secrets/bridge_username   # paste, Enter, Ctrl-D
 cat > secrets/bridge_password   # paste, Enter, Ctrl-D
-docker compose -f compose.yaml -f compose.mail.yaml up -d
+docker compose -f compose.yaml -f compose.mail.yaml up -d --force-recreate waypost bridge
 docker compose exec waypost node /app/waypost.mjs --config /data/config.json connect mail --certificate /bridge/cert.pem
 docker compose exec waypost node /app/waypost.mjs --config /data/config.json mail doctor
 ```

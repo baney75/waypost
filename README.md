@@ -88,7 +88,7 @@ For a remote Waypost, add it to Claude Code with `claude mcp add --transport htt
 | `mail_draft`, `mail_send` | Prepare a local EML; sending is off by default and needs `confirm: true` per call. |
 | `mail_verification_code` | Newest one-time code, never the body. Off by default. |
 | `drive_list`, `drive_info`, `drive_download`, `drive_upload` | Drive under `/my-files`; uploads are off by default and need `confirm: true`. |
-| `mail_flag`, `mail_mark`, `mail_move`, `mail_label` | Star, mark read, move to a folder, add a label. Off by default; batches need `confirm: true`. No delete, no moves to Trash or Spam. |
+| `mail_flag`, `mail_mark`, `mail_move`, `mail_label` | Star, mark read, move to a folder, add a label. Off by default; each call needs `confirm: true`. No delete, no moves to Trash or Spam. |
 | `mail_triage` | What your saved Proton Sieve filter would do to one message, and which rules matched. |
 | `calendar_events` | Every calendar in one window: the agent calendar, mirrored Proton links and ICS files, each event with `provenance` and `editable`. |
 | `calendar_create`, `calendar_update`, `calendar_delete` | Change agent-owned events in the Agents calendar. Off by default; each needs `confirm: true`. |
@@ -157,7 +157,7 @@ waypost calendar prepare --summary "Vacation" --start 2026-12-21 --end 2026-12-2
 
 Use normal flags for terminal work, or retain `--input` JSON for scripts. Repeat array flags such as `--to` for each recipient. Commands return JSON. `waypost tools` lists every input schema; `waypost call <tool> --input '{}'` addresses the same tools as MCP.
 
-Every write starts disabled: mail sends, mail organizing, agent calendar writes and Drive uploads. When enabled in local config, each call must still pass `confirm: true` (`--confirm` on the CLI); mail organizing asks for it on batches. Proton calendars are never written. A send also requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
+Every write starts disabled: mail sends, mail organizing, agent calendar writes and Drive uploads. When enabled in local config, each call must still pass `confirm: true` (`--confirm` on the CLI). Proton calendars are never written. A send also requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
 
 ## Fill verification codes
 

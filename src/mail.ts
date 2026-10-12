@@ -58,14 +58,14 @@ export const mailAttachmentSchema = z.object({
 export const mailDraftSchema = z.object({from:address.describe('Sender email address.'), to:z.array(address).min(1).max(20).describe('Recipient email addresses, 1–20.'), cc:z.array(address).max(20).default([]).describe('Copy recipient email addresses, at most 20.'), subject:header(998).describe('Message subject, without line breaks.'), text:z.string().max(120000).refine(value => !value.includes('\0'), 'NUL is not permitted.').describe('Plain-text body, at most 120,000 characters.')}).strict();
 export const mailSendSchema = z.object({path:z.string().min(1).describe('Exact EML path returned by mail draft.'), sha256:z.string().regex(/^[a-f0-9]{64}$/).describe('Exact SHA-256 from the reviewed mail draft; no automatic retries.'), confirm:z.boolean().default(false).describe('Set true on this call only after the user approves this exact recipient and message.')}).strict();
 
-// Docker secrets convention: NAME may instead be given as NAME_FILE, an absolute path to an owner-only file.
+// Docker secrets convention: NAME may instead be given as NAME_FILE, an absolute path to an owner-only file (mode 600, owned by this user).
 async function secretEnv(name:string):Promise<string | undefined> {
   if (process.env[name]) return process.env[name];
   const file = process.env[`${name}_FILE`];
   if (!file || !file.startsWith('/')) return undefined;
   try {
     const metadata = await stat(file);
-    if (!metadata.isFile() || metadata.size > 4096) return undefined;
+    if (!metadata.isFile() || metadata.size > 4096 || (process.platform !== 'win32' && ((metadata.mode & 0o077) || metadata.uid !== process.getuid?.()))) return undefined;
     return (await readFile(file, 'utf8')).trim() || undefined;
   } catch { return undefined; }
 }

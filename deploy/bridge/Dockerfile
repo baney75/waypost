@@ -12,7 +12,8 @@ RUN apt-get update \
  && rm -rf /tmp/bridge.deb /var/lib/apt/lists/* \
  && useradd -u 1000 -m -d /home/bridge bridge \
  && mkdir /bridge-public && chown bridge /bridge-public
-COPY --chmod=755 entrypoint.sh /usr/local/bin/waypost-bridge
+COPY entrypoint.sh /usr/local/bin/waypost-bridge
+RUN chmod 755 /usr/local/bin/waypost-bridge
 USER bridge
 ENV HOME=/home/bridge
 ENTRYPOINT ["/usr/local/bin/waypost-bridge"]

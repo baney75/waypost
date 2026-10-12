@@ -99,16 +99,27 @@ function parse(tokens:Token[]):Command[] {
   return list();
 }
 const casemap = (value:string) => value.toLowerCase();
-function glob(pattern:string):RegExp {
-  return new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[\\s\\S]*').replace(/\?/g, '[\\s\\S]') + '$', 'i');
+/** RFC 5228 :matches with * and ?, case-insensitive, in linear time (no regular expression, so no backtracking). */
+export function wildcard(pattern:string, value:string):boolean {
+  const p = pattern.toLowerCase(), v = value.toLowerCase();
+  let i = 0, j = 0, star = -1, mark = 0;
+  while (j < v.length) {
+    if (i < p.length && (p[i] === '?' || p[i] === v[j])) { i++; j++; }
+    else if (i < p.length && p[i] === '*') { star = i++; mark = j; }
+    else if (star >= 0) { i = star + 1; j = ++mark; }
+    else return false;
+  }
+  while (i < p.length && p[i] === '*') i++;
+  return i === p.length;
 }
 function compare(values:string[], keys:string[], tags:string[], unsupported:Set<string>):boolean {
   const caseSensitive = false;
-  if (tags.includes(':regex')) return values.some(value => keys.some(key => { try { return new RegExp(key, 'i').test(value); } catch { unsupported.add('invalid :regex'); return false; } }));
+  // A user's :regex could backtrack for minutes on a hostile header, so it is reported, not run.
+  if (tags.includes(':regex')) { unsupported.add(':regex matching'); return false; }
   if (tags.includes(':value') || tags.includes(':count')) { unsupported.add('relational comparisons'); return false; }
   const norm = caseSensitive ? (value:string) => value : casemap;
   if (tags.includes(':contains')) return values.some(value => keys.some(key => norm(value).includes(norm(key))));
-  if (tags.includes(':matches')) return values.some(value => keys.some(key => glob(key).test(value)));
+  if (tags.includes(':matches')) return values.some(value => keys.some(key => wildcard(key, value)));
   return values.some(value => keys.some(key => norm(value) === norm(key)));
 }
 function addressPart(address:string, tags:string[]) {

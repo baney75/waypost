@@ -13,7 +13,8 @@ export const passLookupSchema = z.object({
 const SECRET_KEY = /password|secret|totp|otp|pin|cvv|note|private|username|email/i;
 
 function httpUrls(value: unknown, key = ''): string[] {
-  if (typeof value === 'string') return /^https?:\/\//.test(value) && /url/i.test(key) ? [value.slice(0, 500)] : [];
+  // Proton calendar share links carry decryption keys; they are secrets, not item URLs.
+  if (typeof value === 'string') return /^https?:\/\//.test(value) && /url/i.test(key) && !/^https:\/\/calendar\.proton\.me\//i.test(value) ? [value.slice(0, 500)] : [];
   if (Array.isArray(value)) return value.flatMap(item => httpUrls(item, key));
   if (!value || typeof value !== 'object') return [];
   return Object.entries(value).flatMap(([child, nested]) => SECRET_KEY.test(child) ? [] : httpUrls(nested, child));

@@ -124,10 +124,10 @@ test('create, update text, update timing, delete: feed, SEQUENCE and the append-
   const before = (await merged(config)).events.filter(event => event.uid === weekly.uid);
   assert.deepEqual(before.map(event => event.start), ['2026-11-02T14:00:00Z', '2026-11-10T15:00:00Z', '2026-11-16T14:00:00Z', '2026-11-23T14:00:00Z']);
   const textOnly = await ac.calendarUpdate(config, {uid: weekly.uid, changes: {description: 'Bring notes'}, ...confirmed});
-  assert.equal(textOnly.droppedOverrides, undefined);
+  assert.equal(textOnly.dropped, undefined);
   assert.equal((await merged(config)).events.filter(event => event.uid === weekly.uid).length, 4);
   const timing = await ac.calendarUpdate(config, {uid: weekly.uid, changes: {start: '2026-11-03T08:00:00', timezone: 'America/New_York', rrule: 'FREQ=WEEKLY;COUNT=2'}, ...confirmed});
-  assert.equal(timing.droppedOverrides, 1);
+  assert.deepEqual(timing.dropped, {overrides: 1, exceptionDates: 0});
   assert.match(timing.note, /removed/);
   assert.equal(timing.sequence, 2);
   const after = (await merged(config)).events.filter(event => event.uid === weekly.uid);
@@ -316,7 +316,8 @@ test('adopt: the agent copy replaces the original in the merged view until the o
   assert.equal(retired.adoptionsRetired, 1);
   assert.equal((await ac.syncCalendars(config)).adoptionsRetired, 0);
   const finalStore = await ac.loadStore(config);
-  assert.equal(finalStore.adoptions.filter(item => item.status === 'retired').length, 1);
+  // One retired when the first agent copy was deleted, one when the original left the link.
+  assert.equal(finalStore.adoptions.filter(item => item.status === 'retired').length, 2);
   assert.ok(finalStore.adoptions.find(item => item.status === 'retired').retiredAt);
   const last = await merged(config);
   assert.equal(last.duplicatesSuppressed, 0);
@@ -477,7 +478,7 @@ test('migration: dry run writes nothing, --confirm imports, rerun is unchanged, 
 
   const dry = await ac.migrateCalendar(config, file, {...options, confirm: false});
   assert.equal(dry.dryRun, true);
-  assert.deepEqual(dry.counts, {new: 3, changed: 0, unchanged: 0, skipped: 0});
+  assert.deepEqual(dry.counts, {new: 3, changed: 0, unchanged: 0, skipped: 0, deleted: 0});
   assert.deepEqual(dry.preview.map(item => item.summary).sort(), ['Gym', 'Holiday', 'Lunch']);
   assert.deepEqual((await readdir(dir)).filter(name => name !== 'store.lock'), [], 'a dry run writes nothing, not even a store file or audit line');
   await assert.rejects(ac.migrateCalendar(config, file, {source: 'personal', confirm: false}), {code: 'INPUT_INVALID'});
@@ -485,7 +486,7 @@ test('migration: dry run writes nothing, --confirm imports, rerun is unchanged, 
   const imported = await ac.migrateCalendar(config, file, {...options, confirm: true});
   assert.equal(imported.dryRun, false);
   assert.equal(imported.imported, 3);
-  assert.deepEqual(imported.counts, {new: 3, changed: 0, unchanged: 0, skipped: 0});
+  assert.deepEqual(imported.counts, {new: 3, changed: 0, unchanged: 0, skipped: 0, deleted: 0});
   assert.equal(imported.retireSteps.length, 4);
   let store = await ac.loadStore(config);
   const events = Object.values(store.events);
@@ -500,14 +501,14 @@ test('migration: dry run writes nothing, --confirm imports, rerun is unchanged, 
   assert.ok(view.events.filter(event => event.summary === 'Gym').every(event => /T09:00:00/.test(event.startLocal)));
 
   const rerun = await ac.migrateCalendar(config, file, {...options, confirm: true});
-  assert.deepEqual(rerun.counts, {new: 0, changed: 0, unchanged: 3, skipped: 0});
+  assert.deepEqual(rerun.counts, {new: 0, changed: 0, unchanged: 3, skipped: 0, deleted: 0});
   assert.equal(rerun.imported, 0);
   assert.equal((await ac.loadStore(config)).adoptions.length, 3);
   assert.deepEqual((await ac.migrateCalendar(config, file, {...options, confirm: false})).preview, []);
 
   await writeFile(file, body('Lunch with Sam'));
   const changed = await ac.migrateCalendar(config, file, {...options, confirm: false});
-  assert.deepEqual(changed.counts, {new: 0, changed: 1, unchanged: 2, skipped: 0});
+  assert.deepEqual(changed.counts, {new: 0, changed: 1, unchanged: 2, skipped: 0, deleted: 0});
   assert.deepEqual(changed.preview.map(item => [item.status, item.summary]), [['changed', 'Lunch with Sam']]);
   const before = (await ac.loadStore(config)).events;
   const applied = await ac.migrateCalendar(config, file, {...options, confirm: true});
@@ -530,7 +531,7 @@ test('migration reports events the expander cannot read as skipped and does not 
     vevent('UID:ok@example.com', 'DTSTAMP:20261001T000000Z', 'DTSTART:20261106T170000Z', 'DTEND:20261106T180000Z', 'SUMMARY:Fine'),
     vevent('UID:floating@example.com', 'DTSTAMP:20261001T000000Z', 'DTSTART:20261106T090000', 'DTEND:20261106T100000', 'SUMMARY:Floating time')));
   const dry = await ac.migrateCalendar(config, file, {source: 'proton/personal', confirm: false});
-  assert.deepEqual(dry.counts, {new: 1, changed: 0, unchanged: 0, skipped: 1});
+  assert.deepEqual(dry.counts, {new: 1, changed: 0, unchanged: 0, skipped: 1, deleted: 0});
   assert.ok(dry.skippedReasons.length >= 1);
   await ac.migrateCalendar(config, file, {source: 'proton/personal', confirm: true});
   const store = await ac.loadStore(config);

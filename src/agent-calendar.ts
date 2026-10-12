@@ -9,7 +9,7 @@ import { defineTool } from './tool.js';
 import { buildEvent, calendarEvents, calendarEventsSchema, foldLine, readSnapshot, text, utc, zoneName, type EventInput, type Snapshot, type SnapshotEvent } from './calendar.js';
 import { feedProvenance, feedUrl, fetchCalendarFeed, feedKey } from './calendar-feed.js';
 import { audit, readJson, withLock, writeJson } from './store.js';
-import { vtimezone } from './tz.js';
+import { isIanaZone, localToUtc, vtimezone } from './tz.js';
 import { prepareMessage } from './mail.js';
 
 type Feed = NonNullable<Config['calendar']>['feeds'][number];
@@ -83,12 +83,17 @@ export function agentIcs(config:Config, store:Store):string {
   const agent = agentConfig(config);
   const events = Object.values(store.events).filter(event => !event.deleted).sort((a,b) => a.uid.localeCompare(b.uid));
   const zones = new Set<string>();
-  for (const event of events) for (const tzid of tzidsOf(eventsByUid(parseCalendar(`BEGIN:VCALENDAR\r\n${event.ics}\r\nEND:VCALENDAR`)).values().next().value ?? [])) zones.add(tzid);
+  for (const event of events) for (const group of eventsByUid(parseCalendar(wrap(event.ics))).values()) for (const tzid of tzidsOf(group)) zones.add(tzid);
   // 1970–2037 is the date range Proton Calendar imports, so every event it can show gets correct offsets.
-  const zoneLines = [...zones].sort().flatMap(tzid => store.timezones[tzid] ? store.timezones[tzid].split(/\r?\n/) : vtimezone(tzid, 1970, 2037));
+  // An unknown zone is left out: the reader then skips only that event, instead of the feed failing.
+  const zoneLines = [...zones].sort().flatMap(tzid => store.timezones[tzid] ? store.timezones[tzid].split(/\r?\n/) : isIanaZone(tzid) ? vtimezone(tzid, 1970, 2037) : []);
   const header = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Waypost//Agent calendar//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',`X-WR-CALNAME:${agent.name.replace(/[\\;,]/g,'')}`,'REFRESH-INTERVAL;VALUE=DURATION:PT1H','X-PUBLISHED-TTL:PT1H'];
   const body = events.flatMap(event => event.ics.split(/\r\n/));
-  return [...header, ...zoneLines, ...body, 'END:VCALENDAR'].map(line => line.startsWith(' ') ? line : foldLine(line)).join('\r\n') + '\r\n';
+  return refold([...header, ...zoneLines, ...body, 'END:VCALENDAR']);
+}
+/** ical.js folds by characters; unfold everything and fold again at 75 octets as RFC 5545 requires. */
+function refold(lines:string[]) {
+  return lines.join('\r\n').replace(/\r\n[ \t]/g, '').split('\r\n').map(foldLine).join('\r\n') + '\r\n';
 }
 
 // ---------- Proton mirror ----------
@@ -166,7 +171,7 @@ export async function mergedEvents(config:Config, input:unknown) {
   for (const event of result.events) {
     const hit = event.provenance === 'agent' ? undefined : pending.get(pendingKey(event.provenance, event.uid));
     // An adopted original is shown once, as its agent copy. A pending delete request stays visible, flagged.
-    if (hit?.agentUid) { suppressed++; continue; }
+    if (hit?.agentUid && store.events[hit.agentUid] && !store.events[hit.agentUid]!.deleted) { suppressed++; continue; }
     events.push(hit ? {...event, pendingRetirement:true} : event);
   }
   const limited = events.length > query.limit;
@@ -184,8 +189,10 @@ const timing = {
   timezone:zoneName.optional().describe('IANA timezone for local start and end times.'),
   rrule:z.string().max(300).optional().describe('Recurrence rule such as "FREQ=WEEKLY;BYDAY=TU;COUNT=10".'),
 };
-const textFields = {summary:text(500).min(1).optional(), description:text(12000).optional(), location:text(1000).optional()};
-export const calendarCreateSchema = z.object({summary:text(500).min(1).describe('Event title.'), ...timing, description:text(12000).default(''), location:text(1000).default(''), confirm:confirmField}).strict();
+// A bare CR would survive ical.js serialization as a raw line break, so every agent text field normalizes to LF.
+const lf = (schema:z.ZodType<string>) => schema.transform(value => value.replace(/\r\n?/g, '\n'));
+const textFields = {summary:lf(text(500).min(1)).optional(), description:lf(text(12000)).optional(), location:lf(text(1000)).optional()};
+export const calendarCreateSchema = z.object({summary:lf(text(500).min(1)).describe('Event title.'), ...timing, description:lf(text(12000)).default(''), location:lf(text(1000)).default(''), confirm:confirmField}).strict();
 const changes = z.object({...textFields, start:timing.start.optional(), end:timing.end, allDay:z.boolean().optional(), timezone:timing.timezone, rrule:z.string().max(300).nullable().optional().describe('New rule, or null to stop repeating. Needs start.')}).strict()
   .refine(value => value.start !== undefined || (value.end === undefined && value.allDay === undefined && value.timezone === undefined && value.rrule === undefined), 'To change timing, give start (plus end, allDay, timezone and rrule as needed); the whole timing is replaced.');
 export const calendarUpdateSchema = z.object({uid:z.string().min(1).max(300).describe('UID of an agent-owned event (editable: true in calendar_events).'), changes, confirm:confirmField}).strict();
@@ -210,6 +217,8 @@ function requireWrite(config:Config, confirm:boolean) {
 function eventInput(fields:{summary:string; description:string; location:string; start:string; end?:string | undefined; allDay:boolean; timezone?:string | undefined; rrule?:string | null | undefined}):EventInput {
   return {summary:fields.summary, description:fields.description, location:fields.location, start:fields.start, allDay:fields.allDay, ...(fields.end !== undefined ? {end:fields.end} : {}), ...(fields.timezone !== undefined ? {timezone:fields.timezone} : {}), ...(fields.rrule ? {rrule:fields.rrule} : {})};
 }
+const KEPT = ['status','categories','url','class','transp','priority','attach'];
+const droppedNote = (dropped:{overrides:number; exceptionDates:number}) => dropped.overrides || dropped.exceptionDates ? {dropped, note:`The timing changed, so ${dropped.overrides} moved occurrence(s) and ${dropped.exceptionDates} cancelled or added date(s) from the old series were removed.`} : {};
 const wrap = (ics:string) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${ics}\r\nEND:VCALENDAR`;
 /**
  * Apply changes to an event group. Text changes edit the master in place. A timing change
@@ -224,7 +233,11 @@ function applyChanges(components:ICAL.Component[], change:z.output<typeof change
     const built = buildEvent(eventInput({...current, ...Object.fromEntries(Object.entries({summary:change.summary, description:change.description, location:change.location}).filter(([,value]) => value !== undefined)), start:change.start, end:change.end, allDay:change.allDay ?? false, timezone:change.timezone, rrule:change.rrule}), uid, {sequence, created});
     if (!built.vevent.some(line => line.startsWith('SUMMARY:') && line.length > 8)) throw new WaypostError('INPUT_INVALID', 'The event needs a summary.');
     const rebuilt = eventsByUid(parseCalendar(wrap(built.vevent.join('\r\n')))).get(uid)!;
-    return {ics:serialize(rebuilt), droppedOverrides:components.length - 1, timezone:change.timezone};
+    // Alarms and descriptive properties survive a timing change; exceptions tied to the old timing do not.
+    for (const name of KEPT) for (const property of master.getAllProperties(name)) rebuilt[0]!.addProperty(new ICAL.Property(property.toJSON()));
+    for (const alarm of master.getAllSubcomponents('valarm')) rebuilt[0]!.addSubcomponent(new ICAL.Component(alarm.toJSON()));
+    const exceptions = master.getAllProperties('exdate').length + master.getAllProperties('rdate').length;
+    return {ics:serialize(rebuilt), dropped:{overrides:components.length - 1, exceptionDates:exceptions}, timezone:change.timezone};
   }
   for (const component of components) {
     component.updatePropertyWithValue('uid', uid);
@@ -233,8 +246,13 @@ function applyChanges(components:ICAL.Component[], change:z.output<typeof change
     component.updatePropertyWithValue('last-modified', ICAL.Time.fromJSDate(new Date(), true));
     for (const name of ['attendee','organizer']) component.removeAllProperties(name);
   }
-  for (const name of ['summary','description','location'] as const) if (change?.[name] !== undefined) master.updatePropertyWithValue(name, change[name]);
-  return {ics:serialize(components), droppedOverrides:0, timezone:undefined};
+  for (const name of ['summary','description','location'] as const) {
+    if (change?.[name] === undefined) continue;
+    // A moved occurrence that copied the series text follows the rename; one with its own text keeps it.
+    for (const override of components.slice(1)) if (String(override.getFirstPropertyValue(name) ?? '') === current[name]) override.updatePropertyWithValue(name, change[name]);
+    master.updatePropertyWithValue(name, change[name]);
+  }
+  return {ics:serialize(components), dropped:{overrides:0, exceptionDates:0}, timezone:undefined};
 }
 async function conflictsFor(config:Config, startMs:number, endMs:number, excludeUid:string) {
   if (!Number.isFinite(startMs) || endMs <= startMs) return [];
@@ -265,11 +283,11 @@ export async function calendarUpdate(config:Config, input:unknown) {
     const sequence = event.sequence + 1;
     const changed = applyChanges(eventsByUid(parseCalendar(wrap(event.ics))).get(event.uid) ?? [], request.changes, event.uid, sequence, Date.parse(event.created));
     store.events[event.uid] = {...event, ics:changed.ics, sequence, updated:new Date().toISOString()};
-    return {sequence, droppedOverrides:changed.droppedOverrides, ics:changed.ics};
+    return {sequence, dropped:changed.dropped, ics:changed.ics};
   });
   await audit(agent.dir, {action:'update', uid:request.uid, sequence:result.sequence, sha256:sha(result.ics), via:'calendar_update'});
   const group = eventsByUid(parseCalendar(wrap(result.ics))).get(request.uid) ?? [];
-  return {uid:request.uid, updated:true, sequence:result.sequence, start:startOf(group), ...(result.droppedOverrides ? {droppedOverrides:result.droppedOverrides, note:'The timing changed, so earlier moved or cancelled occurrences of this series were removed.'} : {}), delivery:feedNote};
+  return {uid:request.uid, updated:true, sequence:result.sequence, start:startOf(group), ...droppedNote(result.dropped), delivery:feedNote};
 }
 export async function calendarDelete(config:Config, input:unknown) {
   const request = calendarDeleteSchema.parse(input);
@@ -278,6 +296,8 @@ export async function calendarDelete(config:Config, input:unknown) {
     const event = store.events[request.uid];
     if (!event || event.deleted) throw new WaypostError('CALENDAR_NOT_AGENT_OWNED', 'No agent-owned event has that UID. Waypost never deletes events in Proton; use calendar_propose with mode "delete" for a human-owned event.');
     event.deleted = new Date().toISOString();
+    // With the agent copy gone, the Proton original is the only copy again and must show.
+    for (const item of store.adoptions) if (item.status === 'pending' && item.agentUid === request.uid) { item.status = 'retired'; item.retiredAt = event.deleted; }
   });
   await audit(agent.dir, {action:'delete', uid:request.uid, via:'calendar_delete'});
   return {uid:request.uid, deleted:true, recoverable:'The event is kept in the store, marked deleted, and leaves the published feed. Restore it with waypost store restore from a backup if needed.', delivery:feedNote};
@@ -293,6 +313,8 @@ async function originalEvent(config:Config, feed:Feed, uid:string) {
   const group = eventsByUid(parseCalendar(mirror.content)).get(uid);
   if (!group?.length) throw new WaypostError('CALENDAR_EVENT_NOT_FOUND', 'That UID is not in the mirrored Proton calendar. Refresh with calendar_events and use its uid.');
   const zones = new Map(parseCalendar(mirror.content).getAllSubcomponents('vtimezone').map(zone => [String(zone.getFirstPropertyValue('tzid')), zone.toString().replace(/\r?\n/g,'\r\n')]));
+  // An event whose timezone is neither defined in the export nor a real IANA zone cannot be published correctly.
+  if (tzidsOf(group).some(tzid => !zones.has(tzid) && !isIanaZone(tzid))) throw new WaypostError('CALENDAR_TIMEZONE', 'That event uses a timezone the calendar does not define. Fix its timezone in Proton first.');
   return {group, zones};
 }
 async function noteDraft(config:Config, subject:string, body:string, ical?:{method:'REQUEST' | 'CANCEL'; content:string}) {
@@ -326,7 +348,7 @@ export async function calendarPropose(config:Config, input:unknown) {
       store.adoptions.push({source:request.source, uid:request.uid, agentUid:uid, summary, createdAt:new Date().toISOString(), status:'pending'});
     });
     await audit(agent.dir, {action:'adopt', source:request.source, uid:request.uid, agentUid:uid, sha256:sha(changed.ics), via:'calendar_propose'});
-    return {mode:'adopt', agentUid:uid, source:request.source, uid:request.uid, editable:true, changedInProton:false, duplicateHandling:'Agents see only the agent copy until the original disappears from the Proton share link.', delivery:feedNote,
+    return {mode:'adopt', agentUid:uid, source:request.source, uid:request.uid, editable:true, changedInProton:false, ...droppedNote(changed.dropped), duplicateHandling:'Agents see only the agent copy until the original disappears from the Proton share link.', delivery:feedNote,
       ...await noteDraft(config, `"${summary}" moved to your ${agent.name} calendar`, `An agent took over this event so it can keep it up to date:\n\n${summary}\n${when}\n\nIt now lives in your ${agent.name} calendar (subscribed in Proton). Delete the original from ${feed.name} so it does not show twice on your phone.`)};
   }
   const organizer = agent.organizer, owner = agent.owner;
@@ -347,7 +369,7 @@ function itip(method:'REQUEST' | 'CANCEL', ics:string, organizer:string, attende
   const person = event.addPropertyWithValue('attendee', `mailto:${attendee}`);
   person.setParameter('partstat', method === 'CANCEL' ? 'DECLINED' : 'NEEDS-ACTION'); person.setParameter('rsvp', 'TRUE'); person.setParameter('role', 'REQ-PARTICIPANT');
   if (method === 'CANCEL') event.updatePropertyWithValue('status', 'CANCELLED');
-  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Waypost//Agent calendar//EN','CALSCALE:GREGORIAN',`METHOD:${method}`,...zones.flatMap(zone => zone.split(/\r\n/)),...event.toString().split(/\r?\n/),'END:VCALENDAR'].map(line => line.startsWith(' ') ? line : foldLine(line)).join('\r\n') + '\r\n';
+  return refold(['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Waypost//Agent calendar//EN','CALSCALE:GREGORIAN',`METHOD:${method}`,...zones.flatMap(zone => zone.split(/\r\n/)),...event.toString().split(/\r?\n/),'END:VCALENDAR']);
 }
 export async function calendarCancelInvite(config:Config, input:unknown) {
   const request = calendarCancelInviteSchema.parse(input);
@@ -368,7 +390,9 @@ export async function calendarFreeBusy(config:Config, input:unknown) {
   const query = calendarFreeBusySchema.parse(input);
   const result = await mergedEvents(config, {from:query.from, to:query.to, limit:200, ...(query.timezone ? {timezone:query.timezone} : {})});
   const from = Date.parse(query.from), to = Date.parse(query.to);
-  const relevant = result.events.filter(event => query.includeAllDay || !event.allDay).map(event => ({...event, s:Math.max(from, Date.parse(event.allDay ? event.start + 'T00:00:00Z' : event.start)), e:Math.min(to, Date.parse(event.allDay ? event.end + 'T00:00:00Z' : event.end))})).filter(event => event.e > event.s).sort((a,b) => a.s - b.s);
+  // An all-day event covers whole days in the caller's timezone when one is given, otherwise in UTC.
+  const day = (value:string) => { const [y, m, d] = value.split('-').map(Number); return query.timezone ? localToUtc(query.timezone, {year:y!, month:m!, day:d!, hour:0, minute:0, second:0}) ?? Date.parse(value + 'T00:00:00Z') : Date.parse(value + 'T00:00:00Z'); };
+  const relevant = result.events.filter(event => query.includeAllDay || !event.allDay).map(event => ({...event, s:Math.max(from, event.allDay ? day(event.start) : Date.parse(event.start)), e:Math.min(to, event.allDay ? day(event.end) : Date.parse(event.end))})).filter(event => event.e > event.s).sort((a,b) => a.s - b.s);
   const busy:{start:string; end:string}[] = [];
   let open:{s:number; e:number} | null = null;
   for (const event of relevant) { if (open && event.s <= open.e) open.e = Math.max(open.e, event.e); else { if (open) busy.push({start:iso(open.s), end:iso(open.e)}); open = {s:event.s, e:event.e}; } }
@@ -427,12 +451,15 @@ export async function migrateCalendar(config:Config, file:string, options:{confi
   const plan = [...groups].map(([uid, group]) => {
     const hash = sha(serialize(group));
     const previous = existing.get(uid);
-    const status = unreadable.has(uid) ? 'skipped' : !previous ? 'new' : previous.importHash === hash ? 'unchanged' : 'changed';
-    return {uid, group, hash, previous, status, summary:summaryOf(group), start:startOf(group)};
+    const status = unreadable.has(uid) ? 'skipped' : previous?.deleted ? 'deleted' : !previous ? 'new' : previous.importHash === hash ? 'unchanged' : 'changed';
+    const participants = group.reduce((total, component) => total + component.getAllProperties('attendee').length + component.getAllProperties('organizer').length, 0);
+    return {uid, group, hash, previous, status, participants, summary:summaryOf(group), start:startOf(group)};
   });
-  const counts = Object.fromEntries(['new','changed','unchanged','skipped'].map(status => [status, plan.filter(item => item.status === status).length]));
+  const counts = Object.fromEntries(['new','changed','unchanged','skipped','deleted'].map(status => [status, plan.filter(item => item.status === status).length]));
+  // The Agents feed is published, so attendee and organizer lines are not copied; say how many.
+  const participantsRemoved = plan.filter(item => item.status === 'new' || item.status === 'changed').reduce((total, item) => total + item.participants, 0);
   const preview = plan.filter(item => item.status !== 'unchanged').slice(0,50).map(item => ({status:item.status, uid:item.uid, summary:item.summary, start:item.start}));
-  if (!options.confirm) return {dryRun:true, file, source:options.source, counts, preview, ...(checked.skippedCount ? {skippedReasons:checked.skipped} : {}), next:'Review the diff, then run the same command with --confirm.'};
+  if (!options.confirm) return {dryRun:true, file, source:options.source, counts, participantsRemoved, ...(counts.deleted ? {deletedNote:'Events you deleted from the agent calendar stay deleted.'} : {}), preview, ...(checked.skippedCount ? {skippedReasons:checked.skipped} : {}), next:'Review the diff, then run the same command with --confirm.'};
   const nowIso = new Date().toISOString();
   await mutateStore(config, next => {
     for (const [tzid, zone] of zones) if (!next.timezones[tzid]) next.timezones[tzid] = zone;
@@ -448,7 +475,7 @@ export async function migrateCalendar(config:Config, file:string, options:{confi
     }
   });
   await audit(agent.dir, {action:'migrate', source:options.source, ...counts, via:'cli'});
-  return {dryRun:false, file, source:options.source, counts, imported:counts.new! + counts.changed!, retireSteps:[
+  return {dryRun:false, file, source:options.source, counts, participantsRemoved, imported:counts.new! + counts.changed!, retireSteps:[
     `Subscribe to the ${agent.name} feed in Proton first (waypost calendar feed create) and wait until its events appear.`,
     `In Proton Calendar, open each migrated event in the source calendar and delete it, or export a backup and delete the old calendar only if it holds nothing else.`,
     'Waypost hides the originals from agents while they still exist, and marks each adoption retired once the original leaves the share link.',

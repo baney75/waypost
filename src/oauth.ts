@@ -123,25 +123,31 @@ function redirectAllowed(http:HttpConfig, uri:string) {
   let url:URL;
   try { url = new URL(uri); } catch { return false; }
   if (url.hash || url.username || url.password || uri.length > 500) return false;
-  // Native and CLI clients receive the code on a loopback port (RFC 8252); web clients only on approved origins.
+  // Native and CLI clients receive the code on a loopback port (RFC 8252); web clients only on an exact approved callback.
   if (url.protocol === 'http:' && LOOPBACK.has(url.hostname)) return true;
-  return url.protocol === 'https:' && http.redirectOrigins.some(origin => new URL(origin).origin === url.origin);
+  return url.protocol === 'https:' && !url.search && http.redirectUris.includes(url.href);
 }
 const registration = z.object({redirect_uris:z.array(z.string()).min(1).max(5), client_name:z.string().max(100).optional(), token_endpoint_auth_method:z.enum(['none','client_secret_post','client_secret_basic']).default('none'), grant_types:z.array(z.string()).optional(), response_types:z.array(z.string()).optional()}).loose();
+const registrations:number[] = [];
 export async function registerClient(config:Config, body:unknown) {
   const http = httpConfig(config);
+  const time = Date.now();
+  while (registrations.length && registrations[0]! < time - 10 * 60000) registrations.shift();
+  if (registrations.length >= 30) throw new OAuthError(429, 'temporarily_unavailable', 'Too many client registrations. Try again in a few minutes.');
+  registrations.push(time);
   const parsed = registration.safeParse(body);
   if (!parsed.success) throw new OAuthError(400, 'invalid_client_metadata', 'redirect_uris is required (1–5 URIs).');
   const request = parsed.data;
-  for (const uri of request.redirect_uris) if (!redirectAllowed(http, uri)) throw new OAuthError(400, 'invalid_redirect_uri', 'Redirect URIs must be https on an approved origin (http.redirectOrigins) or http on localhost.');
+  for (const uri of request.redirect_uris) if (!redirectAllowed(http, uri)) throw new OAuthError(400, 'invalid_redirect_uri', 'Redirect URIs must be an approved https callback (http.redirectUris) or http on localhost.');
   if (request.grant_types?.some(grant => !['authorization_code','refresh_token'].includes(grant))) throw new OAuthError(400, 'invalid_client_metadata', 'Only authorization_code and refresh_token grants are supported.');
   const client_id = `wpc_${b64(16)}`, secret = request.token_endpoint_auth_method === 'none' ? undefined : `wps_${b64()}`;
   const name = (request.client_name ?? 'MCP client').replace(/[\x00-\x1f\x7f<>]/g, '').slice(0, 100) || 'MCP client';
   await change(http, state => {
     const clients = Object.values(state.clients);
     if (clients.length >= MAX_CLIENTS) {
+      // Evict only clients that never finished authorizing and are over an hour old, so a registration flood cannot push out real clients.
       const active = new Set(Object.values(state.tokens).map(item => item.client_id));
-      const oldest = clients.filter(item => !active.has(item.client_id)).sort((a,b) => (a.last_used ?? a.created_at) - (b.last_used ?? b.created_at))[0];
+      const oldest = clients.filter(item => !active.has(item.client_id) && item.last_used === undefined && item.created_at < now() - 3600).sort((a,b) => a.created_at - b.created_at)[0];
       if (!oldest) throw new OAuthError(400, 'invalid_client_metadata', 'Too many registered clients. Revoke unused ones with waypost auth revoke.');
       delete state.clients[oldest.client_id];
     }
@@ -153,7 +159,7 @@ export async function registerClient(config:Config, body:unknown) {
 // ---------- Authorization ----------
 type AuthorizeRequest = {client_id:string; redirect_uri:string; state?:string | undefined; code_challenge:string; resource:string; scope:string; exp:number};
 const codes = new Map<string, AuthorizeRequest & {expires:number}>();
-const failures:{at:number}[] = [];
+const failures:{at:number; client:string}[] = [];
 export async function validateAuthorize(config:Config, params:URLSearchParams) {
   const http = httpConfig(config);
   const state = await load(http);
@@ -198,8 +204,10 @@ export async function approveAuthorize(config:Config, form:URLSearchParams) {
   if (form.get('decision') === 'deny') return deny();
   const time = Date.now();
   while (failures.length && failures[0]!.at < time - 15 * 60000) failures.shift();
-  if (failures.length >= 10) throw new OAuthError(429, 'temporarily_unavailable', 'Too many wrong passcodes. Wait 15 minutes and try again.');
-  if (!checkPasscode(state.passcode, form.get('passcode') ?? '')) { failures.push({at:time}); await audit(http.stateDir, {action:'authorize_failed', client_id:request.client_id}).catch(() => undefined); throw new OAuthError(401, 'access_denied', state.passcode ? 'Wrong passcode.' : 'No passcode is set. Run waypost auth passcode on the server.'); }
+  // Limits count per client, so a stranger who registers a client cannot lock the owner out of approving claude.ai.
+  // The passcode carries about 120 bits, so the global cap only bounds scrypt work.
+  if (failures.filter(item => item.client === request.client_id).length >= 5 || failures.length >= 200) throw new OAuthError(429, 'temporarily_unavailable', 'Too many wrong passcodes for this connection. Wait 15 minutes and try again.');
+  if (!checkPasscode(state.passcode, form.get('passcode') ?? '')) { failures.push({at:time, client:request.client_id}); await audit(http.stateDir, {action:'authorize_failed', client_id:request.client_id}).catch(() => undefined); throw new OAuthError(401, 'access_denied', state.passcode ? 'Wrong passcode.' : 'No passcode is set. Run waypost auth passcode on the server.'); }
   const code = `wpk_${b64()}`;
   for (const [key, value] of codes) if (value.expires < now()) codes.delete(key);
   codes.set(sha(code), {...request, expires:now() + CODE_TTL});

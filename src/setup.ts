@@ -13,20 +13,20 @@ import { listAuth, setPasscode } from './oauth.js';
 const absolute = (value:string, flag:string) => { if (!isAbsolute(value)) throw new WaypostError('INPUT_INVALID', `${flag} must be an absolute path.`); return value; };
 const email = (value:string | undefined, flag:string) => { if (value !== undefined && !/^[^\s@<>]{1,64}@[^\s@<>]{1,190}\.[^\s@<>]{2,}$/.test(value)) throw new WaypostError('INPUT_INVALID', `${flag} must be an email address.`); return value; };
 
-export async function setupCalendar(path:string, options:{dir:string; name:string; owner?:string | undefined; organizer?:string | undefined; enableWrites?:boolean | undefined}) {
+export async function setupCalendar(path:string, options:{dir:string; name?:string | undefined; owner?:string | undefined; organizer?:string | undefined; enableWrites?:boolean | undefined}) {
   const dir = absolute(options.dir, '--dir');
   email(options.owner, '--owner'); email(options.organizer, '--organizer');
   await privateDirectory(dir);
-  const config = await amendConfig(path, c => ({...c, agentCalendar:{dir, name:options.name, writeEnabled:options.enableWrites ?? c.agentCalendar?.writeEnabled ?? false, syncMinutes:c.agentCalendar?.syncMinutes ?? 30,
+  const config = await amendConfig(path, c => ({...c, agentCalendar:{dir, name:options.name ?? c.agentCalendar?.name ?? 'Agents', writeEnabled:options.enableWrites ?? c.agentCalendar?.writeEnabled ?? false, syncMinutes:c.agentCalendar?.syncMinutes ?? 30,
     ...(options.owner ?? c.agentCalendar?.owner ? {owner:options.owner ?? c.agentCalendar!.owner!} : {}), ...(options.organizer ?? c.agentCalendar?.organizer ? {organizer:options.organizer ?? c.agentCalendar!.organizer!} : {})}}));
   await loadStore(config);
   return {agentCalendar:config.agentCalendar, next:['Link your Proton calendars: waypost connect calendar --pass-item "<item>" --vault "<vault>" --name Personal --source personal', 'Add --read-only for calendars agents must never change, such as a shared family calendar.', 'Publish the agent calendar: waypost setup remote, then waypost calendar feed create.']};
 }
-export async function setupRemote(path:string, options:{publicUrl:string; stateDir:string; port:number; host:string}) {
+export async function setupRemote(path:string, options:{publicUrl:string; stateDir:string; port?:number | undefined; host?:string | undefined}) {
   const stateDir = absolute(options.stateDir, '--state-dir');
   const publicUrl = new URL(options.publicUrl).origin + '/';
   await privateDirectory(stateDir);
-  const config = await amendConfig(path, c => ({...c, http:{host:options.host, port:options.port, publicUrl, stateDir, redirectOrigins:c.http?.redirectOrigins ?? ['https://claude.ai','https://claude.com'], allowedHosts:c.http?.allowedHosts ?? [], ...(c.http?.tools ? {tools:c.http.tools} : {})}}));
+  const config = await amendConfig(path, c => ({...c, http:{host:options.host ?? c.http?.host ?? '127.0.0.1', port:options.port ?? c.http?.port ?? 8787, publicUrl, stateDir, redirectUris:c.http?.redirectUris ?? ['https://claude.ai/api/mcp/auth_callback','https://claude.com/api/mcp/auth_callback'], allowedHosts:c.http?.allowedHosts ?? [], ...(c.http?.tools ? {tools:c.http.tools} : {})}}));
   const auth = await listAuth(config);
   const passcode = auth.passcodeSet ? null : await setPasscode(config);
   return {mcpUrl:new URL('mcp', publicUrl).href, passcode:passcode?.passcode ?? 'already set (rotate with waypost auth passcode)', start:'waypost serve', next:remoteSteps(publicUrl)};
@@ -37,17 +37,17 @@ const remoteSteps = (publicUrl:string) => [
   'Other CLI clients: waypost auth token --label <name> prints a bearer token for an Authorization header.',
 ];
 /** Everything a server needs, in one command, under one data directory. Safe to run again: it keeps what exists. */
-export async function setupQuick(path:string, options:{publicUrl:string; data:string; owner?:string | undefined; port:number; host:string; enableWrites:boolean}) {
+export async function setupQuick(path:string, options:{publicUrl:string; data:string; owner?:string | undefined; port?:number | undefined; host?:string | undefined; enableWrites?:boolean | undefined}) {
   const data = absolute(options.data, '--data');
   await privateDirectory(data);
   const created = await stat(path).then(() => false, async () => { await initConfig(path); return true; });
   if (created) await amendConfig(path, c => ({...c, artifactsDir:join(data, 'artifacts')}));
-  await setupCalendar(path, {dir:join(data, 'calendar'), name:'Agents', owner:options.owner, enableWrites:options.enableWrites});
+  await setupCalendar(path, {dir:join(data, 'calendar'), owner:options.owner, enableWrites:options.enableWrites});
   const remote = await setupRemote(path, {publicUrl:options.publicUrl, stateDir:join(data, 'auth'), port:options.port, host:options.host});
   const config = await loadConfig(path);
   const store = await loadStore(config);
   const feed = store.feedTokens.some(token => !token.revokedAt) ? null : await createFeedToken(config, 'Proton');
-  return {config:path, created, mcpUrl:remote.mcpUrl, passcode:remote.passcode, protonFeedUrl:feed?.url ?? 'already created (list with waypost calendar feed list; create another with waypost calendar feed create)', writesEnabled:options.enableWrites,
+  return {config:path, created, mcpUrl:remote.mcpUrl, passcode:remote.passcode, protonFeedUrl:feed?.url ?? 'already created (list with waypost calendar feed list; create another with waypost calendar feed create)', writesEnabled:config.agentCalendar?.writeEnabled ?? false,
     next:[
       'Start the server: waypost serve (the compose stack does this for you).',
       `Proton: Calendar → Other calendars → Add calendar from URL. Paste the feed URL, name it Agents, then open its settings and add default notifications.`,
