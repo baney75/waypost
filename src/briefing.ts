@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { WaypostError } from './errors.js';
 import { calendarEvents } from './calendar.js';
+import { mergedEvents } from './agent-calendar.js';
 import { mailList } from './mail.js';
 import { defineTool } from './tool.js';
 
@@ -15,23 +16,23 @@ function failure(error:unknown){
   return error instanceof WaypostError?{ok:false,code:error.code,message:error.message}:{ok:false,code:'FAILED',message:'The service check failed. Run waypost doctor for details.'};
 }
 type Source={path:string;mtime:string;fetchedAt?:string;kind?:string};
-type Event={summary:string;start:string;end:string;allDay:boolean;location:string;source:string};
+type Event={summary:string;start:string;end:string;allDay:boolean;location:string;source:string;provenance?:string;editable?:boolean};
 
 // One call for dashboards and agents: what is coming up and what just arrived. Each service fails on its own.
 export async function briefing(config:Config,input:unknown){
   const query=briefingSchema.parse(input);
   const now=Date.now();
-  const calendar=config.calendar&&(config.calendar.files.length||config.calendar.feeds.length)
-    ? await calendarEvents(config,{from:utc(now-3600*1000),to:utc(now+query.days*86400000),limit:100}).then(raw=>{
+  const calendar=config.agentCalendar||(config.calendar&&(config.calendar.files.length||config.calendar.feeds.length))
+    ? await (config.agentCalendar?mergedEvents:calendarEvents)(config,{from:utc(now-3600*1000),to:utc(now+query.days*86400000),limit:100}).then(raw=>{
         const result=raw as {events:Event[];sources:Source[];partial:boolean};
         const sources=result.sources.map(s=>{
           const at=Date.parse(s.fetchedAt??s.mtime);
-          return {name:s.path.startsWith('feed:')?s.path.slice(5):s.path.split('/').pop(),kind:s.kind??'file',asOf:new Date(at).toISOString(),stale:now-at>STALE_MS};
+          return {name:s.path.startsWith('feed:')?s.path.slice(5):s.path.startsWith('agent:')?s.path.slice(6):s.path.split('/').pop(),kind:s.kind??'file',asOf:new Date(at).toISOString(),stale:now-at>STALE_MS};
         });
-        const sourceName=(path:string)=>path.startsWith('feed:')?path.slice(5):path.split('/').pop();
-        const events=result.events.map(e=>({summary:e.summary,start:e.start,end:e.end,allDay:e.allDay,location:e.location||undefined,source:sourceName(e.source)}));
+        const sourceName=(path:string)=>path.startsWith('feed:')?path.slice(5):path.startsWith('agent:')?path.slice(6):path.split('/').pop();
+        const events=result.events.map(e=>({summary:e.summary,start:e.start,end:e.end,allDay:e.allDay,location:e.location||undefined,source:sourceName(e.source),provenance:e.provenance,editable:e.editable}));
         // stale only ever applies to files: a link is refetched at most 10 minutes after its last success.
-        const live=sources.some(s=>s.kind==='proton_link');
+        const live=sources.some(s=>s.kind==='proton_link'||s.kind==='agent_store');
         const staleFiles=sources.filter(s=>s.kind!=='proton_link'&&s.stale).map(s=>s.name);
         const notes=[live?'Proton share links can lag calendar changes by up to 8 hours.':'Calendar is a saved export, not a live link. Connect a Proton share link for current events.'];
         if(live&&staleFiles.length)notes.push(`Also read old exports: ${staleFiles.join(', ')}. Their events may be out of date.`);

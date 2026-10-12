@@ -13,6 +13,10 @@ import { connectDrive, connectMail, connectMailHelper, connectCalendar, connectC
 import { checkUpdate } from './update.js';
 import { runNativeHost } from './native-host.js';
 import { connectBrowser } from './browser.js';
+import { serveHttp } from './http.js';
+import { setupCalendar, setupRemote, setupQuick, doctorChecks, remoteDoctor } from './setup.js';
+import { backupStore, createFeedToken, listFeedTokens, migrateCalendar, restoreStore, revokeFeedToken, syncCalendars } from './agent-calendar.js';
+import { createBearer, listAuth, revokeAuth, setPasscode } from './oauth.js';
 
 const program=new Command().name('waypost').description('Proton Mail, Calendar and Drive for your terminal and agents.').version(VERSION).option('--config <path>','Configuration file',defaultConfigPath()).showHelpAfterError();
 const configPath=()=>resolve(program.opts<{config:string}>().config);
@@ -30,18 +34,20 @@ program.command('init').description('Create a private configuration; preserve ex
 program.command('status').description('Show connection settings and available routes.').action(async()=>output(capabilities(await loadConfig(configPath()))));
 const connect=program.command('connect').description('Connect official service routes. Run a subcommand with --help for options.');
 connect.command('drive').description('Find the official Drive CLI and open Proton browser sign-in.').option('--executable <path>','Official CLI path').option('--no-signin','Reuse an existing official session').action(async(options:{executable?:string;signin:boolean})=>output(await connectDrive(configPath(),options.executable,options.signin)));
-connect.command('calendar [file]').description('Connect an ICS export or a refreshable Proton share link.').option('--url-file <path>','Owner-only file containing a Proton share URL').option('--url-stdin','Read a Proton share URL from standard input').option('--pass-item <title>','Proton Pass item title whose URL is the share link').option('--vault <name>','Proton Pass vault that holds --pass-item').option('--keychain-service <service>','macOS login keychain service whose password is the share link').option('--keychain-account <account>','Keychain account for --keychain-service','proton-calendar-feed').option('--name <name>','Name for a linked calendar','Calendar').action(async(file:string|undefined,options:{urlFile?:string;urlStdin?:boolean;passItem?:string;vault?:string;keychainService?:string;keychainAccount:string;name:string})=>{
+connect.command('calendar [file]').description('Connect an ICS export or a refreshable Proton share link.').option('--url-file <path>','Owner-only file containing a Proton share URL').option('--url-stdin','Read a Proton share URL from standard input').option('--pass-item <title>','Proton Pass item title whose URL is the share link').option('--vault <name>','Proton Pass vault that holds --pass-item').option('--keychain-service <service>','macOS login keychain service whose password is the share link').option('--keychain-account <account>','Keychain account for --keychain-service','proton-calendar-feed').option('--name <name>','Name for a linked calendar','Calendar').option('--source <slug>','Short provenance name, such as personal (events show as proton/personal)').option('--read-only','Agents may read this calendar but never propose changes to it').action(async(file:string|undefined,options:{urlFile?:string;urlStdin?:boolean;passItem?:string;vault?:string;keychainService?:string;keychainAccount:string;name:string;source?:string;readOnly?:boolean})=>{
+  const tags={...(options.source?{source:options.source}:{}),...(options.readOnly?{readOnly:true}:{})};
   if(Number(!!file)+Number(!!options.urlFile)+Number(!!options.urlStdin)+Number(!!options.passItem)+Number(!!options.keychainService)!==1)throw new WaypostError('INPUT_INVALID','Supply an ICS file, --url-file, --url-stdin, --pass-item or --keychain-service. Use exactly one source.');
   const explicit=(key:string)=>connect.commands.find(c=>c.name()==='calendar')?.getOptionValueSource(key)==='cli';
   if(explicit('keychainAccount')&&!options.keychainService)throw new WaypostError('INPUT_INVALID','--keychain-account needs --keychain-service.');
   if(options.vault&&!options.passItem)throw new WaypostError('INPUT_INVALID','--vault applies only with --pass-item.');
-  if(options.keychainService){output(await connectCalendarKeychain(configPath(),options.name,{keychainService:options.keychainService,keychainAccount:options.keychainAccount}));return;}
+  if(file&&(options.source||options.readOnly))throw new WaypostError('INPUT_INVALID','--source and --read-only apply to linked calendars.');
+  if(options.keychainService){output(await connectCalendarKeychain(configPath(),options.name,{keychainService:options.keychainService,keychainAccount:options.keychainAccount},tags));return;}
   if(options.passItem){
     if(!options.vault)throw new WaypostError('INPUT_INVALID','Name the Proton Pass vault with --vault. Do not put the share link on the command line.');
-    output(await connectCalendarPass(configPath(),options.name,{passItem:options.passItem,vault:options.vault}));
+    output(await connectCalendarPass(configPath(),options.name,{passItem:options.passItem,vault:options.vault},tags));
     return;
   }
-  output(file?await connectCalendar(configPath(),file):await connectCalendarFeed(configPath(),options.name,options.urlFile?{file:options.urlFile}:{url:await stdinLink()}));
+  output(file?await connectCalendar(configPath(),file):await connectCalendarFeed(configPath(),options.name,options.urlFile?{file:options.urlFile}:{url:await stdinLink()},tags));
 });
 connect.command('browser').description('Pair the Waypost browser extension so it can fill verification codes. Off until you run this.').option('--extension-id <id>','Extension ID shown on chrome://extensions (defaults to the ID pinned in extension/manifest.json)').option('--browser <name>','chrome, chromium, brave, edge, or helium','chrome').option('--hosts-dir <path>','NativeMessagingHosts directory for another Chromium browser').action(async(options:{extensionId?:string;browser:string;hostsDir?:string})=>output(await connectBrowser(configPath(),options)));
 connect.command('mail').description('Connect local Bridge or an authenticated read-only Mail helper.').option('--certificate <path>','Bridge public PEM; also inject WAYPOST_MAIL_USERNAME and WAYPOST_MAIL_PASSWORD').option('--helper <path>','Authenticated read-only helper executable').option('--imap-port <port>','IMAP STARTTLS port','1143').option('--smtp-port <port>','SMTP STARTTLS port','1025').action(async(options:{certificate?:string;helper?:string;imapPort:string;smtpPort:string})=>{
@@ -74,23 +80,16 @@ for(const service of ['mail','drive','calendar']) {
       for(const [key,value] of Object.entries(flags)) {
         const schema=properties[key];
         if(typeof schema==='object'&&schema!==null&&(schema.type==='integer'||schema.type==='number'))flags[key]=typeof value==='string'&&value.trim()!==''?Number(value):NaN;
+        else if(typeof schema==='object'&&schema!==null&&schema.type==='array'&&typeof schema.items==='object'&&schema.items!==null&&['integer','number'].includes(String((schema.items as {type?:unknown}).type))&&Array.isArray(value))flags[key]=value.map(item=>String(item).trim()!==''?Number(item):NaN);
       }
       await invoke(tool.name,typeof input==='string'?parseInput(input):flags);
     });
   }
 }
-program.command('doctor').description('Verify configured services through bounded read-only operations.').action(async()=>{
-  const config=await loadConfig(configPath());const checks=[];
-  for(const service of ['mail','drive','calendar']) {
-    const configured=service==='mail'?!!(config.mail||config.mailHelper):service==='drive'?!!config.drive:!!(config.calendar?.files.length||config.calendar?.feeds?.length);
-    if(!configured){checks.push({service,status:'not_configured',next:`Run waypost connect ${service} --help.`});continue;}
-    try {
-      if(service==='drive')await callTool(config,'drive_list',{path:config.drive?.root});
-      else if(service==='mail')await callTool(config,'mail_doctor',{});
-      else await callTool(config,'calendar_events',{from:new Date().toISOString().replace(/\.\d{3}Z$/,'Z'),to:new Date(Date.now()+86400000).toISOString().replace(/\.\d{3}Z$/,'Z'),limit:1});
-      checks.push({service,status:'ready',verified:service==='calendar'?(config.calendar?.feeds?.length?'feed_fetch_and_snapshot_parse':'snapshot_parse'):service==='mail'?'authentication':'directory_read'});
-    }catch(error){checks.push({service,status:'failed',error:publicError(error)});}
-  }
+program.command('doctor').description('Verify configured services through bounded read-only operations.').option('--remote <url>','Also check a deployed Waypost over HTTPS (health, OAuth metadata, MCP auth challenge)').action(async(options:{remote?:string})=>{
+  const config=await loadConfig(configPath());
+  const checks=await doctorChecks(config);
+  if(options.remote)checks.push(...await remoteDoctor(options.remote));
   output({checks,routes:capabilities(config)});if(checks.some(c=>c.status==='failed'))process.exitCode=1;
 });
 program.command('login <service>').description('Sign into the official Drive CLI. Mail and Calendar use their connection routes.').action(async(service:string)=>{
@@ -115,4 +114,24 @@ program.command('update').description('Check releases; never install silently.')
 // Started by the browser through native messaging; Chrome passes the extension origin as the first argument.
 program.command('native-host [origin]',{hidden:true}).allowUnknownOption().description('Native messaging host for the browser extension.').action(async(origin?:string)=>runNativeHost(configPath(),origin));
 program.command('mcp').description('Start the MCP server over standard input/output.').action(async()=>serve(configPath()));
+program.command('serve').description('Start the remote MCP endpoint (Streamable HTTP with OAuth), the agent calendar feed and the Proton mirror sync. Needs waypost setup remote.').action(async()=>serveHttp(configPath()));
+const setup=program.command('setup').description('Guided setup for the agent calendar and remote access.');
+setup.command('quick').description('One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.').requiredOption('--public-url <url>','Public HTTPS origin, such as https://waypost.example.com').requiredOption('--data <dir>','Absolute private directory for Waypost state').option('--owner <email>','Your Proton address, for notes and invitations').option('--port <port>','Listen port','8787').option('--host <host>','Listen address (0.0.0.0 inside a container)','127.0.0.1').option('--enable-writes','Let agents create and change agent calendar events (each still needs confirm: true)').action(async(options:{publicUrl:string;data:string;owner?:string;port:string;host:string;enableWrites?:boolean})=>output(await setupQuick(configPath(),{...options,port:Number(options.port),enableWrites:!!options.enableWrites})));
+setup.command('calendar').description('Create the agent calendar store.').requiredOption('--dir <dir>','Absolute private directory for the store').option('--name <name>','Calendar name shown in Proton','Agents').option('--owner <email>','Your Proton address, for notes and invitations').option('--organizer <email>','A sending address you own, different from --owner, for invitations').option('--enable-writes','Let agents write (each call still needs confirm: true)').action(async(options:{dir:string;name:string;owner?:string;organizer?:string;enableWrites?:boolean})=>output(await setupCalendar(configPath(),options)));
+setup.command('remote').description('Configure the remote MCP endpoint and print a passcode.').requiredOption('--public-url <url>','Public HTTPS origin').requiredOption('--state-dir <dir>','Absolute private directory for OAuth state').option('--port <port>','Listen port','8787').option('--host <host>','Listen address','127.0.0.1').action(async(options:{publicUrl:string;stateDir:string;port:string;host:string})=>output(await setupRemote(configPath(),{...options,port:Number(options.port)})));
+const calendarGroup=program.commands.find(command=>command.name()==='calendar')!;
+const feedGroup=calendarGroup.command('feed').description('Private ICS links that publish the agent calendar to Proton.');
+feedGroup.command('create').description('Create a feed link (shown once).').option('--label <label>','Where it is used','Proton').action(async(options:{label:string})=>output(await createFeedToken(await loadConfig(configPath()),options.label)));
+feedGroup.command('list').description('List feed links without their secrets.').action(async()=>output(await listFeedTokens(await loadConfig(configPath()))));
+feedGroup.command('revoke <id>').description('Stop a feed link from working.').action(async(id:string)=>output(await revokeFeedToken(await loadConfig(configPath()),id)));
+calendarGroup.command('sync').description('Mirror every Proton share link now and retire finished adoptions.').action(async()=>output(await syncCalendars(await loadConfig(configPath()))));
+calendarGroup.command('migrate <file>').description('Import a Proton ICS export into the agent calendar. Dry run with a diff unless --confirm.').option('--source <provenance>','The calendar the export came from','proton/personal').option('--confirm','Write the import').action(async(file:string,options:{source:string;confirm?:boolean})=>output(await migrateCalendar(await loadConfig(configPath()),resolve(file),{source:options.source,confirm:!!options.confirm})));
+const auth=program.command('auth').description('Remote access: owner passcode, bearer tokens and OAuth clients.');
+auth.command('passcode').description('Set a new owner passcode for the approval page (shown once).').action(async()=>output(await setPasscode(await loadConfig(configPath()))));
+auth.command('token').description('Create a static bearer token for a CLI client (shown once), or register the SHA-256 of a token the client made.').option('--label <label>','Client name','cli').option('--sha256 <hex>','Register a client-generated token by its SHA-256; the token never reaches the server').action(async(options:{label:string;sha256?:string})=>output(await createBearer(await loadConfig(configPath()),options.label,options.sha256)));
+auth.command('list').description('List bearer tokens and OAuth clients without secrets.').action(async()=>output(await listAuth(await loadConfig(configPath()))));
+auth.command('revoke <id>').description('Revoke a bearer token id, an OAuth client id, or all.').action(async(id:string)=>output(await revokeAuth(await loadConfig(configPath()),id)));
+const storeGroup=program.command('store').description('Back up and restore the agent calendar store.');
+storeGroup.command('backup').description('Write the store to a new file (never overwrites).').requiredOption('--out <file>','New backup file path').action(async(options:{out:string})=>output(await backupStore(await loadConfig(configPath()),resolve(options.out))));
+storeGroup.command('restore').description('Replace the store from a backup. Dry run unless --confirm; the current store is kept.').requiredOption('--in <file>','Backup file').option('--confirm','Replace the store').action(async(options:{in:string;confirm?:boolean})=>output(await restoreStore(await loadConfig(configPath()),resolve(options.in),!!options.confirm)));
 try {await program.parseAsync();}catch(error){process.stderr.write(JSON.stringify({ok:false,error:publicError(error)})+'\n');process.exitCode=1;}

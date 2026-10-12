@@ -25,25 +25,36 @@ function itemsOf(value: unknown): unknown[] {
   throw new WaypostError('PASS_RESPONSE', 'Proton Pass did not return an item list. No item content was kept.');
 }
 
+const vaultNames = (value: unknown): string[] => {
+  const list = value && typeof value === 'object' && Array.isArray((value as {vaults?: unknown}).vaults) ? (value as {vaults: unknown[]}).vaults : Array.isArray(value) ? value : [];
+  return list.flatMap(item => item && typeof item === 'object' && typeof (item as {name?: unknown}).name === 'string' ? [(item as {name: string}).name] : []).slice(0, 20);
+};
+// pass-cli 2.x names items "title"; older releases used "name".
+const itemName = (item: unknown) => item && typeof item === 'object' ? [(item as {title?: unknown}).title, (item as {name?: unknown}).name].find((value): value is string => typeof value === 'string') : undefined;
+
 export async function passLookup(config: Config, input: unknown) {
   const query = passLookupSchema.parse(input);
   const executable = config.pass?.executable;
   if (!executable) throw new WaypostError('PASS_UNCONFIGURED', 'Set pass.executable to the official pass-cli. This tool never receives item secrets.');
-  const args = ['item', 'list', '--output', 'json'];
-  if (query.vault) args.push(query.vault);
-  const output = await runExecutable(executable, args, config.timeoutMs, 1024 * 1024);
-  let parsed: unknown;
-  try { parsed = JSON.parse(output); }
-  catch { throw new WaypostError('PASS_RESPONSE', 'Proton Pass did not return JSON. No item content was kept.'); }
+  const json = async (args: string[]) => {
+    const output = await runExecutable(executable, args, config.timeoutMs, 4 * 1024 * 1024);
+    try { return JSON.parse(output) as unknown; }
+    catch { throw new WaypostError('PASS_RESPONSE', 'Proton Pass did not return JSON. No item content was kept.'); }
+  };
+  // Without a default vault, pass-cli needs one named; search each vault instead of failing.
+  const vaults = query.vault ? [query.vault] : vaultNames(await json(['vault', 'list', '--output', 'json']));
   const needle = query.query.toLocaleLowerCase();
-  const items = itemsOf(parsed).flatMap(item => {
-    if (!item || typeof item !== 'object' || typeof (item as {name?: unknown}).name !== 'string') return [];
-    const name = (item as {name: string}).name.slice(0, 200);
-    if (!name.toLocaleLowerCase().includes(needle)) return [];
-    const urls = [...new Set(httpUrls(item))].slice(0, 8);
-    return [{name, urls}];
-  }).slice(0, 20);
-  return {query: query.query, vault: query.vault ?? null, items, secretsReturned: false};
+  const items: {name: string; vault: string; urls: string[]}[] = [];
+  for (const vault of vaults) {
+    for (const item of itemsOf(await json(['item', 'list', '--vault-name', vault, '--output', 'json']))) {
+      const name = itemName(item)?.slice(0, 200);
+      if (!name || !name.toLocaleLowerCase().includes(needle)) continue;
+      items.push({name, vault, urls: [...new Set(httpUrls(item))].slice(0, 8)});
+      if (items.length >= 20) break;
+    }
+    if (items.length >= 20) break;
+  }
+  return {query: query.query, vault: query.vault ?? null, vaultsSearched: vaults.length, items, secretsReturned: false};
 }
 
 export const passTools = [

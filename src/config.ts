@@ -7,6 +7,12 @@ import { ensureArtifactsDirectory } from './artifacts.js';
 import { WaypostError, inputIssues } from './errors.js';
 
 const absolutePath = z.string().refine(isAbsolute, 'Use an absolute path.');
+const email = z.string().max(254).pipe(z.email());
+const feedCommon = {
+  name:z.string().min(1).max(80),
+  source:z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/,'Use a short lowercase slug such as personal or family.').optional(),
+  readOnly:z.boolean().optional().describe('Agents may read this calendar but never adopt, propose changes to, or invite against it.'),
+};
 export const configSchema = z.object({
   version: z.literal(1),
   artifactsDir: absolutePath,
@@ -18,6 +24,8 @@ export const configSchema = z.object({
     passwordEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/).default('WAYPOST_MAIL_PASSWORD'),
     certificate: absolutePath,
     sendEnabled: z.boolean().default(false),
+    organizeEnabled: z.boolean().optional(),
+    triageSieve: absolutePath.optional(),
   }).strict().optional(),
   mailHelper: z.object({executable:absolutePath}).strict().optional(),
   drive: z.object({
@@ -26,10 +34,29 @@ export const configSchema = z.object({
     writeEnabled: z.boolean().default(false),
   }).strict().optional(),
   calendar: z.object({files:z.array(absolutePath).max(20).default([]),feeds:z.array(z.union([
-    z.object({name:z.string().min(1).max(80),urlFile:absolutePath}).strict(),
-    z.object({name:z.string().min(1).max(80),keychainService:z.string().min(1).max(200).regex(/^[\w.@-]+$/),keychainAccount:z.string().min(1).max(200).regex(/^[\w.@-]+$/)}).strict(),
-    z.object({name:z.string().min(1).max(80),passItem:z.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u),vault:z.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u)}).strict(),
+    z.object({...feedCommon,urlFile:absolutePath}).strict(),
+    z.object({...feedCommon,keychainService:z.string().min(1).max(200).regex(/^[\w.@-]+$/),keychainAccount:z.string().min(1).max(200).regex(/^[\w.@-]+$/)}).strict(),
+    z.object({...feedCommon,passItem:z.string().min(1).max(200).regex(/^[\p{L}\p{N} .@_+/-]+$/u),vault:z.string().min(1).max(80).regex(/^[\p{L}\p{N} .@_+/-]+$/u)}).strict(),
   ])).max(10).default([])}).strict().optional(),
+  // The agent calendar store: the system of record for events agents create, published to Proton as a subscribed ICS feed.
+  agentCalendar: z.object({
+    dir: absolutePath,
+    name: z.string().min(1).max(80).regex(/^[^\x00-\x1f\x7f]+$/).default('Agents'),
+    writeEnabled: z.boolean().default(false),
+    syncMinutes: z.number().int().min(5).max(1440).default(30),
+    owner: email.optional(),
+    organizer: email.optional(),
+  }).strict().optional(),
+  http: z.object({
+    host: z.string().min(1).max(255).default('127.0.0.1'),
+    port: z.number().int().min(1).max(65535).default(8787),
+    publicUrl: z.url({protocol:/^https?$/}).refine(value => { const url = new URL(value); return !url.search && !url.hash && !url.username && !url.password && url.pathname === '/' && (url.protocol === 'https:' || ['localhost','127.0.0.1','[::1]'].includes(url.hostname)); }, 'Use an https:// origin with no path (http:// only for localhost).'),
+    stateDir: absolutePath,
+    redirectOrigins: z.array(z.url()).max(10).default(['https://claude.ai','https://claude.com']),
+    // Extra Host names that reach this server, such as a Tailscale Funnel name behind a proxy. publicUrl stays the issuer.
+    allowedHosts: z.array(z.string().regex(/^[a-z0-9.-]{1,253}(?::\d{1,5})?$/)).max(10).default([]),
+    tools: z.array(z.string().regex(/^[a-z_]{1,64}$/)).max(100).optional(),
+  }).strict().optional(),
   pass: z.object({executable:absolutePath}).strict().optional(),
   verificationCodes: z.object({
     agents: z.boolean().default(false),

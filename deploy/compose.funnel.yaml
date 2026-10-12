@@ -1,0 +1,7 @@
+# Alternative to the Cloudflare tunnel: publish Waypost on the host's loopback for Tailscale Funnel
+# (tailscale funnel --bg 8787) and skip cloudflared. Use: docker compose -f compose.yaml -f compose.funnel.yaml up -d waypost
+services:
+  waypost:
+    ports: ["127.0.0.1:8787:8787"]
+  cloudflared:
+    profiles: [tunnel]

@@ -2,17 +2,17 @@
 
 ![Waypost documentation for Mail, Drive, and Calendar](assets/site-preview.jpg)
 
-Local tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP server. Built for agents working on your computer.
+Agent tools for **Proton Mail, Drive, and Calendar**, shared by a CLI and an MCP server. Run it locally over stdio, or self-host it as a remote MCP that claude.ai, Claude Code and other agents share.
 
 Built with TypeScript and Node.js.
 
-[Get started](#get-started) · [Add to an agent](#add-to-an-agent) · [Mail with Bridge](#mail-with-proton-bridge) · [Setup](docs/setup.md) · [Proton support](docs/proton-support.md) · [Security](SECURITY.md)
+[Get started](#get-started) · [Self-host](docs/self-host.md) · [Add to an agent](#add-to-an-agent) · [Mail with Bridge](#mail-with-proton-bridge) · [Setup](docs/setup.md) · [Proton support](docs/proton-support.md) · [Security](SECURITY.md)
 
 | Service | Connection | What works |
 | --- | --- | --- |
-| Mail | Proton Mail Bridge, or an authenticated read-only helper | List folders and labels, search and page headers, read messages and threads, save attachments, prepare drafts, optionally send. |
+| Mail | Proton Mail Bridge, or an authenticated read-only helper | List folders and labels, search and page headers, read messages and threads, save attachments, prepare drafts, optionally send, star, mark read, move and label, and explain what your Sieve filter does to a message. |
 | Drive | Official Proton Drive CLI | List, inspect, download with a checksum check, optionally upload. |
-| Calendar | ICS exports or refreshable Proton links | Read an agenda with local times, and prepare import files (timed, all-day, recurring). |
+| Calendar | An agent calendar Proton subscribes to, plus mirrored Proton share links and ICS exports | One merged view with provenance and an `editable` flag, agent-owned events agents can create and change, proposals for your own events, free/busy and conflicts, and import files. |
 | Codes | Your Proton Mail, plus forwarded SMS on a Mac | Find the newest one-time sign-in code and fill it in the browser. Off until you turn it on. |
 
 Waypost is an independent project. Your Proton account password stays in Proton’s sign-in screens. Bridge and Drive keep separate sessions; Calendar imports need verification in the app. Read the [supported routes and limits](docs/proton-support.md) before connecting an account.
@@ -36,6 +36,8 @@ Connect the services you need. Drive opens Proton’s own browser sign-in:
 node dist/cli.js connect drive
 node dist/cli.js connect calendar /absolute/path/to/calendar-export.ics
 ```
+
+**Self-hosting** for claude.ai and several agents at once takes about 15 minutes with Docker: see [Self-host](docs/self-host.md). The rest of this page covers the local setup.
 
 Mail uses Bridge’s public certificate and generated credentials, or an existing authenticated read-only helper. Calendar share links are read from a private file or a Proton Pass item and reused for 10 minutes; Proton may delay changes by up to eight hours. Follow [Setup](docs/setup.md), then run:
 
@@ -69,7 +71,9 @@ For Claude Desktop, add this to `claude_desktop_config.json` (Settings, Develope
 }
 ```
 
-Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from the environment of the process that starts Waypost. See [Mail with Proton Bridge](#mail-with-proton-bridge) and [Setup](docs/setup.md#mail). MCP uses standard input/output and opens no network listener.
+Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` (or `*_FILE` paths to Docker secrets) from the environment of the process that starts Waypost. See [Mail with Proton Bridge](#mail-with-proton-bridge) and [Setup](docs/setup.md#mail). `waypost mcp` uses standard input/output and opens no network listener; `waypost serve` is the opt-in remote mode.
+
+For a remote Waypost, add it to Claude Code with `claude mcp add --transport http waypost https://<your host>/mcp --scope user`, or to claude.ai under **Customize → Connectors → Add custom connector**.
 
 ### Tools
 
@@ -84,7 +88,13 @@ Direct Bridge reads `WAYPOST_MAIL_USERNAME` and `WAYPOST_MAIL_PASSWORD` from the
 | `mail_draft`, `mail_send` | Prepare a local EML; sending is off by default and needs `confirm: true` per call. |
 | `mail_verification_code` | Newest one-time code, never the body. Off by default. |
 | `drive_list`, `drive_info`, `drive_download`, `drive_upload` | Drive under `/my-files`; uploads are off by default and need `confirm: true`. |
-| `calendar_events`, `calendar_prepare` | Read events in a window; write an ICS file to import. |
+| `mail_flag`, `mail_mark`, `mail_move`, `mail_label` | Star, mark read, move to a folder, add a label. Off by default; batches need `confirm: true`. No delete, no moves to Trash or Spam. |
+| `mail_triage` | What your saved Proton Sieve filter would do to one message, and which rules matched. |
+| `calendar_events` | Every calendar in one window: the agent calendar, mirrored Proton links and ICS files, each event with `provenance` and `editable`. |
+| `calendar_create`, `calendar_update`, `calendar_delete` | Change agent-owned events in the Agents calendar. Off by default; each needs `confirm: true`. |
+| `calendar_propose`, `calendar_cancel_invite` | For events you own in Proton: adopt into the agent calendar (default), prepare an invitation, or ask you to delete it. |
+| `calendar_freebusy` | Busy intervals and overlapping events across all calendars. |
+| `calendar_prepare` | Write an ICS file to import. |
 | `pass_lookup` | Proton Pass item names and URLs only. |
 
 Errors come back as `{ok:false, error:{code, message}}`, and the message says what to run or change, for example `MAIL_AUTH`, `MAIL_MAILBOX_NOT_FOUND`, `DRIVE_NOT_FOUND` or `CONFIG_MISSING`.
@@ -147,7 +157,7 @@ waypost calendar prepare --summary "Vacation" --start 2026-12-21 --end 2026-12-2
 
 Use normal flags for terminal work, or retain `--input` JSON for scripts. Repeat array flags such as `--to` for each recipient. Commands return JSON. `waypost tools` lists every input schema; `waypost call <tool> --input '{}'` addresses the same tools as MCP.
 
-Mail and Calendar are read-only by default. Mail sends and Drive uploads start disabled; when enabled in local config, each call must still pass `confirm: true` (`--confirm` on the CLI). A send also requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
+Every write starts disabled: mail sends, mail organizing, agent calendar writes and Drive uploads. When enabled in local config, each call must still pass `confirm: true` (`--confirm` on the CLI); mail organizing asks for it on batches. Proton calendars are never written. A send also requires a prepared EML file and its exact SHA-256. Downloads use a new directory. Waypost exposes no permanent-delete or public-sharing tool.
 
 ## Fill verification codes
 

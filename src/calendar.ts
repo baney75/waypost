@@ -15,12 +15,12 @@ const MAX_TIMEZONES = 64;
 const MAX_OBSERVANCES = 16;
 const MAX_TIMEZONE_RDATES = 512;
 const MAX_TIMEZONE_TRANSITIONS = 8192;
-const utc = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, 'Use a UTC date-time with seconds and Z.').refine(value => {
+export const utc = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, 'Use a UTC date-time with seconds and Z.').refine(value => {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) && date.toISOString().replace('.000Z', 'Z') === value && date.getUTCFullYear() >= 1900 && date.getUTCFullYear() <= 2100;
 }, 'Invalid date-time; supported years are 1900–2100.').describe('UTC date-time with seconds, YYYY-MM-DDTHH:MM:SSZ; years 1900–2100.');
-const text = (max: number) => z.string().max(max).refine(value => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value), 'Control characters are not permitted.');
-const zoneName = z.string().max(64).refine(isIanaZone, 'Use an IANA timezone name such as America/Chicago.');
+export const text = (max: number) => z.string().max(max).refine(value => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value), 'Control characters are not permitted.');
+export const zoneName = z.string().max(64).refine(isIanaZone, 'Use an IANA timezone name such as America/Chicago.');
 export const calendarEventsSchema = z.object({from:utc, to:utc, limit:z.number().int().min(1).max(200).default(50).describe('Maximum returned events, 1–200.'), timezone:zoneName.optional().describe('IANA timezone such as America/Chicago. When set, each timed event also gets startLocal and endLocal in that zone.')}).strict().refine(value => {
   const duration = Date.parse(value.to) - Date.parse(value.from);
   return duration > 0 && duration <= 366 * 86400000;
@@ -36,7 +36,7 @@ export const calendarPrepareSchema = z.object({
   location:text(1000).default('').describe('Event location, up to 1,000 characters.'),
 }).strict();
 
-async function readSnapshot(path: string) {
+export async function readSnapshot(path: string) {
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const metadata = await file.stat();
@@ -134,25 +134,28 @@ function exactEnd(item:ICAL.Event, start:ICAL.Time, end:ICAL.Time):number {
   nominal.addDuration(ICAL.Duration.fromData({weeks:duration.weeks, days:duration.days, isNegative:duration.isNegative}));
   return timestamp(nominal) + sign * (duration.hours * 3600 + duration.minutes * 60 + duration.seconds) * 1000;
 }
-type SnapshotEvent = {uid:string; summary:string; description:string; location:string; start:string; end:string; allDay:boolean; timezone?:string; startLocal?:string; endLocal?:string; source:string; recurrence:boolean};
+export type SnapshotEvent = {uid:string; summary:string; description:string; location:string; start:string; end:string; allDay:boolean; timezone?:string; startLocal?:string; endLocal?:string; source:string; provenance:string; editable:boolean; recurrence:boolean; recurrenceId?:string};
+export type Snapshot = {path:string; content:string; mtime:string; kind:string; provenance?:string; fetchedAt?:string; cached?:boolean; upstreamDelay?:string; stale?:boolean; error?:{code:string; message:string}};
 // `options.eventBudgetMs` exists so tests can take the wall-clock guard out of play; callers outside tests use the default.
-export async function calendarEvents(config: Config, input: unknown, options: {eventBudgetMs?: number} = {}) {
+// `options.snapshots` replaces the configured sources, so the merged agent view and migration checks reuse one expander.
+export async function calendarEvents(config: Config, input: unknown, options: {eventBudgetMs?: number; snapshots?: () => AsyncIterable<Snapshot>} = {}) {
   const query = calendarEventsSchema.parse(input);
-  if (!config.calendar || !(config.calendar.files.length || config.calendar.feeds?.length)) throw new WaypostError('CALENDAR_UNCONFIGURED', 'Connect a local ICS export or Proton calendar share link first.');
+  if (!options.snapshots && (!config.calendar || !(config.calendar.files.length || config.calendar.feeds?.length))) throw new WaypostError('CALENDAR_UNCONFIGURED', 'Connect a local ICS export or Proton calendar share link first.');
   const from = Date.parse(query.from), to = Date.parse(query.to);
   const events: SnapshotEvent[] = [];
-  const sources: {path:string; mtime:string; fetchedAt?:string; kind?:string; upstreamDelay?:string; timezonesFromRuntime?:string[]}[] = [];
+  const sources: {path:string; mtime:string; fetchedAt?:string; kind?:string; provenance?:string; upstreamDelay?:string; timezonesFromRuntime?:string[]; stale?:boolean; error?:{code:string; message:string}}[] = [];
   const skipped: {uid:string; source:string; code:string; message:string}[] = [];
   let skippedCount = 0;
   const skip = (uid:string, source:string, error:WaypostError) => { skippedCount++; if (skipped.length < 20) skipped.push({uid:uid.slice(0,200), source, code:error.code, message:error.message}); };
   let examined = 0, partial = false;
-  async function* snapshots() {
-    for(const path of config.calendar?.files??[]) yield {path,...await readSnapshot(path),kind:'file'};
+  async function* configured(): AsyncIterable<Snapshot> {
+    for(const path of config.calendar?.files??[]) yield {path,...await readSnapshot(path),kind:'file',provenance:'file'};
     yield* calendarFeedSnapshots(config);
   }
-  for await (const snapshot of snapshots()) {
+  for await (const snapshot of (options.snapshots ?? configured)()) {
     const {path,content:_,...metadata}=snapshot;
-    sources.push({path,...metadata});
+    const provenance = snapshot.provenance ?? snapshot.kind;
+    sources.push({path,...metadata,provenance});
     let calendar: ICAL.Component;
     try { calendar = new ICAL.Component(ICAL.parse(snapshot.content)); }
     catch { throw new WaypostError('CALENDAR_INVALID', 'An approved snapshot is not valid iCalendar data.'); }
@@ -287,13 +290,13 @@ export async function calendarEvents(config: Config, input: unknown, options: {e
         }
       }
       const event = new ICAL.Event(component,{exceptions,strictExceptions:true});
-      const add = (item: ICAL.Event, start: ICAL.Time, end: ICAL.Time, recurrence: boolean) => {
+      const add = (item: ICAL.Event, start: ICAL.Time, end: ICAL.Time, recurrence: boolean, recurrenceId?: ICAL.Time) => {
         if (item.component.getFirstPropertyValue('status') === 'CANCELLED') return;
         const startMs = timestamp(start), endMs = exactEnd(item, start, end);
         if (endMs < startMs) throw new WaypostError('CALENDAR_INVALID', 'An event ends before it starts.');
         if (startMs < to && (endMs > from || (endMs === startMs && startMs >= from))) {
           const tzid = start.isDate || start.zone === ICAL.Timezone.utcTimezone ? null : start.zone?.tzid ?? null;
-          events.push({uid:item.uid, summary:(item.summary ?? '').slice(0,500), description:(item.description ?? '').slice(0,12000), location:(item.location ?? '').slice(0,1000), start:displayTime(start), end:start.isDate ? displayTime(end) : new Date(endMs).toISOString().replace(/\.\d{3}Z$/,'Z'), allDay:start.isDate, ...(tzid ? {timezone:tzid} : {}), ...(query.timezone && !start.isDate ? {startLocal:localIso(query.timezone,startMs), endLocal:localIso(query.timezone,endMs)} : {}), source:path, recurrence});
+          events.push({uid:item.uid, summary:(item.summary ?? '').slice(0,500), description:(item.description ?? '').slice(0,12000), location:(item.location ?? '').slice(0,1000), start:displayTime(start), end:start.isDate ? displayTime(end) : new Date(endMs).toISOString().replace(/\.\d{3}Z$/,'Z'), allDay:start.isDate, ...(tzid ? {timezone:tzid} : {}), ...(query.timezone && !start.isDate ? {startLocal:localIso(query.timezone,startMs), endLocal:localIso(query.timezone,endMs)} : {}), source:path, provenance, editable:provenance === 'agent', recurrence, ...(recurrenceId ? {recurrenceId:displayTime(recurrenceId)} : {})});
         }
       };
       if (!event.isRecurring()) { add(event, event.startDate, event.endDate, false); continue; }
@@ -324,7 +327,7 @@ export async function calendarEvents(config: Config, input: unknown, options: {e
         const details = event.getOccurrenceDetails(occurrence);
         validateRecurrenceLocalTime(details.startDate,timezoneGaps);
         validateRecurrenceLocalTime(details.endDate,timezoneGaps);
-        add(details.item, details.startDate, details.endDate, true);
+        add(details.item, details.startDate, details.endDate, true, occurrence);
         if (timestamp(occurrence) >= cutoff) break;
       }
       } catch (caught) {
@@ -345,8 +348,8 @@ export async function calendarEvents(config: Config, input: unknown, options: {e
   return {snapshot:true, imported:false, sources, events:events.slice(0,query.limit), partial:partial || limited || skippedCount > 0, ...(reason ? {reason} : {}), ...(skippedCount ? {skipped, skippedCount} : {})};
 }
 
-function escapeText(value: string) { return value.replace(/\\/g,'\\\\').replace(/\r\n|\r|\n/g,'\\n').replace(/;/g,'\\;').replace(/,/g,'\\,'); }
-function foldLine(value: string) {
+export function escapeText(value: string) { return value.replace(/\\/g,'\\\\').replace(/\r\n|\r|\n/g,'\\n').replace(/;/g,'\\;').replace(/,/g,'\\,'); }
+export function foldLine(value: string) {
   const lines:string[] = []; let line = '';
   for (const character of value) {
     if (Buffer.byteLength(line + character, 'utf8') > 75) { lines.push(line); line = ' '; }
@@ -407,9 +410,10 @@ function recurrenceRule(value:string, allDay:boolean, startMs:number) {
   return {rule, untilYear:recur.until?.year ?? null, bounded:Boolean(recur.until || recur.count)};
 }
 const icsDay = (ms:number) => new Date(ms).toISOString().slice(0,10).replace(/-/g,'');
-export async function calendarPrepare(config: Config, input: unknown) {
-  const event = calendarPrepareSchema.parse(input);
-  const uid = randomUUID() + '@waypost.local';
+export type EventInput = z.output<typeof calendarPrepareSchema>;
+export const stamp = (ms = Date.now()) => icsDate(new Date(ms).toISOString().replace(/\.\d{3}Z$/,'Z'));
+/** Validate one event and render its VEVENT and VTIMEZONE lines. Shared by prepared imports and the agent store. */
+export function buildEvent(event: EventInput, uid: string, extra: {sequence?: number; created?: number; lines?: string[]} = {}) {
   let startMs:number, endMs:number, startLine:string, endLine:string, zoneLines:string[] = [];
   const endDefaulted = event.end === undefined;
   if (event.allDay) {
@@ -436,7 +440,16 @@ export async function calendarPrepare(config: Config, input: unknown) {
     const startYear = new Date(startMs).getUTCFullYear();
     zoneLines = vtimezone(event.timezone, startYear - 1, Math.min(2100, recurrence ? (recurrence.untilYear ?? startYear + (recurrence.bounded ? 5 : 20)) + 1 : new Date(endMs).getUTCFullYear() + 1));
   }
-  const content = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Waypost//Local import artifact//EN','CALSCALE:GREGORIAN',...zoneLines,'BEGIN:VEVENT',`UID:${uid}`,`DTSTAMP:${icsDate(new Date().toISOString().replace(/\.\d{3}Z$/,'Z'))}`,startLine,endLine,...(recurrence ? [`RRULE:${recurrence.rule}`] : []),`SUMMARY:${escapeText(event.summary)}`,`DESCRIPTION:${escapeText(event.description)}`,`LOCATION:${escapeText(event.location)}`,'END:VEVENT','END:VCALENDAR'].map(foldLine).join('\r\n') + '\r\n';
+  const now = Date.now();
+  const vevent = ['BEGIN:VEVENT',`UID:${uid}`,`DTSTAMP:${stamp(now)}`,...(extra.sequence !== undefined ? [`SEQUENCE:${extra.sequence}`,`CREATED:${stamp(extra.created ?? now)}`,`LAST-MODIFIED:${stamp(now)}`] : []),startLine,endLine,...(recurrence ? [`RRULE:${recurrence.rule}`] : []),`SUMMARY:${escapeText(event.summary)}`,`DESCRIPTION:${escapeText(event.description)}`,`LOCATION:${escapeText(event.location)}`,...(extra.lines ?? []),'END:VEVENT'];
+  return {vevent, zoneLines, startMs, endMs, recurrence, endDefaulted};
+}
+export const icsCalendar = (lines: string[], extra: string[] = []) => ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Waypost//Local import artifact//EN','CALSCALE:GREGORIAN',...extra,...lines,'END:VCALENDAR'].map(foldLine).join('\r\n') + '\r\n';
+export async function calendarPrepare(config: Config, input: unknown) {
+  const event = calendarPrepareSchema.parse(input);
+  const uid = randomUUID() + '@waypost.local';
+  const {vevent, zoneLines, startMs, endMs, recurrence, endDefaulted} = buildEvent(event, uid);
+  const content = icsCalendar([...zoneLines, ...vevent]);
   const path = await saveArtifact(config, `event-${randomUUID()}.ics`, content);
   const iso = (ms:number) => event.allDay ? new Date(ms).toISOString().slice(0,10) : new Date(ms).toISOString().replace(/\.\d{3}Z$/,'Z');
   return {path, sha256:createHash('sha256').update(content).digest('hex'), uid, start:iso(startMs), end:iso(endMs), allDay:event.allDay, ...(event.timezone ? {timezone:event.timezone, startLocal:localIso(event.timezone,startMs), endLocal:localIso(event.timezone,endMs)} : {}), ...(recurrence ? {rrule:recurrence.rule} : {}), ...(endDefaulted ? {endDefaulted:true} : {}), imported:false, notifications:false, invitations:false, next:'Import this file from Proton Calendar settings, then open the event and check its calendar, time and reminders.'};
