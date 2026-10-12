@@ -53,7 +53,8 @@ export async function connectMailHelper(path:string,executable:string):Promise<u
 function calendarName(name:string){
   if(!name.trim()||name.length>80||/[\x00-\x1f\x7f]/.test(name))throw new WaypostError('INPUT_INVALID','Use a calendar name of 1–80 visible characters.');
 }
-export async function connectCalendarFeed(path:string,name:string,source:{url:string}|{file:string}):Promise<unknown> {
+type FeedTags={source?:string;readOnly?:boolean};
+export async function connectCalendarFeed(path:string,name:string,source:{url:string}|{file:string},tags:FeedTags={}):Promise<unknown> {
   calendarName(name);
   const config=await loadConfig(path);
   const url='url' in source?calendarFeedUrl(source.url):await readFeedUrl(resolve(source.file));
@@ -61,24 +62,24 @@ export async function connectCalendarFeed(path:string,name:string,source:{url:st
   let fetched;
   try {
     fetched=await loadCalendarFeed(`file:${urlFile}`,()=>fetchCalendarFeed(url,config.timeoutMs));
-    await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,urlFile}]}}));
+    await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,urlFile,...tags}]}}));
   }catch(error){if('url' in source)await unlink(urlFile).catch(()=>undefined);throw error;}
   return {service:'calendar',configured:true,name,route:'proton_link',fetchedAt:fetched.fetchedAt,cached:fetched.cached,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.',next:'Run waypost calendar agenda. The link is read from the private file and is not logged.'};
 }
-export async function connectCalendarKeychain(path:string,name:string,item:{keychainService:string;keychainAccount:string}):Promise<unknown> {
+export async function connectCalendarKeychain(path:string,name:string,item:{keychainService:string;keychainAccount:string},tags:FeedTags={}):Promise<unknown> {
   calendarName(name);
   if(!/^[\w.@-]{1,200}$/.test(item.keychainService)||!/^[\w.@-]{1,200}$/.test(item.keychainAccount))throw new WaypostError('INPUT_INVALID','Use a keychain service and account of letters, digits, dot, @, _ or -.');
   const config=await loadConfig(path);
   const key=`keychain:${item.keychainService}:${item.keychainAccount}`;
   const fetched=await loadCalendarFeed(key,async()=>fetchCalendarFeed(await readKeychainCalendarUrl(item,config.timeoutMs),config.timeoutMs));
-  await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,...item}]}}));
+  await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,...item,...tags}]}}));
   return {service:'calendar',configured:true,name,route:'keychain',fetchedAt:fetched.fetchedAt,cacheMinutes:10,urlStored:false,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.',next:'Run waypost calendar agenda. The share link stays in the login keychain.'};
 }
-export async function connectCalendarPass(path:string,name:string,item:{passItem:string;vault:string}):Promise<unknown> {
+export async function connectCalendarPass(path:string,name:string,item:{passItem:string;vault:string},tags:FeedTags={}):Promise<unknown> {
   calendarName(name);
   if(!/^[\p{L}\p{N} .@_+/-]+$/u.test(item.passItem)||!/^[\p{L}\p{N} .@_+/-]+$/u.test(item.vault))throw new WaypostError('INPUT_INVALID','Use a Pass item title and vault name without control characters.');
   const config=await loadConfig(path);
   const fetched=await loadCalendarFeed(passFeedKey(item),async()=>fetchCalendarFeed(await readPassCalendarUrl(config,item),config.timeoutMs));
-  await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,passItem:item.passItem,vault:item.vault}]}}));
+  await amendConfig(path,c=>({...c,calendar:{files:c.calendar?.files??[],feeds:[...(c.calendar?.feeds??[]).filter(f=>f.name!==name),{name,passItem:item.passItem,vault:item.vault,...tags}]}}));
   return {service:'calendar',configured:true,name,route:'proton_pass',vault:item.vault,passItem:item.passItem,fetchedAt:fetched.fetchedAt,cacheMinutes:10,urlStored:false,readOnly:true,upstreamDelay:'Proton share links can lag changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes.',next:'Run waypost calendar agenda. The share link stays in Proton Pass and is not written to Waypost config or logs.'};
 }

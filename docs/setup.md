@@ -134,6 +134,36 @@ Export the intended calendar through [Proton’s UI](https://proton.me/support/h
 
 `calendar prepare` takes one of three time forms: UTC (`2026-10-12T15:00:00Z`), local time with `timezone` (`2026-10-12T09:00:00` and `Europe/London`, which keeps 9:00 across daylight saving changes and embeds a VTIMEZONE), or days with `allDay` (`2026-10-12`; the end day is exclusive). `rrule` accepts `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY` with `INTERVAL`, `COUNT` or `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS` and `WKST`. A local time inside a daylight saving gap is rejected. Each file gets a fresh UID; the result returns the path and SHA-256. Import it in Proton Calendar, reopen the event, and verify the intended calendar, local date/time, and notification settings. Preparation alone does not save an event.
 
+## Agent calendar
+
+Agents cannot write to Proton Calendar, so Waypost keeps its own **Agents** calendar and publishes it as a private feed you subscribe to in Proton:
+
+```sh
+waypost setup calendar --dir /absolute/private/waypost-calendar --owner you@proton.me --enable-writes
+waypost setup remote --public-url https://waypost.example.com --state-dir /absolute/private/waypost-auth
+waypost calendar feed create          # prints the feed URL once
+waypost serve                         # remote MCP, feed and mirror sync
+```
+
+Connect each Proton calendar with `--source` so its events carry that provenance, and `--read-only` for calendars agents must never change:
+
+```sh
+waypost connect calendar --pass-item "Calendar link: Personal" --vault Personal --name Personal --source personal
+waypost connect calendar --pass-item "Calendar link: Family" --vault Personal --name Family --source family --read-only
+```
+
+`calendar_events` then returns one merged view. Agent-owned events have `editable: true`. A change to one of your own events goes through `calendar_propose`: by default the event is adopted into the Agents calendar with the change, and you get a prepared note asking you to delete the original. While the original still exists, agents see only the adopted copy.
+
+To move a whole calendar over at once, export it from Proton and run `waypost calendar migrate export.ics --source proton/personal`. It prints a diff and writes nothing. Add `--confirm` to import. It then lists the steps to retire the originals in Proton by hand. Running it again reports unchanged events and imports only what changed.
+
+`waypost calendar sync` mirrors every link now. `waypost store backup --out file.json` and `waypost store restore --in file.json [--confirm]` back up and restore the store. Every write is recorded in `audit.jsonl` in the store directory.
+
+## Mail organizing and triage
+
+Set `"organizeEnabled": true` in the `mail` block to allow `mail_flag`, `mail_mark`, `mail_move` and `mail_label`. Every call still needs `confirm: true`. There is no delete, and moves to Trash, Spam, Sent, Drafts, Starred and All Mail are refused.
+
+For `mail_triage`, open the filter in Proton (**Settings → Filters → Edit**, Sieve view), copy its script to a private file, and set `"triageSieve": "/absolute/path/filter.sieve"` in the `mail` block. The tool explains what that copy does to a message; it never changes mail.
+
 ## Recovery
 
 If `doctor` fails, its JSON identifies the service and a safe error code. Check the official tool’s own sign-in first. Do not delete working sessions or fall back to another account. A timeout is inconclusive. Inspect Drive after a failed upload and the Sent folder after an uncertain SMTP submission before retrying.

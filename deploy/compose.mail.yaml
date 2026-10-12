@@ -1,0 +1,25 @@
+# Optional mail overlay: docker compose -f compose.yaml -f compose.mail.yaml up -d
+# Bridge shares Waypost's network namespace, so Waypost reaches it on 127.0.0.1 and nothing else can.
+services:
+  bridge:
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    build: {context: ./bridge}
+    image: waypost-bridge:3.27.0
+    network_mode: service:waypost
+    tmpfs: [/tmp:size=64m]
+    volumes: [bridge-data:/home/bridge, bridge-public:/bridge-public]
+  waypost:
+    volumes: [bridge-public:/bridge:ro]
+    secrets: [bridge_username, bridge_password]
+    environment:
+      WAYPOST_MAIL_USERNAME_FILE: /run/secrets/bridge_username
+      WAYPOST_MAIL_PASSWORD_FILE: /run/secrets/bridge_password
+volumes:
+  bridge-data: {}
+  bridge-public: {}
+secrets:
+  bridge_username: {file: ./secrets/bridge_username}
+  bridge_password: {file: ./secrets/bridge_password}

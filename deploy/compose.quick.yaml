@@ -1,0 +1,9 @@
+# Try Waypost without a Cloudflare account: a temporary trycloudflare.com address that changes whenever
+# cloudflared restarts. Use for testing or behind the Worker front door; use the named tunnel for daily use.
+#   docker compose -f compose.yaml -f compose.quick.yaml up -d
+#   docker compose logs cloudflared | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+# Set PUBLIC_HOST to the hostname in http.publicUrl so Waypost's Host check accepts the forwarded requests.
+services:
+  cloudflared:
+    command: [tunnel, --no-autoupdate, --url, http://waypost:8787, --http-host-header, "${PUBLIC_HOST:?set PUBLIC_HOST to your public hostname}"]
+    secrets: !reset []

@@ -29,10 +29,18 @@ export async function readFeedUrl(path:string):Promise<string> {
     throw new WaypostError('CALENDAR_FEED_FILE','The calendar link file must be an owner-only regular file (chmod 600), no larger than 8 KiB.');
   }finally{await file?.close();}
 }
-export async function fetchCalendarFeed(url:string,timeoutMs:number):Promise<{content:string;fetchedAt:string}> {
+export type FeedValidators={etag?:string|undefined;lastModified?:string|undefined};
+export type FeedFetch={content:string;fetchedAt:string;etag?:string;lastModified?:string;notModified?:boolean};
+// Validators make a mirror refresh cheap: Proton answers 304 when nothing changed. Header values are length- and charset-checked.
+const validator=(value:string|null)=>value&&value.length<=256&&/^[\x20-\x7e]+$/.test(value)?value:undefined;
+export async function fetchCalendarFeed(url:string,timeoutMs:number,validators:FeedValidators={}):Promise<FeedFetch> {
   const approved=calendarFeedUrl(url);
   try {
-    const response=await fetch(approved,{redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{Accept:'text/calendar'}});
+    const headers:Record<string,string>={Accept:'text/calendar'};
+    if(validator(validators.etag??null))headers['If-None-Match']=validators.etag!;
+    if(validator(validators.lastModified??null))headers['If-Modified-Since']=validators.lastModified!;
+    const response=await fetch(approved,{redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers});
+    if(response.status===304&&(headers['If-None-Match']||headers['If-Modified-Since'])){await response.body?.cancel();return {content:'',fetchedAt:new Date().toISOString(),notModified:true,...(validators.etag?{etag:validators.etag}:{}),...(validators.lastModified?{lastModified:validators.lastModified}:{})};}
     if(!response.ok||!response.body)throw new Error();
     const declared=Number(response.headers.get('content-length'));
     if(declared>MAX_BYTES){await response.body.cancel();throw new WaypostError('CALENDAR_SIZE','Calendar feed exceeds 10 MiB.');}
@@ -42,7 +50,8 @@ export async function fetchCalendarFeed(url:string,timeoutMs:number):Promise<{co
     }finally{await reader.cancel().catch(()=>undefined);reader.releaseLock();}
     const content=Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/,'');
     if(!content.startsWith('BEGIN:VCALENDAR'))throw new WaypostError('CALENDAR_INVALID','Proton returned an invalid calendar feed. Check that the share link is still active.');
-    return {content,fetchedAt:new Date().toISOString()};
+    const etag=validator(response.headers.get('etag')),lastModified=validator(response.headers.get('last-modified'));
+    return {content,fetchedAt:new Date().toISOString(),...(etag?{etag}:{}),...(lastModified?{lastModified}:{})};
   }catch(error){
     if(error instanceof WaypostError)throw error;
     throw new WaypostError('CALENDAR_FEED_FAILED','Could not refresh the Proton calendar link. Check connectivity and whether the link was revoked. No stale fallback was used.');
@@ -97,13 +106,16 @@ export async function readKeychainCalendarUrl(feed:{keychainService:string;keych
 export function feedKey(feed:NonNullable<Config['calendar']>['feeds'][number]){
   return 'urlFile' in feed?`file:${feed.urlFile}`:'keychainService' in feed?`keychain:${feed.keychainService}:${feed.keychainAccount}`:passFeedKey(feed);
 }
-async function feedUrl(config:Config,feed:NonNullable<Config['calendar']>['feeds'][number]){
+export async function feedUrl(config:Config,feed:NonNullable<Config['calendar']>['feeds'][number]){
   return 'urlFile' in feed?readFeedUrl(feed.urlFile):'keychainService' in feed?readKeychainCalendarUrl(feed,config.timeoutMs):readPassCalendarUrl(config,feed);
 }
+type Feed=NonNullable<Config['calendar']>['feeds'][number];
+export const feedSlug=(feed:Feed)=>feed.source??(feed.name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'calendar');
+export const feedProvenance=(feed:Feed)=>`proton/${feedSlug(feed)}`;
 export function passFeedKey(feed:{vault:string;passItem:string}){return`pass:${feed.vault}:${feed.passItem}`;}
 export async function* calendarFeedSnapshots(config:Config) {
   for(const feed of config.calendar?.feeds??[]) {
     const result=await loadCalendarFeed(feedKey(feed),async()=>fetchCalendarFeed(await feedUrl(config,feed),config.timeoutMs));
-    yield {path:`feed:${feed.name}`,content:result.content,mtime:result.fetchedAt,fetchedAt:result.fetchedAt,cached:result.cached,kind:'proton_link' as const,upstreamDelay:'Proton share links can lag calendar changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes and does not keep a failed fetch.'};
+    yield {path:`feed:${feed.name}`,content:result.content,mtime:result.fetchedAt,fetchedAt:result.fetchedAt,cached:result.cached,kind:'proton_link' as const,provenance:feedProvenance(feed),upstreamDelay:'Proton share links can lag calendar changes by up to 8 hours. Waypost reuses a successful fetch for 10 minutes and does not keep a failed fetch.'};
   }
 }

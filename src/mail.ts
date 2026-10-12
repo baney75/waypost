@@ -58,11 +58,22 @@ export const mailAttachmentSchema = z.object({
 export const mailDraftSchema = z.object({from:address.describe('Sender email address.'), to:z.array(address).min(1).max(20).describe('Recipient email addresses, 1–20.'), cc:z.array(address).max(20).default([]).describe('Copy recipient email addresses, at most 20.'), subject:header(998).describe('Message subject, without line breaks.'), text:z.string().max(120000).refine(value => !value.includes('\0'), 'NUL is not permitted.').describe('Plain-text body, at most 120,000 characters.')}).strict();
 export const mailSendSchema = z.object({path:z.string().min(1).describe('Exact EML path returned by mail draft.'), sha256:z.string().regex(/^[a-f0-9]{64}$/).describe('Exact SHA-256 from the reviewed mail draft; no automatic retries.'), confirm:z.boolean().default(false).describe('Set true on this call only after the user approves this exact recipient and message.')}).strict();
 
+// Docker secrets convention: NAME may instead be given as NAME_FILE, an absolute path to an owner-only file (mode 600, owned by this user).
+async function secretEnv(name:string):Promise<string | undefined> {
+  if (process.env[name]) return process.env[name];
+  const file = process.env[`${name}_FILE`];
+  if (!file || !file.startsWith('/')) return undefined;
+  try {
+    const metadata = await stat(file);
+    if (!metadata.isFile() || metadata.size > 4096 || (process.platform !== 'win32' && ((metadata.mode & 0o077) || metadata.uid !== process.getuid?.()))) return undefined;
+    return (await readFile(file, 'utf8')).trim() || undefined;
+  } catch { return undefined; }
+}
 async function bridge(config:Config) {
   const mail = config.mail;
   if (!mail) throw new WaypostError('MAIL_UNCONFIGURED', 'Mail is not configured. Ask the user to run: waypost connect mail --certificate /path/to/bridge-cert.pem (direct Bridge) or --helper /path/to/helper.');
   if (!['127.0.0.1','::1'].includes(mail.host)) throw new WaypostError('MAIL_HOST', 'Bridge connections must use an explicit loopback IP.');
-  const user = process.env[mail.usernameEnv], pass = process.env[mail.passwordEnv];
+  const user = await secretEnv(mail.usernameEnv), pass = await secretEnv(mail.passwordEnv);
   if (!user || !pass) throw new WaypostError('MAIL_CREDENTIALS', `Bridge credentials are missing: set ${mail.usernameEnv} and ${mail.passwordEnv} in the environment that launches Waypost, using the username and password Bridge shows for this account. Never use the Proton account password.`);
   let certificate:Buffer, pinned:X509Certificate;
   try {
@@ -92,7 +103,7 @@ export function imapError(error:unknown, mail:{host:string; imapPort:number}, ma
   const message = String(failure.message ?? '');
   if (failure.code === 'ECONNREFUSED') return new WaypostError('MAIL_BRIDGE_UNREACHABLE', `Nothing is listening on ${mail.host}:${mail.imapPort}. Start Proton Mail Bridge and check its IMAP port in Bridge's mailbox configuration.`);
   if (failure.authenticationFailed || failure.serverResponseCode === 'AUTHENTICATIONFAILED') return new WaypostError('MAIL_AUTH', 'Bridge rejected the IMAP username or password. Use the Bridge-generated credentials for this account, not the Proton account password.');
-  if (failure.mailboxMissing || failure.serverResponseCode === 'NONEXISTENT') return new WaypostError('MAIL_MAILBOX_NOT_FOUND', `Mailbox ${JSON.stringify(mailboxName ?? '')} does not exist. Call mail_mailboxes for exact names; Proton folders are "Folders/<name>" and labels are "Labels/<name>".`);
+  if (failure.mailboxMissing || failure.serverResponseCode === 'NONEXISTENT' || failure.code === 'NotFound') return new WaypostError('MAIL_MAILBOX_NOT_FOUND', `Mailbox ${JSON.stringify(mailboxName ?? '')} does not exist. Call mail_mailboxes for exact names; Proton folders are "Folders/<name>" and labels are "Labels/<name>".`);
   if (/pin mismatch|certificate|self[- ]signed|TLS|SSL/i.test(message) || /^ERR_TLS|^CERT_|DEPTH_ZERO/.test(failure.code ?? '')) return new WaypostError('MAIL_TLS', 'TLS failed: the server certificate does not match the pinned Bridge certificate, or STARTTLS is off. Re-export the certificate from Bridge, rerun waypost connect mail --certificate, and set Bridge connection mode to STARTTLS.');
   if (/timeout/i.test(message) || /TIMEOUT/i.test(failure.code ?? '')) return new WaypostError('MAIL_TIMEOUT', 'Bridge did not answer in time. Check that Bridge is running and finished syncing, then retry.');
   return new WaypostError('MAIL_CONNECTION', 'Bridge IMAP operation failed. Run waypost mail doctor to check the listener, credentials and pinned certificate.');
@@ -329,9 +340,13 @@ export async function mailAttachment(config:Config, input:unknown) {
   }));
 }
 export async function mailDraft(config:Config, input:unknown) {
-  const message = mailDraftSchema.parse(input);
+  return prepareMessage(config, mailDraftSchema.parse(input));
+}
+/** Build a local EML. An iTIP draft carries one text/calendar alternative and is marked so mail_send can recognise it. */
+export async function prepareMessage(config:Config, message:z.output<typeof mailDraftSchema> & {ical?:{method:'REQUEST' | 'CANCEL'; content:string}}) {
+  const {ical, ...fields} = message;
   const transport = nodemailer.createTransport({streamTransport:true, buffer:true, newline:'windows', disableFileAccess:true, disableUrlAccess:true});
-  const result = await transport.sendMail({...message, headers:{'X-Waypost-Prepared':'1'}});
+  const result = await transport.sendMail({...fields, headers:{'X-Waypost-Prepared':'1', ...(ical ? {'X-Waypost-Itip':ical.method} : {})}, ...(ical ? {icalEvent:{method:ical.method, content:ical.content}} : {})});
   if (!Buffer.isBuffer(result.message) || result.message.length > MAX_DRAFT) throw new WaypostError('MAIL_SIZE', 'Prepared message exceeds 512 KiB.');
   const sha256 = createHash('sha256').update(result.message).digest('hex');
   const path = await saveArtifact(config, `draft-${randomUUID()}.eml`, result.message);
@@ -351,7 +366,10 @@ export async function mailSend(config:Config, input:unknown) {
   // Derive the SMTP envelope from the exact hashed message, never an unbound sidecar.
   const prepared = await simpleParser(raw,{skipHtmlToText:true,skipTextToHtml:true,skipImageLinks:true});
   const toAddresses = (value:typeof prepared.to) => Array.isArray(value) ? value.flatMap(item => item.value) : value?.value ?? [];
-  if (prepared.headers.get('x-waypost-prepared') !== '1' || prepared.from?.value.length !== 1 || prepared.bcc || prepared.attachments.length) throw new WaypostError('MAIL_DRAFT','Send requires a text draft prepared by mail_draft, with one sender and no hidden recipients or attachments.');
+  // Prepared invitations carry their event as text/calendar; nothing else may ride along.
+  const itip = prepared.headers.get('x-waypost-itip');
+  const allowedParts = itip === 'REQUEST' || itip === 'CANCEL' ? prepared.attachments.filter(part => /^(?:text\/calendar|application\/ics)$/i.test(part.contentType)).length : 0;
+  if (prepared.headers.get('x-waypost-prepared') !== '1' || prepared.from?.value.length !== 1 || prepared.bcc || prepared.attachments.length !== allowedParts || allowedParts > 2) throw new WaypostError('MAIL_DRAFT','Send requires a text draft prepared by mail_draft, with one sender and no hidden recipients or attachments.');
   const envelope = z.object({from:address,to:z.array(address).min(1).max(40)}).parse({from:prepared.from.value[0]?.address,to:[...toAddresses(prepared.to),...toAddresses(prepared.cc)].map(value => value.address)});
   const transport = await smtp(config);
   // Reserve once before SMTP. A failure may follow acceptance, so a digest is never retried automatically.
