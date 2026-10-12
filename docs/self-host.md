@@ -31,7 +31,9 @@ The containers run as user 1000. If your own user id is not 1000 (check with `id
 
 On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
 
-**Tailscale Funnel instead.** Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the small proxy in `cloudflare-worker/` and add the Funnel hostname to `http.allowedHosts`.
+**No Cloudflare account yet?** `compose.quick.yaml` starts a temporary trycloudflare.com address (it changes when cloudflared restarts). Good for a first try; switch to a named tunnel for daily use.
+
+**Tailscale Funnel instead.** Funnel does not work on a tailnet with Tailnet Lock enabled. Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the small proxy in `cloudflare-worker/` and add the Funnel hostname to `http.allowedHosts`.
 
 ## 3. Set up Waypost (2 minutes)
 
