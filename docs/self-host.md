@@ -29,9 +29,10 @@ cat > secrets/tunnel_token     # paste the token, press Enter, then Ctrl-D
 
 The containers run as user 1000. If your own user id is not 1000 (check with `id -u`), run `sudo chown 1000:1000 secrets/*` after creating each secret file.
 
-On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
+Then give the tunnel a way in. Pick one:
 
-**Keep the server off the public internet (optional).** Skip the public hostname and let a Worker reach Waypost over [Workers VPC](https://developers.cloudflare.com/workers-vpc/) (free on every Workers plan during its beta). With Wrangler signed in to the account that holds your domain:
+- **Public hostname (simplest).** On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
+- **Workers VPC (keeps the server off the public internet).** Add no public hostname; if you already did, delete it and its DNS record first, or the Worker deploy below fails. Let a Worker reach Waypost over [Workers VPC](https://developers.cloudflare.com/workers-vpc/) (free on every Workers plan during its beta). With Wrangler signed in to the account that holds your domain:
 
 ```sh
 npx wrangler tunnel list                          # note the waypost tunnel id
