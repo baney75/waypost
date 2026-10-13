@@ -1,10 +1,13 @@
-// Copy to wrangler.jsonc, fill in the three values, then: npx wrangler deploy
+// Copy to wrangler.jsonc, fill in the values, then: npx wrangler deploy
+// Pick one origin. Workers VPC (recommended with a Cloudflare tunnel): keep "vpc_services" and delete "vars".
+// An HTTPS origin such as Tailscale Funnel: keep "vars" and delete "vpc_services".
 {
   "name": "waypost-proxy",
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
   "account_id": "<your Cloudflare account id>",
   "routes": [{ "pattern": "<waypost.example.com>", "custom_domain": true }],
+  "vpc_services": [{ "binding": "ORIGIN_VPC", "service_id": "<id from wrangler vpc service create>", "remote": true }],
   "vars": { "ORIGIN": "<https://your-server.your-tailnet.ts.net>" },
   "observability": { "enabled": false }
 }
