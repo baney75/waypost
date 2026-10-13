@@ -26,6 +26,21 @@ test('the Worker front door never follows a //host path to another origin and st
   } finally { globalThis.fetch = original; }
 });
 
+test('the Worker front door sends VPC traffic only through the binding, keeping the public host', async () => {
+  const worker = (await import('../deploy/cloudflare-worker/worker.js')).default;
+  const seen = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('public fetch used'); };
+  try {
+    const env = {ORIGIN_VPC:{fetch: async (url, init) => { seen.push({url:String(url), cookie:init.headers.get('cookie')}); return new Response('ok', {headers:{'Set-Cookie':'a=b'}}); }}};
+    const response = await worker.fetch(new Request('https://front.example//evil.example/mcp?x=1', {headers:{Cookie:'session=1'}}), env);
+    assert.equal(new URL(seen[0].url).origin, 'http://front.example');
+    assert.equal(new URL(seen[0].url).pathname, '//evil.example/mcp');
+    assert.equal(seen[0].cookie, null);
+    assert.equal(response.headers.get('set-cookie'), null);
+  } finally { globalThis.fetch = original; }
+});
+
 test('Sieve :matches runs in linear time and :regex is never executed', () => {
   assert.equal(wildcard('*@*.example.com', 'ada@mail.example.com'), true);
   assert.equal(wildcard('a?c', 'ABC'), true);

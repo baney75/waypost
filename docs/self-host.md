@@ -31,6 +31,17 @@ The containers run as user 1000. If your own user id is not 1000 (check with `id
 
 On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
 
+**Keep the server off the public internet (optional).** Skip the public hostname and let a Worker reach Waypost over [Workers VPC](https://developers.cloudflare.com/workers-vpc/) (free on every Workers plan during its beta). With Wrangler signed in to the account that holds your domain:
+
+```sh
+npx wrangler tunnel list                          # note the waypost tunnel id
+npx wrangler vpc service create waypost --type http \
+  --tunnel-id <tunnel id> --hostname waypost --http-port 8787
+cd cloudflare-worker && cp wrangler.example.jsonc wrangler.jsonc
+```
+
+In `wrangler.jsonc` fill in your account id, hostname and the VPC service id, delete the `vars` block, then run `npx wrangler deploy`. The Worker serves your hostname, and only it can reach the tunnel.
+
 **No Cloudflare account yet?** `compose.quick.yaml` starts a temporary trycloudflare.com address (it changes when cloudflared restarts). Good for a first try; switch to a named tunnel for daily use.
 
 **Tailscale Funnel instead.** Funnel does not work on a tailnet with Tailnet Lock enabled. Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the small proxy in `cloudflare-worker/` and add the Funnel hostname to `http.allowedHosts`.
