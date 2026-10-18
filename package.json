@@ -31,7 +31,7 @@
     "mcp.json"
   ],
   "scripts": {
-    "build": "tsc && npm run bundle",
+    "build": "node scripts/embed-worker.mjs && tsc && npm run bundle",
     "check": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build",

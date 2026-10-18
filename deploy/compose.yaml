@@ -1,4 +1,5 @@
-# Waypost self-hosting stack: remote MCP + agent calendar feed + Proton mirror sync, behind a Cloudflare named tunnel.
+# Waypost self-hosting stack: remote MCP + agent calendar feed + Proton mirror sync, behind your own Cloudflare tunnel.
+# waypost setup cloudflare makes the tunnel, writes secrets/tunnel_token and puts a free workers.dev front door on it.
 # Mail is optional: add -f compose.mail.yaml to run Proton Mail Bridge beside Waypost. See docs/self-host.md.
 name: waypost
 x-hardening: &hardening

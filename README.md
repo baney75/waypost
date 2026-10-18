@@ -37,7 +37,7 @@ node dist/cli.js connect drive
 node dist/cli.js connect calendar /absolute/path/to/calendar-export.ics
 ```
 
-**Self-hosting** for claude.ai and several agents at once takes about 15 minutes with Docker: see [Self-host](docs/self-host.md). The rest of this page covers the local setup.
+**Self-hosting** for claude.ai and several agents at once takes about 15 minutes with Docker and a free Cloudflare account. You don't need a domain: `waypost setup cloudflare` makes your own tunnel and a `workers.dev` address on your account. See [Self-host](docs/self-host.md). The rest of this page covers the local setup.
 
 Mail uses Bridge’s public certificate and generated credentials, or an existing authenticated read-only helper. Calendar share links are read from a private file or a Proton Pass item and reused for 10 minutes; Proton may delay changes by up to eight hours. Follow [Setup](docs/setup.md), then run:
 

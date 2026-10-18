@@ -1,13 +1,15 @@
 # Self-host Waypost
 
-This page takes a fresh Linux server to a working claude.ai connector in about 15 minutes. You run one Waypost per Proton account. It gives you:
+This page takes a fresh Linux server to a working claude.ai connector in about 15 minutes, for free. You run one Waypost per Proton account. It gives you:
 
 - a remote MCP endpoint that claude.ai, Claude Code and other clients can use, protected by OAuth 2.1 and your own passcode;
 - an **Agents** calendar that agents can write to, published as a private feed that Proton Calendar subscribes to;
 - a mirror of your own Proton calendars (from their share links), so agents see what you add on your phone;
 - optional mail through Proton Mail Bridge, running in the same stack.
 
-You need Docker with Compose, a domain on Cloudflare (or a Tailscale tailnet with Funnel), and a Proton account. Mail needs a paid Proton plan that includes Bridge.
+You need Docker with Compose, a free Cloudflare account, and a Proton account. You don't need a domain. Mail needs a paid Proton plan that includes Bridge.
+
+**It costs nothing, and it's all yours.** Waypost runs on your server and reaches the internet through your own Cloudflare account: a Cloudflare Tunnel (free), a Workers VPC link (free during its open beta) and a small Worker on the Workers Free plan (100,000 requests a day, far more than one person's agents use). Your address is `https://waypost.<your-subdomain>.workers.dev`. No one else's tunnel, account or server sits between your agents and your Proton data, and no one else pays for it.
 
 ## 1. Get the code (1 minute)
 
@@ -18,41 +20,62 @@ cd waypost/deploy
 
 Use a release tag for a stable install: `git checkout v0.6.0`.
 
-## 2. Make the public address (5 minutes)
+## 2. Make your public address (3 minutes)
 
-**Cloudflare tunnel (recommended).** In the Cloudflare dashboard open **Zero Trust → Networks → Tunnels → Create a tunnel**, choose **Cloudflared**, name it `waypost`, and copy the token from the install command. Save it without echoing it:
+**Create a Cloudflare API token.** Sign up at [dash.cloudflare.com](https://dash.cloudflare.com/sign-up) if you have no account; the free plan is enough. Open **My Profile → API Tokens → Create Token → Create Custom Token**, name it `waypost setup`, and add three account permissions:
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| Cloudflare Tunnel | Edit | create your tunnel and read its token |
+| Connectivity Directory | Admin | create the Workers VPC service that points at your server |
+| Workers Scripts | Edit | upload the front-door Worker and turn on its workers.dev address |
+
+Under **Account Resources** pick your account, then create the token and copy it. It's needed only for this step. Delete it afterward if you like; Waypost keeps running without it.
+
+**Run the setup.** Still in `waypost/deploy`:
 
 ```sh
-umask 077
-cat > secrets/tunnel_token     # paste the token, press Enter, then Ctrl-D
+mkdir -p secrets
+read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN   # paste the token, press Enter (nothing is shown)
+docker compose build
+docker compose run --rm -e CLOUDFLARE_API_TOKEN -v "$PWD/secrets:/secrets" waypost \
+  setup cloudflare --tunnel-token-file /secrets/tunnel_token
+unset CLOUDFLARE_API_TOKEN
 ```
 
-The containers run as user 1000. If your own user id is not 1000 (check with `id -u`), run `sudo chown 1000:1000 secrets/*` after creating each secret file.
+The containers run as user 1000. If `id -u` prints something else, run `sudo chown 1000:1000 secrets` first.
 
-Then give the tunnel a way in. Pick one:
+On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made.
 
-- **Public hostname (simplest).** On the tunnel's **Public hostnames** tab add `waypost.example.com` (your hostname) with service `http://waypost:8787`.
-- **Workers VPC (keeps the server off the public internet).** Add no public hostname; if you already did, delete it and its DNS record first, or the Worker deploy below fails. Let a Worker reach Waypost over [Workers VPC](https://developers.cloudflare.com/workers-vpc/) (free on every Workers plan during its beta). With Wrangler signed in to the account that holds your domain:
+- **First Worker on this account?** If it says the account has no workers.dev subdomain yet, run it again with `--workers-subdomain <name>`. Your address becomes `https://waypost.<name>.workers.dev`.
+- **Several accounts?** Add `--account-id <id>` (it lists the ones it can see).
+- **Already have a domain on Cloudflare?** Add `--hostname waypost.example.com` to serve it there instead. Give the token two more permissions first: **Zone → Workers Routes → Edit** and **Zone → Zone → Read**. The hostname must not already have a DNS record.
+
+The server opens no inbound port and has no public hostname. cloudflared dials out to Cloudflare over QUIC (outbound UDP port 7844), and only your Worker can reach it through Workers VPC.
+
+<details><summary>Prefer the dashboard and Wrangler?</summary>
+
+Create the tunnel under **Networking → Tunnels → Create a tunnel → Cloudflared**, name it `waypost`, and save the token from the install command without echoing it (`umask 077; cat > secrets/tunnel_token`, paste, Enter, Ctrl-D). Add no public hostname. Then, with [Wrangler](https://developers.cloudflare.com/workers/wrangler/) signed in:
 
 ```sh
-npx wrangler tunnel list                          # note the waypost tunnel id
 npx wrangler vpc service create waypost --type http \
   --tunnel-id <tunnel id> --hostname waypost --http-port 8787
 cd cloudflare-worker && cp wrangler.example.jsonc wrangler.jsonc
 ```
 
-In `wrangler.jsonc` fill in your account id, hostname and the VPC service id, delete the `vars` block, then run `npx wrangler deploy`. The Worker serves your hostname, and only it can reach the tunnel.
+Fill in your account id and the VPC service id, keep `"workers_dev": true` (or set a custom-domain route), delete the `vars` block, and run `npx wrangler deploy`. It prints your address.
+</details>
 
-**No Cloudflare account yet?** `compose.quick.yaml` starts a temporary trycloudflare.com address (it changes when cloudflared restarts). Good for a first try; switch to a named tunnel for daily use.
+**Just looking?** `compose.quick.yaml` starts a temporary trycloudflare.com address with no account. It changes every time cloudflared restarts, and quick tunnels don't carry Server-Sent Events, which remote MCP uses. Use it to see the health page, not to connect claude.ai.
 
-**Tailscale Funnel instead.** Funnel does not work on a tailnet with Tailnet Lock enabled. Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the small proxy in `cloudflare-worker/` and add the Funnel hostname to `http.allowedHosts`.
+**Tailscale Funnel instead.** Funnel is free too, but it doesn't work on a tailnet with Tailnet Lock enabled. Skip the tunnel and run `tailscale funnel --bg 8787` on the server once the stack is up (step 4). Use `compose.funnel.yaml` in the commands below. To serve it on your own domain as well, deploy the proxy in `cloudflare-worker/` with its `vars` origin and add the Funnel hostname to `http.allowedHosts`.
 
 ## 3. Set up Waypost (2 minutes)
 
 ```sh
 docker compose build
 docker compose run --rm waypost setup quick \
-  --public-url https://waypost.example.com \
+  --public-url https://waypost.<your-subdomain>.workers.dev \
   --data /data --host 0.0.0.0 \
   --owner you@proton.me --enable-writes
 ```
@@ -61,7 +84,7 @@ It prints three things, once:
 
 - **passcode**: you type this when a client connects. Save it in Proton Pass.
 - **protonFeedUrl**: the private link to your Agents calendar. Save it in Proton Pass.
-- **mcpUrl**: `https://waypost.example.com/mcp`, the address you give to claude.ai.
+- **mcpUrl**: your address plus `/mcp`, the one you give to claude.ai.
 
 `--enable-writes` lets agents create and change events in the Agents calendar. Each write still needs the agent to pass `confirm: true` after you approve it. Leave it off for a read-only start; you can turn it on later in `/data/config.json` (`agentCalendar.writeEnabled`).
 
@@ -69,7 +92,7 @@ It prints three things, once:
 
 ```sh
 docker compose up -d
-docker compose run --rm waypost doctor --remote https://waypost.example.com
+docker compose run --rm waypost doctor --remote https://waypost.<your-subdomain>.workers.dev
 ```
 
 All three `remote:` checks should be `ready`. With Funnel: `docker compose -f compose.yaml -f compose.funnel.yaml up -d waypost`, then `tailscale funnel --bg 8787`.
@@ -82,7 +105,7 @@ All three `remote:` checks should be `ready`. With Funnel: `docker compose -f co
 
 Ask Claude to run `waypost_status` to confirm.
 
-**Claude Code:** `claude mcp add --transport http waypost https://waypost.example.com/mcp --scope user`, then `/mcp` to sign in. **Other clients:** `docker compose exec waypost node /app/waypost.mjs --config /data/config.json auth token --label my-client` prints a bearer token for an `Authorization: Bearer …` header.
+**Claude Code:** `claude mcp add --transport http waypost <mcpUrl> --scope user`, then `/mcp` to sign in. **Other clients:** `docker compose exec waypost node /app/waypost.mjs --config /data/config.json auth token --label my-client` prints a bearer token for an `Authorization: Bearer …` header.
 
 ## 6. Connect Proton Calendar (3 minutes)
 

@@ -1,0 +1,139 @@
+import { constants } from 'node:fs';
+import { lstat, open, rename, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { WaypostError } from './errors.js';
+import { WORKER_SOURCE } from './worker-source.js';
+
+// One person's Waypost on their own free Cloudflare account: a tunnel with no public hostname, a Workers VPC
+// service that names the waypost container, and the front-door Worker on <name>.<subdomain>.workers.dev.
+// No domain, no DNS record and nothing on anyone else's account. Safe to run again: it reuses what exists.
+
+export const API_TOKEN_PERMISSIONS = ['Account: Cloudflare Tunnel Edit', 'Account: Connectivity Directory Admin', 'Account: Workers Scripts Edit'];
+const DOMAIN_PERMISSIONS = ['Zone: Workers Routes Edit', 'Zone: Zone Read'];
+const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
+type Envelope<T> = {success:boolean; result:T; errors?:{code:number; message:string}[]; result_info?:{page?:number; total_pages?:number}};
+
+export async function setupCloudflare(options:Options) {
+  const name = options.name ?? 'waypost';
+  if (!NAME.test(name)) throw new WaypostError('INPUT_INVALID', '--name must be lowercase letters, digits and hyphens, up to 63 characters.');
+  if (options.workersSubdomain !== undefined && !NAME.test(options.workersSubdomain)) throw new WaypostError('INPUT_INVALID', '--workers-subdomain must be lowercase letters, digits and hyphens, up to 63 characters.');
+  if (!isAbsolute(options.tunnelTokenFile)) throw new WaypostError('INPUT_INVALID', '--tunnel-token-file must be an absolute path.');
+  const hostname = options.hostname === undefined ? undefined : hostOnly(options.hostname);
+  const api = client(options.apiToken, options.apiBase ?? 'https://api.cloudflare.com/client/v4');
+  const account = options.accountId ?? await onlyAccount(api);
+
+  const tunnels = await api.get<{id:string; name:string}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
+  const tunnel = tunnels.find(item => item.name === name) ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
+  const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
+  if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
+  await writeSecret(options.tunnelTokenFile, tunnelToken);
+
+  const service = {name, type:'http', host:{hostname:options.originHost ?? 'waypost', resolver_network:{tunnel_id:tunnel.id}}, http_port:options.originPort ?? 8787};
+  const services = await api.list<{service_id:string; name:string}>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
+  const existing = services.find(item => item.name === name);
+  const vpc = existing
+    ? await api.send<{service_id:string}>('PUT', `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, 'update the VPC service')
+    : await api.send<{service_id:string}>('POST', `/accounts/${account}/connectivity/directory/services`, service, 'create the VPC service');
+
+  const form = new FormData();
+  form.set('metadata', JSON.stringify({main_module:'worker.js', compatibility_date:'2026-09-01', bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:vpc.service_id}], observability:{enabled:false}}));
+  form.set('worker.js', new File([WORKER_SOURCE], 'worker.js', {type:'application/javascript+module'}));
+  await api.send('PUT', `/accounts/${account}/workers/scripts/${name}`, form, 'upload the Worker');
+
+  let publicUrl:string;
+  if (hostname) {
+    const zone = await findZone(api, account, hostname);
+    await api.send('PUT', `/accounts/${account}/workers/domains`, {hostname, service:name, zone_id:zone, environment:'production'}, 'attach your domain', DOMAIN_PERMISSIONS);
+    await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:false, previews_enabled:false}, 'turn off the workers.dev address');
+    publicUrl = `https://${hostname}`;
+  } else {
+    const subdomain = await workersSubdomain(api, account, options.workersSubdomain);
+    await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:true, previews_enabled:false}, 'turn on the workers.dev address');
+    publicUrl = `https://${name}.${subdomain}.workers.dev`;
+  }
+  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!tunnels.some(item => item.name === name)}, vpcService:{id:vpc.service_id, created:!existing}, worker:name, tunnelTokenFile:options.tunnelTokenFile,
+    next:[
+      `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
+      'Start it: docker compose up -d',
+      `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`,
+    ], cost:'Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account.'};
+}
+
+function client(token:string, base:string) {
+  const call = async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []):Promise<Envelope<T>> => {
+    let response:Response;
+    try {
+      response = await fetch(base + path, {method, redirect:'error', signal:AbortSignal.timeout(30000), headers:{Authorization:`Bearer ${token}`, ...(body === undefined || body instanceof FormData ? {} : {'Content-Type':'application/json'})}, ...(body === undefined ? {} : {body:body instanceof FormData ? body : JSON.stringify(body)})});
+    } catch { throw new WaypostError('CLOUDFLARE_UNREACHABLE', `Could not reach the Cloudflare API to ${step}. Check this machine's internet connection.`); }
+    const json = await response.json().catch(() => null) as Envelope<T> | null;
+    if (response.ok && json?.success) return json;
+    const first = json?.errors?.[0];
+    if (first?.code === 6003 || (first?.code === 9109 && /invalid access token/i.test(first.message))) throw new WaypostError('CLOUDFLARE_TOKEN_REJECTED', 'Cloudflare did not accept the API token. Copy it again from My Profile → API Tokens, or roll a new one.', {httpStatus:response.status, cloudflareCode:first.code});
+    const denied = response.status === 401 || response.status === 403 || [9109, 10000, 10001].includes(first?.code ?? 0);
+    throw new WaypostError(denied ? 'CLOUDFLARE_DENIED' : 'CLOUDFLARE_FAILED', denied
+      ? `Cloudflare refused to ${step}. Give the API token these permissions: ${[...API_TOKEN_PERMISSIONS, ...extra].join('; ')}.`
+      : `Cloudflare could not ${step}: ${first ? `${first.code} ${first.message}` : `HTTP ${response.status}`}.`.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 400), {httpStatus:response.status, ...(first ? {cloudflareCode:first.code} : {})});
+  };
+  return {
+    call,
+    get: async <T>(path:string, step:string) => (await call<T>('GET', path, undefined, step)).result,
+    send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
+    list: async <T>(path:string, step:string) => {
+      const items:T[] = [];
+      for (let page = 1; page <= 20; page++) {
+        const json = await call<T[]>('GET', `${path}?page=${page}`, undefined, step);
+        items.push(...(json.result ?? []));
+        if (!json.result?.length || (json.result_info?.total_pages ?? 1) <= page) break;
+      }
+      return items;
+    },
+  };
+}
+type Api = ReturnType<typeof client>;
+
+async function onlyAccount(api:Api) {
+  const accounts = await api.get<{id:string; name:string}[]>('/accounts?per_page=50', 'list your accounts');
+  if (accounts.length === 1) return accounts[0]!.id;
+  if (!accounts.length) throw new WaypostError('CLOUDFLARE_DENIED', `The API token can see no Cloudflare account. Give it these permissions: ${API_TOKEN_PERMISSIONS.join('; ')}.`);
+  throw new WaypostError('ACCOUNT_AMBIGUOUS', 'The API token can see more than one Cloudflare account. Pass --account-id with the one to use.', {accounts:accounts.map(item => ({id:item.id, name:item.name}))});
+}
+async function workersSubdomain(api:Api, account:string, wanted:string | undefined) {
+  const current = await api.call<{subdomain?:string}>('GET', `/accounts/${account}/workers/subdomain`, undefined, 'read your workers.dev subdomain').then(json => json.result?.subdomain, (error:unknown) => {
+    if (error instanceof WaypostError && error.details?.cloudflareCode === 10007) return undefined;
+    throw error;
+  });
+  if (current) return current;
+  if (!wanted) throw new WaypostError('WORKERS_SUBDOMAIN_NEEDED', 'This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://waypost.<name>.workers.dev.');
+  return (await api.send<{subdomain:string}>('PUT', `/accounts/${account}/workers/subdomain`, {subdomain:wanted}, 'register your workers.dev subdomain')).subdomain;
+}
+async function findZone(api:Api, account:string, hostname:string) {
+  const labels = hostname.split('.');
+  for (let i = 0; i < labels.length - 1; i++) {
+    const zones = await api.get<{id:string; name:string}[]>(`/zones?name=${encodeURIComponent(labels.slice(i).join('.'))}&account.id=${account}`, 'find your domain');
+    if (zones[0]) return zones[0].id;
+  }
+  throw new WaypostError('ZONE_NOT_FOUND', `No domain on this Cloudflare account contains ${hostname}. Leave out --hostname to use the free workers.dev address.`);
+}
+function hostOnly(value:string) {
+  const host = value.includes('://') ? new URL(value).hostname : value.replace(/\/.*$/, '');
+  if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host)) throw new WaypostError('INPUT_INVALID', '--hostname must be a hostname such as waypost.example.com.');
+  return host.toLowerCase();
+}
+// The token lets anyone run your tunnel, so it is written owner-only and never printed.
+async function writeSecret(path:string, value:string) {
+  const existing = await lstat(path).catch(() => null);
+  if (existing && !existing.isFile()) throw new WaypostError('PATH_UNSAFE', '--tunnel-token-file must be a regular file, not a link or directory.');
+  const temp = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    const file = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { await file.writeFile(value); await file.sync(); } finally { await file.close(); }
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, {force:true});
+    if (error instanceof WaypostError) throw error;
+    throw new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${path}. Check that its folder exists and that this user can write to it.`);
+  }
+}
