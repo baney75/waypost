@@ -129489,32 +129489,37 @@ async function setupCloudflare(options) {
   const api = client2(options.apiToken, options.apiBase ?? "https://api.cloudflare.com/client/v4");
   if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError("INPUT_INVALID", "--account-id must be the 32-character id from the Cloudflare dashboard.");
   const account = options.accountId || await onlyAccount(api);
+  const originHost = options.originHost ?? "waypost", originPort = options.originPort ?? 8787;
   const current = await api.call("GET", `/accounts/${account}/workers/scripts/${name4}/settings`, void 0, "check for an existing Worker").then((json3) => json3.result, (error64) => {
     if (error64 instanceof WaypostError && (error64.details?.httpStatus === 404 || error64.details?.cloudflareCode === 10007)) return null;
     throw error64;
   });
   const bindings = current?.bindings ?? [];
-  const ours = !current || bindings.length === 1 && bindings[0].name === "ORIGIN_VPC" && bindings[0].type === "vpc_service";
-  if (!ours && !options.replaceWorker) throw new WaypostError("WORKER_EXISTS", `A Worker named ${name4} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace-worker to overwrite it.`);
+  if (current && !(bindings.length === 1 && bindings[0].name === "ORIGIN_VPC" && bindings[0].type === "vpc_service") && !options.replace)
+    throw new WaypostError("WORKER_EXISTS", `A Worker named ${name4} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace to overwrite it.`);
   const tunnels = await api.get(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels");
   const reused = tunnels.find((item) => item.name === name4);
-  const warnings = [];
   if (reused) {
+    if (reused.config_src && reused.config_src !== "cloudflare") throw new WaypostError("TUNNEL_LOCALLY_MANAGED", `The ${name4} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
     const ingress = await api.call("GET", `/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, void 0, "read the tunnel configuration").then((json3) => json3.result?.config?.ingress ?? [], (error64) => {
       if (error64 instanceof WaypostError && error64.details?.httpStatus === 404) return [];
       throw error64;
     });
     const routes = ingress.filter((rule) => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ""));
     if (routes.length) throw new WaypostError("TUNNEL_HAS_PUBLIC_HOSTNAME", `The ${name4} tunnel still routes public traffic (${routes.map((rule) => rule.hostname ?? `catch-all to ${rule.service}`).join(", ")}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking \u2192 Tunnels \u2192 ${name4}, or pass a different --name.`, { routes: routes.map((rule) => rule.hostname ?? rule.service ?? "") });
-    if (reused.config_src && reused.config_src !== "cloudflare") warnings.push(`The ${name4} tunnel is managed locally, so Cloudflare holds none of its routes. If any cloudflared config.yml for it lists hostnames, or a DNS record points at ${reused.id}.cfargotunnel.com, that traffic skips the Worker. Remove them, or rerun with a different --name for a fresh tunnel.`);
   }
+  const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
+  const existing = services2.find((item) => item.name === name4);
+  if (existing && !(reused && existing.host?.resolver_network?.tunnel_id === reused.id && existing.host?.hostname === originHost && existing.http_port === originPort) && !options.replace)
+    throw new WaypostError("VPC_SERVICE_EXISTS", `A VPC service named ${name4} already exists and points somewhere other than this tunnel's ${originHost}:${originPort}. Pass a different --name, or --replace to repoint it.`);
+  const zone = hostname3 ? await findZone(api, account, hostname3) : void 0;
+  const subdomain = hostname3 ? void 0 : await workersSubdomain(api, account);
+  if (!hostname3 && !subdomain && !options.workersSubdomain) throw new WaypostError("WORKERS_SUBDOMAIN_NEEDED", "This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://waypost.<name>.workers.dev.");
   const tunnel = reused ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
   const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
   if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
   await writeSecret(options.tunnelTokenFile, tunnelToken);
-  const service = { name: name4, type: "http", host: { hostname: options.originHost ?? "waypost", resolver_network: { tunnel_id: tunnel.id } }, http_port: options.originPort ?? 8787 };
-  const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
-  const existing = services2.find((item) => item.name === name4);
+  const service = { name: name4, type: "http", host: { hostname: originHost, resolver_network: { tunnel_id: tunnel.id } }, http_port: originPort };
   const vpc = existing ? await api.send("PUT", `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", `/accounts/${account}/connectivity/directory/services`, service, "create the VPC service");
   const form = new FormData();
   form.set("metadata", JSON.stringify({ main_module: "worker.js", compatibility_date: "2026-09-01", bindings: [{ type: "vpc_service", name: "ORIGIN_VPC", service_id: vpc.service_id }], observability: { enabled: false } }));
@@ -129522,14 +129527,13 @@ async function setupCloudflare(options) {
   await api.send("PUT", `/accounts/${account}/workers/scripts/${name4}`, form, "upload the Worker");
   let publicUrl;
   if (hostname3) {
-    const zone = await findZone(api, account, hostname3);
     await api.send("PUT", `/accounts/${account}/workers/domains`, { hostname: hostname3, service: name4, zone_id: zone, environment: "production" }, "attach your domain", DOMAIN_PERMISSIONS);
     await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: false, previews_enabled: false }, "turn off the workers.dev address");
     publicUrl = `https://${hostname3}`;
   } else {
-    const subdomain = await workersSubdomain(api, account, options.workersSubdomain);
+    const registered = subdomain ?? (await api.send("PUT", `/accounts/${account}/workers/subdomain`, { subdomain: options.workersSubdomain }, "register your workers.dev subdomain")).subdomain;
     await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: true, previews_enabled: false }, "turn on the workers.dev address");
-    publicUrl = `https://${name4}.${subdomain}.workers.dev`;
+    publicUrl = `https://${name4}.${registered}.workers.dev`;
   }
   return {
     publicUrl,
@@ -129543,7 +129547,6 @@ async function setupCloudflare(options) {
       "Start it: docker compose up -d",
       `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`
     ],
-    ...warnings.length ? { warnings } : {},
     cost: "Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account."
   };
 }
@@ -129583,14 +129586,11 @@ async function onlyAccount(api) {
   if (!accounts.length) throw new WaypostError("CLOUDFLARE_DENIED", `The API token can see no Cloudflare account. Give it these permissions: ${API_TOKEN_PERMISSIONS.join("; ")}.`);
   throw new WaypostError("ACCOUNT_AMBIGUOUS", "The API token can see more than one Cloudflare account. Pass --account-id with the one to use.", { accounts: accounts.map((item) => ({ id: item.id, name: item.name })) });
 }
-async function workersSubdomain(api, account, wanted) {
-  const current = await api.call("GET", `/accounts/${account}/workers/subdomain`, void 0, "read your workers.dev subdomain").then((json3) => json3.result?.subdomain, (error64) => {
+async function workersSubdomain(api, account) {
+  return api.call("GET", `/accounts/${account}/workers/subdomain`, void 0, "read your workers.dev subdomain").then((json3) => json3.result?.subdomain || void 0, (error64) => {
     if (error64 instanceof WaypostError && error64.details?.cloudflareCode === 10007) return void 0;
     throw error64;
   });
-  if (current) return current;
-  if (!wanted) throw new WaypostError("WORKERS_SUBDOMAIN_NEEDED", "This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://waypost.<name>.workers.dev.");
-  return (await api.send("PUT", `/accounts/${account}/workers/subdomain`, { subdomain: wanted }, "register your workers.dev subdomain")).subdomain;
 }
 async function findZone(api, account, hostname3) {
   const labels = hostname3.split(".");
@@ -129761,7 +129761,7 @@ var setup = program2.command("setup").description("Guided setup for the agent ca
 setup.command("quick").description("One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.").requiredOption("--public-url <url>", "Public HTTPS origin, such as https://waypost.example.com").requiredOption("--data <dir>", "Absolute private directory for Waypost state").option("--owner <email>", "Your Proton address, for notes and invitations").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address, 0.0.0.0 inside a container (default 127.0.0.1, or the stored value)").option("--enable-writes", "Let agents create and change agent calendar events (each still needs confirm: true)").action(async (options) => output2(await setupQuick(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port), enableWrites: options.enableWrites })));
 setup.command("calendar").description("Create the agent calendar store.").requiredOption("--dir <dir>", "Absolute private directory for the store").option("--name <name>", "Calendar name shown in Proton (default Agents, or the stored value)").option("--owner <email>", "Your Proton address, for notes and invitations").option("--organizer <email>", "A sending address you own, different from --owner, for invitations").option("--enable-writes", "Let agents write (each call still needs confirm: true)").action(async (options) => output2(await setupCalendar(configPath(), options)));
 setup.command("remote").description("Configure the remote MCP endpoint and print a passcode.").requiredOption("--public-url <url>", "Public HTTPS origin").requiredOption("--state-dir <dir>", "Absolute private directory for OAuth state").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address (default 127.0.0.1, or the stored value)").action(async (options) => output2(await setupRemote(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port) })));
-setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace-worker", "Overwrite an existing Worker with this name that is not a Waypost front door").action(async (options) => {
+setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker or VPC service that is not Waypost's").action(async (options) => {
   const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!apiToken) throw new WaypostError("INPUT_INVALID", `Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with ${API_TOKEN_PERMISSIONS.join(", ")}. Do not put the token in command arguments.`);
   output2(await setupCloudflare({ ...options, accountId: options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || void 0, apiToken }));

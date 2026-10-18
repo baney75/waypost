@@ -174,7 +174,7 @@ test('setup cloudflare never overwrites a different Worker that shares the name 
   const cf = await fakeCloudflare(t, {scripts:{waypost:{metadata:{bindings:[{type:'kv_namespace', name:'BLOG'}]}}}});
   await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
   assert.deepEqual(cf.scripts.waypost.metadata.bindings, [{type:'kv_namespace', name:'BLOG'}]);
-  assert.equal((await run(cf, join(dir, 't'), {replaceWorker:true})).worker.created, false);
+  assert.equal((await run(cf, join(dir, 't'), {replace:true})).worker.created, false);
 });
 
 test('a same-named Worker with no bindings is not Waypost\'s either, and a refusal writes nothing', async t => {
@@ -185,15 +185,36 @@ test('a same-named Worker with no bindings is not Waypost\'s either, and a refus
   assert.deepEqual([cf.tunnels.length, cf.services.length], [0, 0]);
 });
 
-test('a reused tunnel whose catch-all forwards traffic is refused; a locally managed one is flagged', async t => {
+test('a reused tunnel that forwards traffic, or whose routes Cloudflare cannot see, is refused', async t => {
   const dir = await root(t);
   const id = '11111110-2222-3333-4444-555555555555';
   const forwarding = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}], ingress:{[id]:[{service:'http://waypost:8787'}]}});
   await assert.rejects(run(forwarding, join(dir, 't')), {code:'TUNNEL_HAS_PUBLIC_HOSTNAME'});
   const local = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'local'}]});
-  const result = await run(local, join(dir, 't'));
-  assert.equal(result.tunnel.created, false);
-  assert.match(result.warnings[0], /managed locally/);
+  await assert.rejects(run(local, join(dir, 't')), {code:'TUNNEL_LOCALLY_MANAGED'});
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+});
+
+test('a same-named VPC service that points elsewhere is not repointed unless told to', async t => {
+  const dir = await root(t);
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db', resolver_network:{tunnel_id:'99999999-2222-3333-4444-555555555555'}}, http_port:5432};
+  const cf = await fakeCloudflare(t, {services:[foreign]});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'VPC_SERVICE_EXISTS'});
+  assert.deepEqual([cf.tunnels.length, cf.services[0]], [0, foreign]);
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  const result = await run(cf, join(dir, 't'), {replace:true});
+  assert.equal(result.vpcService.id, 'svc-x');
+  assert.equal(cf.services[0].host.resolver_network.tunnel_id, cf.tunnels[0].id);
+});
+
+test('a missing workers.dev subdomain or domain is caught before anything is written', async t => {
+  const dir = await root(t);
+  const none = await fakeCloudflare(t, {subdomain:null});
+  await assert.rejects(run(none, join(dir, 't')), {code:'WORKERS_SUBDOMAIN_NEEDED'});
+  const nozone = await fakeCloudflare(t);
+  await assert.rejects(run(nozone, join(dir, 't'), {hostname:'waypost.other.org'}), {code:'ZONE_NOT_FOUND'});
+  for (const cf of [none, nozone]) assert.deepEqual([cf.tunnels.length, cf.services.length, Object.keys(cf.scripts).length], [0, 0, 0]);
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
 });
 
 test('setup cloudflare rejects a malformed account id', async t => {

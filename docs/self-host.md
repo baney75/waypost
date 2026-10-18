@@ -34,7 +34,7 @@ Under **Account Resources** pick your account, then create the token and copy it
 
 **Run the setup.** Still in `waypost/deploy`:
 
-The containers run as user 1000, and this step writes `secrets/tunnel_token` as that user. If `id -u` prints something other than 1000, run `mkdir -p secrets && sudo chown 1000:1000 secrets` first. Any secret file you make by hand later, such as the mail ones in step 7, also needs `sudo chown 1000:1000 secrets/<file>`.
+The containers run as user 1000, and this step writes `secrets/tunnel_token` as that user. If `id -u` prints something other than 1000, run `mkdir -p secrets && sudo chown 1000:1000 secrets` before it and `sudo chown "$(id -u)" secrets` after it; the token file stays owned by 1000 and readable only by it. Secret files you make by hand later, such as the mail ones in step 7, are created the same way as always: with `umask 077`, then `sudo chown 1000:1000 secrets/<file>`.
 
 ```sh
 mkdir -p secrets
@@ -45,7 +45,7 @@ docker compose run --rm -e CLOUDFLARE_API_TOKEN -v "$PWD/secrets:/secrets" waypo
 unset CLOUDFLARE_API_TOKEN
 ```
 
-On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made. It stops instead of overwriting a Worker of the same name that isn't Waypost's, and if a reused tunnel still publishes a public hostname, since that would skip the Worker.
+On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made. It checks before it changes anything, and it stops rather than overwrite a same-named Worker or VPC service that isn't Waypost's (`--replace` overrides). It also stops if a reused tunnel could carry traffic around the Worker: one that still publishes a public hostname, or one made with `cloudflared tunnel create`, whose routes Cloudflare can't see. For those, pass a different `--name`.
 
 - **First Worker on this account?** If it says the account has no workers.dev subdomain yet, run it again with `--workers-subdomain <name>`. Your address becomes `https://waypost.<name>.workers.dev`.
 - **Several accounts?** Add `--account-id <id>` (it lists the ones it can see).
