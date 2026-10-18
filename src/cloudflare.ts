@@ -27,13 +27,27 @@ export async function setupCloudflare(options:Options) {
   if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError('INPUT_INVALID', '--account-id must be the 32-character id from the Cloudflare dashboard.');
   const account = options.accountId || await onlyAccount(api);
 
-  const tunnels = await api.get<{id:string; name:string}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
-  const tunnel = tunnels.find(item => item.name === name) ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
-  // A reused tunnel may still publish hostnames from an earlier setup. Those bypass the Worker, so stop and say which.
-  const ingress = await api.call<{config?:{ingress?:{hostname?:string}[]} | null}>('GET', `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations`, undefined, 'read the tunnel configuration')
-    .then(json => json.result?.config?.ingress ?? [], (error:unknown) => { if (error instanceof WaypostError && error.details?.httpStatus === 404) return []; throw error; });
-  const published = ingress.flatMap(rule => rule.hostname ? [rule.hostname] : []);
-  if (published.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still publishes ${published.join(', ')}, which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {hostnames:published});
+  // Read-only checks first, so a refusal leaves nothing half-made. Never overwrite someone's other Worker that
+  // happens to share the name: it counts as Waypost's only with exactly the one ORIGIN_VPC binding this uploads.
+  const current = await api.call<{bindings?:{type:string; name:string}[]}>('GET', `/accounts/${account}/workers/scripts/${name}/settings`, undefined, 'check for an existing Worker')
+    .then(json => json.result, (error:unknown) => { if (error instanceof WaypostError && (error.details?.httpStatus === 404 || error.details?.cloudflareCode === 10007)) return null; throw error; });
+  const bindings = current?.bindings ?? [];
+  const ours = !current || (bindings.length === 1 && bindings[0]!.name === 'ORIGIN_VPC' && bindings[0]!.type === 'vpc_service');
+  if (!ours && !options.replaceWorker) throw new WaypostError('WORKER_EXISTS', `A Worker named ${name} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace-worker to overwrite it.`);
+
+  const tunnels = await api.get<{id:string; name:string; config_src?:string}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
+  const reused = tunnels.find(item => item.name === name);
+  const warnings:string[] = [];
+  if (reused) {
+    // A reused tunnel may still route public traffic from an earlier setup, which would skip the Worker. Only an
+    // empty ingress or a catch-all that answers http_status:* is safe; anything else stops here and says which.
+    const ingress = await api.call<{config?:{ingress?:{hostname?:string; service?:string}[]} | null}>('GET', `/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, undefined, 'read the tunnel configuration')
+      .then(json => json.result?.config?.ingress ?? [], (error:unknown) => { if (error instanceof WaypostError && error.details?.httpStatus === 404) return []; throw error; });
+    const routes = ingress.filter(rule => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ''));
+    if (routes.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still routes public traffic (${routes.map(rule => rule.hostname ?? `catch-all to ${rule.service}`).join(', ')}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {routes:routes.map(rule => rule.hostname ?? rule.service ?? '')});
+    if (reused.config_src && reused.config_src !== 'cloudflare') warnings.push(`The ${name} tunnel is managed locally, so Cloudflare holds none of its routes. If any cloudflared config.yml for it lists hostnames, or a DNS record points at ${reused.id}.cfargotunnel.com, that traffic skips the Worker. Remove them, or rerun with a different --name for a fresh tunnel.`);
+  }
+  const tunnel = reused ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
   const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
   if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
   await writeSecret(options.tunnelTokenFile, tunnelToken);
@@ -45,11 +59,6 @@ export async function setupCloudflare(options:Options) {
     ? await api.send<{service_id:string}>('PUT', `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, 'update the VPC service')
     : await api.send<{service_id:string}>('POST', `/accounts/${account}/connectivity/directory/services`, service, 'create the VPC service');
 
-  // Never overwrite someone's other Worker that happens to share the name.
-  const current = await api.call<{bindings?:{type:string; name:string}[]}>('GET', `/accounts/${account}/workers/scripts/${name}/settings`, undefined, 'check for an existing Worker')
-    .then(json => json.result, (error:unknown) => { if (error instanceof WaypostError && (error.details?.httpStatus === 404 || error.details?.cloudflareCode === 10007)) return null; throw error; });
-  const ours = !current || (current.bindings ?? []).every(binding => binding.name === 'ORIGIN_VPC' && binding.type === 'vpc_service');
-  if (!ours && !options.replaceWorker) throw new WaypostError('WORKER_EXISTS', `A Worker named ${name} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace-worker to overwrite it.`);
   const form = new FormData();
   form.set('metadata', JSON.stringify({main_module:'worker.js', compatibility_date:'2026-09-01', bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:vpc.service_id}], observability:{enabled:false}}));
   form.set('worker.js', new File([WORKER_SOURCE], 'worker.js', {type:'application/javascript+module'}));
@@ -66,12 +75,12 @@ export async function setupCloudflare(options:Options) {
     await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:true, previews_enabled:false}, 'turn on the workers.dev address');
     publicUrl = `https://${name}.${subdomain}.workers.dev`;
   }
-  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!tunnels.some(item => item.name === name)}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile,
+  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!reused}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile,
     next:[
       `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
       'Start it: docker compose up -d',
       `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`,
-    ], cost:'Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account.'};
+    ], ...(warnings.length ? {warnings} : {}), cost:'Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account.'};
 }
 
 function client(token:string, base:string) {
@@ -130,7 +139,9 @@ async function findZone(api:Api, account:string, hostname:string) {
   throw new WaypostError('ZONE_NOT_FOUND', `No domain on this Cloudflare account contains ${hostname}, or the API token can't read it (it needs ${DOMAIN_PERMISSIONS.join(', ')}). Leave out --hostname to use the free workers.dev address.`);
 }
 function hostOnly(value:string) {
-  const host = value.includes('://') ? new URL(value).hostname : value.replace(/\/.*$/, '');
+  let host:string;
+  try { host = value.includes('://') ? new URL(value).hostname : value.replace(/\/.*$/, ''); }
+  catch { throw new WaypostError('INPUT_INVALID', '--hostname must be a hostname such as waypost.example.com.'); }
   if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host)) throw new WaypostError('INPUT_INVALID', '--hostname must be a hostname such as waypost.example.com.');
   return host.toLowerCase();
 }

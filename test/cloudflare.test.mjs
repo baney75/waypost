@@ -149,6 +149,7 @@ test('setup cloudflare serves an existing domain when --hostname is given and tu
   assert.deepEqual(cf.domains, [{hostname:'waypost.example.com', service:'waypost', zone_id:'zone-1', environment:'production'}]);
   assert.deepEqual(cf.scriptSubdomain.waypost, {enabled:false, previews_enabled:false});
   await assert.rejects(run(cf, join(dir, 't'), {hostname:'waypost.other.org'}), {code:'ZONE_NOT_FOUND'});
+  await assert.rejects(run(cf, join(dir, 't'), {hostname:'https://'}), {code:'INPUT_INVALID'});
 });
 
 test('setup cloudflare refuses to write the tunnel token through a link', async t => {
@@ -174,6 +175,25 @@ test('setup cloudflare never overwrites a different Worker that shares the name 
   await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
   assert.deepEqual(cf.scripts.waypost.metadata.bindings, [{type:'kv_namespace', name:'BLOG'}]);
   assert.equal((await run(cf, join(dir, 't'), {replaceWorker:true})).worker.created, false);
+});
+
+test('a same-named Worker with no bindings is not Waypost\'s either, and a refusal writes nothing', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {scripts:{waypost:{metadata:{bindings:[]}}}});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length], [0, 0]);
+});
+
+test('a reused tunnel whose catch-all forwards traffic is refused; a locally managed one is flagged', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const forwarding = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}], ingress:{[id]:[{service:'http://waypost:8787'}]}});
+  await assert.rejects(run(forwarding, join(dir, 't')), {code:'TUNNEL_HAS_PUBLIC_HOSTNAME'});
+  const local = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'local'}]});
+  const result = await run(local, join(dir, 't'));
+  assert.equal(result.tunnel.created, false);
+  assert.match(result.warnings[0], /managed locally/);
 });
 
 test('setup cloudflare rejects a malformed account id', async t => {
