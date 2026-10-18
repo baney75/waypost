@@ -34,6 +34,8 @@ Under **Account Resources** pick your account, then create the token and copy it
 
 **Run the setup.** Still in `waypost/deploy`:
 
+The containers run as user 1000, and this step writes `secrets/tunnel_token` as that user. If `id -u` prints something other than 1000, run `mkdir -p secrets && sudo chown 1000:1000 secrets` first. Any secret file you make by hand later, such as the mail ones in step 7, also needs `sudo chown 1000:1000 secrets/<file>`.
+
 ```sh
 mkdir -p secrets
 read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN   # paste the token, press Enter (nothing is shown)
@@ -43,9 +45,7 @@ docker compose run --rm -e CLOUDFLARE_API_TOKEN -v "$PWD/secrets:/secrets" waypo
 unset CLOUDFLARE_API_TOKEN
 ```
 
-The containers run as user 1000. If `id -u` prints something else, run `sudo chown 1000:1000 secrets` first.
-
-On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made.
+On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made. It stops instead of overwriting a Worker of the same name that isn't Waypost's, and if a reused tunnel still publishes a public hostname, since that would skip the Worker.
 
 - **First Worker on this account?** If it says the account has no workers.dev subdomain yet, run it again with `--workers-subdomain <name>`. Your address becomes `https://waypost.<name>.workers.dev`.
 - **Several accounts?** Add `--account-id <id>` (it lists the ones it can see).

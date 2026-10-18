@@ -129479,6 +129479,7 @@ var WORKER_SOURCE = "// Front door: serve Waypost on workers.dev (free, no domai
 var API_TOKEN_PERMISSIONS = ["Account: Cloudflare Tunnel Edit", "Account: Connectivity Directory Admin", "Account: Workers Scripts Edit"];
 var DOMAIN_PERMISSIONS = ["Zone: Workers Routes Edit", "Zone: Zone Read"];
 var NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+var ACCOUNT_ID = /^[0-9a-f]{32}$/i;
 async function setupCloudflare(options) {
   const name4 = options.name ?? "waypost";
   if (!NAME.test(name4)) throw new WaypostError("INPUT_INVALID", "--name must be lowercase letters, digits and hyphens, up to 63 characters.");
@@ -129486,9 +129487,16 @@ async function setupCloudflare(options) {
   if (!isAbsolute6(options.tunnelTokenFile)) throw new WaypostError("INPUT_INVALID", "--tunnel-token-file must be an absolute path.");
   const hostname3 = options.hostname === void 0 ? void 0 : hostOnly(options.hostname);
   const api = client2(options.apiToken, options.apiBase ?? "https://api.cloudflare.com/client/v4");
-  const account = options.accountId ?? await onlyAccount(api);
+  if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError("INPUT_INVALID", "--account-id must be the 32-character id from the Cloudflare dashboard.");
+  const account = options.accountId || await onlyAccount(api);
   const tunnels = await api.get(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels");
   const tunnel = tunnels.find((item) => item.name === name4) ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
+  const ingress = await api.call("GET", `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations`, void 0, "read the tunnel configuration").then((json3) => json3.result?.config?.ingress ?? [], (error64) => {
+    if (error64 instanceof WaypostError && error64.details?.httpStatus === 404) return [];
+    throw error64;
+  });
+  const published = ingress.flatMap((rule) => rule.hostname ? [rule.hostname] : []);
+  if (published.length) throw new WaypostError("TUNNEL_HAS_PUBLIC_HOSTNAME", `The ${name4} tunnel still publishes ${published.join(", ")}, which skips the Worker. Remove those public hostnames (and their DNS records) under Networking \u2192 Tunnels \u2192 ${name4}, or pass a different --name.`, { hostnames: published });
   const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
   if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
   await writeSecret(options.tunnelTokenFile, tunnelToken);
@@ -129496,6 +129504,12 @@ async function setupCloudflare(options) {
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
   const existing = services2.find((item) => item.name === name4);
   const vpc = existing ? await api.send("PUT", `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", `/accounts/${account}/connectivity/directory/services`, service, "create the VPC service");
+  const current = await api.call("GET", `/accounts/${account}/workers/scripts/${name4}/settings`, void 0, "check for an existing Worker").then((json3) => json3.result, (error64) => {
+    if (error64 instanceof WaypostError && (error64.details?.httpStatus === 404 || error64.details?.cloudflareCode === 10007)) return null;
+    throw error64;
+  });
+  const ours = !current || (current.bindings ?? []).every((binding) => binding.name === "ORIGIN_VPC" && binding.type === "vpc_service");
+  if (!ours && !options.replaceWorker) throw new WaypostError("WORKER_EXISTS", `A Worker named ${name4} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace-worker to overwrite it.`);
   const form = new FormData();
   form.set("metadata", JSON.stringify({ main_module: "worker.js", compatibility_date: "2026-09-01", bindings: [{ type: "vpc_service", name: "ORIGIN_VPC", service_id: vpc.service_id }], observability: { enabled: false } }));
   form.set("worker.js", new File([WORKER_SOURCE], "worker.js", { type: "application/javascript+module" }));
@@ -129516,7 +129530,7 @@ async function setupCloudflare(options) {
     accountId: account,
     tunnel: { id: tunnel.id, name: name4, created: !tunnels.some((item) => item.name === name4) },
     vpcService: { id: vpc.service_id, created: !existing },
-    worker: name4,
+    worker: { name: name4, created: !current },
     tunnelTokenFile: options.tunnelTokenFile,
     next: [
       `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
@@ -129543,7 +129557,7 @@ function client2(token3, base2) {
   };
   return {
     call,
-    get: async (path4, step) => (await call("GET", path4, void 0, step)).result,
+    get: async (path4, step, extra = []) => (await call("GET", path4, void 0, step, extra)).result,
     send: async (method, path4, body2, step, extra = []) => (await call(method, path4, body2, step, extra)).result,
     list: async (path4, step) => {
       const items = [];
@@ -129557,7 +129571,7 @@ function client2(token3, base2) {
   };
 }
 async function onlyAccount(api) {
-  const accounts = await api.get("/accounts?per_page=50", "list your accounts");
+  const accounts = (await api.get("/accounts?per_page=50", "list your accounts")).filter((item) => ACCOUNT_ID.test(item.id));
   if (accounts.length === 1) return accounts[0].id;
   if (!accounts.length) throw new WaypostError("CLOUDFLARE_DENIED", `The API token can see no Cloudflare account. Give it these permissions: ${API_TOKEN_PERMISSIONS.join("; ")}.`);
   throw new WaypostError("ACCOUNT_AMBIGUOUS", "The API token can see more than one Cloudflare account. Pass --account-id with the one to use.", { accounts: accounts.map((item) => ({ id: item.id, name: item.name })) });
@@ -129574,10 +129588,10 @@ async function workersSubdomain(api, account, wanted) {
 async function findZone(api, account, hostname3) {
   const labels = hostname3.split(".");
   for (let i = 0; i < labels.length - 1; i++) {
-    const zones2 = await api.get(`/zones?name=${encodeURIComponent(labels.slice(i).join("."))}&account.id=${account}`, "find your domain");
+    const zones2 = await api.get(`/zones?name=${encodeURIComponent(labels.slice(i).join("."))}&account.id=${account}`, "find your domain", DOMAIN_PERMISSIONS);
     if (zones2[0]) return zones2[0].id;
   }
-  throw new WaypostError("ZONE_NOT_FOUND", `No domain on this Cloudflare account contains ${hostname3}. Leave out --hostname to use the free workers.dev address.`);
+  throw new WaypostError("ZONE_NOT_FOUND", `No domain on this Cloudflare account contains ${hostname3}, or the API token can't read it (it needs ${DOMAIN_PERMISSIONS.join(", ")}). Leave out --hostname to use the free workers.dev address.`);
 }
 function hostOnly(value) {
   const host = value.includes("://") ? new URL(value).hostname : value.replace(/\/.*$/, "");
@@ -129735,10 +129749,10 @@ var setup = program2.command("setup").description("Guided setup for the agent ca
 setup.command("quick").description("One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.").requiredOption("--public-url <url>", "Public HTTPS origin, such as https://waypost.example.com").requiredOption("--data <dir>", "Absolute private directory for Waypost state").option("--owner <email>", "Your Proton address, for notes and invitations").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address, 0.0.0.0 inside a container (default 127.0.0.1, or the stored value)").option("--enable-writes", "Let agents create and change agent calendar events (each still needs confirm: true)").action(async (options) => output2(await setupQuick(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port), enableWrites: options.enableWrites })));
 setup.command("calendar").description("Create the agent calendar store.").requiredOption("--dir <dir>", "Absolute private directory for the store").option("--name <name>", "Calendar name shown in Proton (default Agents, or the stored value)").option("--owner <email>", "Your Proton address, for notes and invitations").option("--organizer <email>", "A sending address you own, different from --owner, for invitations").option("--enable-writes", "Let agents write (each call still needs confirm: true)").action(async (options) => output2(await setupCalendar(configPath(), options)));
 setup.command("remote").description("Configure the remote MCP endpoint and print a passcode.").requiredOption("--public-url <url>", "Public HTTPS origin").requiredOption("--state-dir <dir>", "Absolute private directory for OAuth state").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address (default 127.0.0.1, or the stored value)").action(async (options) => output2(await setupRemote(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port) })));
-setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").action(async (options) => {
+setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace-worker", "Overwrite an existing Worker with this name that is not a Waypost front door").action(async (options) => {
   const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!apiToken) throw new WaypostError("INPUT_INVALID", `Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with ${API_TOKEN_PERMISSIONS.join(", ")}. Do not put the token in command arguments.`);
-  output2(await setupCloudflare({ ...options, accountId: options.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID, apiToken }));
+  output2(await setupCloudflare({ ...options, accountId: options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || void 0, apiToken }));
 });
 var calendarGroup = program2.commands.find((command2) => command2.name() === "calendar");
 var feedGroup = calendarGroup.command("feed").description("Private ICS links that publish the agent calendar to Proton.");

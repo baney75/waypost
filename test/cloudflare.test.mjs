@@ -17,7 +17,7 @@ async function root(t) { const dir = await mkdtemp(join(tmpdir(), 'waypost-cf-')
 
 /** A small in-memory Cloudflare: enough of the tunnel, connectivity directory, Workers and zones APIs. */
 async function fakeCloudflare(t, state = {}) {
-  const cf = {accounts:[{id:ACCOUNT, name:'Mine'}], tunnels:[], services:[], scripts:{}, subdomain:'ada', scriptSubdomain:{}, domains:[], zones:[], deny:null, calls:[], ...state};
+  const cf = {accounts:[{id:ACCOUNT, name:'Mine'}], tunnels:[], services:[], scripts:{}, subdomain:'ada', scriptSubdomain:{}, domains:[], zones:[], ingress:{}, deny:null, calls:[], ...state};
   const ok = result => ({success:true, errors:[], result});
   const fail = (status, code, message) => [status, {success:false, errors:[{code, message}], result:null}];
   const route = async (req, url, body) => {
@@ -34,6 +34,8 @@ async function fakeCloudflare(t, state = {}) {
       cf.tunnels.push(tunnel); return [200, ok(tunnel)];
     }
     if (/^\/accounts\/\w+\/cfd_tunnel\/[\w-]+\/token$/.test(path)) return [200, ok(FAKE_TUNNEL)];
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? []}})];
+    if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
       if (req.method === 'GET') return [200, {...ok(cf.services), result_info:{page:1, total_pages:1}}];
       const service = {service_id:`svc-${cf.services.length}`, ...JSON.parse(body.toString())};
@@ -102,6 +104,7 @@ test('setup cloudflare is safe to run again: it reuses the tunnel and updates th
   assert.equal(cf.services.length, 1);
   assert.equal(again.tunnel.created, false);
   assert.equal(again.vpcService.created, false);
+  assert.equal(again.worker.created, false);
   assert.ok(cf.calls.includes(`PUT /accounts/${ACCOUNT}/connectivity/directory/services/svc-0`));
 });
 
@@ -155,6 +158,28 @@ test('setup cloudflare refuses to write the tunnel token through a link', async 
   await symlink(join(dir, 'elsewhere'), join(dir, 'tunnel_token'));
   await assert.rejects(run(cf, join(dir, 'tunnel_token')), {code:'PATH_UNSAFE'});
   assert.equal(await readFile(join(dir, 'elsewhere'), 'utf8'), '');
+});
+
+test('setup cloudflare stops when a reused tunnel still publishes a public hostname', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}], ingress:{[id]:[{hostname:'waypost.example.com', service:'http://waypost:8787'}, {service:'http_status:404'}]}});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_HAS_PUBLIC_HOSTNAME'); assert.match(error.message, /waypost\.example\.com/); return true; });
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+});
+
+test('setup cloudflare never overwrites a different Worker that shares the name unless told to', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {scripts:{waypost:{metadata:{bindings:[{type:'kv_namespace', name:'BLOG'}]}}}});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
+  assert.deepEqual(cf.scripts.waypost.metadata.bindings, [{type:'kv_namespace', name:'BLOG'}]);
+  assert.equal((await run(cf, join(dir, 't'), {replaceWorker:true})).worker.created, false);
+});
+
+test('setup cloudflare rejects a malformed account id', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await assert.rejects(run(cf, join(dir, 't'), {accountId:'../zones'}), {code:'INPUT_INVALID'});
 });
 
 test('the embedded front door is the committed deploy/cloudflare-worker/worker.js', async () => {

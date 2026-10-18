@@ -12,8 +12,9 @@ import { WORKER_SOURCE } from './worker-source.js';
 export const API_TOKEN_PERMISSIONS = ['Account: Cloudflare Tunnel Edit', 'Account: Connectivity Directory Admin', 'Account: Workers Scripts Edit'];
 const DOMAIN_PERMISSIONS = ['Zone: Workers Routes Edit', 'Zone: Zone Read'];
 const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
 
-type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
+type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; replaceWorker?:boolean | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
 type Envelope<T> = {success:boolean; result:T; errors?:{code:number; message:string}[]; result_info?:{page?:number; total_pages?:number}};
 
 export async function setupCloudflare(options:Options) {
@@ -23,10 +24,16 @@ export async function setupCloudflare(options:Options) {
   if (!isAbsolute(options.tunnelTokenFile)) throw new WaypostError('INPUT_INVALID', '--tunnel-token-file must be an absolute path.');
   const hostname = options.hostname === undefined ? undefined : hostOnly(options.hostname);
   const api = client(options.apiToken, options.apiBase ?? 'https://api.cloudflare.com/client/v4');
-  const account = options.accountId ?? await onlyAccount(api);
+  if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError('INPUT_INVALID', '--account-id must be the 32-character id from the Cloudflare dashboard.');
+  const account = options.accountId || await onlyAccount(api);
 
   const tunnels = await api.get<{id:string; name:string}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
   const tunnel = tunnels.find(item => item.name === name) ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
+  // A reused tunnel may still publish hostnames from an earlier setup. Those bypass the Worker, so stop and say which.
+  const ingress = await api.call<{config?:{ingress?:{hostname?:string}[]} | null}>('GET', `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations`, undefined, 'read the tunnel configuration')
+    .then(json => json.result?.config?.ingress ?? [], (error:unknown) => { if (error instanceof WaypostError && error.details?.httpStatus === 404) return []; throw error; });
+  const published = ingress.flatMap(rule => rule.hostname ? [rule.hostname] : []);
+  if (published.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still publishes ${published.join(', ')}, which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {hostnames:published});
   const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
   if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
   await writeSecret(options.tunnelTokenFile, tunnelToken);
@@ -38,6 +45,11 @@ export async function setupCloudflare(options:Options) {
     ? await api.send<{service_id:string}>('PUT', `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, 'update the VPC service')
     : await api.send<{service_id:string}>('POST', `/accounts/${account}/connectivity/directory/services`, service, 'create the VPC service');
 
+  // Never overwrite someone's other Worker that happens to share the name.
+  const current = await api.call<{bindings?:{type:string; name:string}[]}>('GET', `/accounts/${account}/workers/scripts/${name}/settings`, undefined, 'check for an existing Worker')
+    .then(json => json.result, (error:unknown) => { if (error instanceof WaypostError && (error.details?.httpStatus === 404 || error.details?.cloudflareCode === 10007)) return null; throw error; });
+  const ours = !current || (current.bindings ?? []).every(binding => binding.name === 'ORIGIN_VPC' && binding.type === 'vpc_service');
+  if (!ours && !options.replaceWorker) throw new WaypostError('WORKER_EXISTS', `A Worker named ${name} already exists on this account and isn't a Waypost front door. Pass a different --name, or --replace-worker to overwrite it.`);
   const form = new FormData();
   form.set('metadata', JSON.stringify({main_module:'worker.js', compatibility_date:'2026-09-01', bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:vpc.service_id}], observability:{enabled:false}}));
   form.set('worker.js', new File([WORKER_SOURCE], 'worker.js', {type:'application/javascript+module'}));
@@ -54,7 +66,7 @@ export async function setupCloudflare(options:Options) {
     await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:true, previews_enabled:false}, 'turn on the workers.dev address');
     publicUrl = `https://${name}.${subdomain}.workers.dev`;
   }
-  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!tunnels.some(item => item.name === name)}, vpcService:{id:vpc.service_id, created:!existing}, worker:name, tunnelTokenFile:options.tunnelTokenFile,
+  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!tunnels.some(item => item.name === name)}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile,
     next:[
       `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
       'Start it: docker compose up -d',
@@ -79,7 +91,7 @@ function client(token:string, base:string) {
   };
   return {
     call,
-    get: async <T>(path:string, step:string) => (await call<T>('GET', path, undefined, step)).result,
+    get: async <T>(path:string, step:string, extra:string[] = []) => (await call<T>('GET', path, undefined, step, extra)).result,
     send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
     list: async <T>(path:string, step:string) => {
       const items:T[] = [];
@@ -95,7 +107,7 @@ function client(token:string, base:string) {
 type Api = ReturnType<typeof client>;
 
 async function onlyAccount(api:Api) {
-  const accounts = await api.get<{id:string; name:string}[]>('/accounts?per_page=50', 'list your accounts');
+  const accounts = (await api.get<{id:string; name:string}[]>('/accounts?per_page=50', 'list your accounts')).filter(item => ACCOUNT_ID.test(item.id));
   if (accounts.length === 1) return accounts[0]!.id;
   if (!accounts.length) throw new WaypostError('CLOUDFLARE_DENIED', `The API token can see no Cloudflare account. Give it these permissions: ${API_TOKEN_PERMISSIONS.join('; ')}.`);
   throw new WaypostError('ACCOUNT_AMBIGUOUS', 'The API token can see more than one Cloudflare account. Pass --account-id with the one to use.', {accounts:accounts.map(item => ({id:item.id, name:item.name}))});
@@ -112,10 +124,10 @@ async function workersSubdomain(api:Api, account:string, wanted:string | undefin
 async function findZone(api:Api, account:string, hostname:string) {
   const labels = hostname.split('.');
   for (let i = 0; i < labels.length - 1; i++) {
-    const zones = await api.get<{id:string; name:string}[]>(`/zones?name=${encodeURIComponent(labels.slice(i).join('.'))}&account.id=${account}`, 'find your domain');
+    const zones = await api.get<{id:string; name:string}[]>(`/zones?name=${encodeURIComponent(labels.slice(i).join('.'))}&account.id=${account}`, 'find your domain', DOMAIN_PERMISSIONS);
     if (zones[0]) return zones[0].id;
   }
-  throw new WaypostError('ZONE_NOT_FOUND', `No domain on this Cloudflare account contains ${hostname}. Leave out --hostname to use the free workers.dev address.`);
+  throw new WaypostError('ZONE_NOT_FOUND', `No domain on this Cloudflare account contains ${hostname}, or the API token can't read it (it needs ${DOMAIN_PERMISSIONS.join(', ')}). Leave out --hostname to use the free workers.dev address.`);
 }
 function hostOnly(value:string) {
   const host = value.includes('://') ? new URL(value).hostname : value.replace(/\/.*$/, '');
