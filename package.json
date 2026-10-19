@@ -43,18 +43,18 @@
     "commander": "15.0.0",
     "html-to-text": "10.0.1",
     "ical.js": "2.2.1",
-    "imapflow": "2.2.10",
-    "mailparser": "3.9.36",
-    "nodemailer": "10.0.16",
+    "imapflow": "2.4.0",
+    "mailparser": "3.9.38",
+    "nodemailer": "10.1.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/html-to-text": "9.0.4",
     "@types/mailparser": "3.9.0",
-    "@types/node": "26.6.4",
+    "@types/node": "26.6.5",
     "@types/nodemailer": "8.0.2",
     "esbuild": "0.28.2",
-    "playwright-core": "1.63.0",
+    "playwright-core": "1.64.0",
     "typescript": "7.0.2"
   }
 }
