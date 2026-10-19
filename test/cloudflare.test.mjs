@@ -32,18 +32,19 @@ async function fakeCloudflare(t, state = {}) {
       if (req.method === 'GET') return [200, ok(cf.tunnels.filter(item => item.name === url.searchParams.get('name')))];
       const json = JSON.parse(body.toString());
       assert.equal(json.config_src, 'cloudflare');
-      const tunnel = {id:`1111111${cf.tunnels.length}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
+      const tunnel = {id:`1111111${cf.tunnels.length + (cf.deletedTunnels?.length ?? 0)}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
       cf.tunnels.push(tunnel); return [200, ok(tunnel)];
     }
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return cf.failTokenRead ? fail(500, 1000, 'internal error') : [200, ok(tokenFor(m[1]))];
-    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)$/)) && req.method === 'DELETE') { cf.tunnels = cf.tunnels.filter(item => item.id !== m[1]); return [200, ok({id:m[1]})]; }
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)$/)) && req.method === 'DELETE') { cf.deletedTunnels = [...cf.deletedTunnels ?? [], ...cf.tunnels.filter(item => item.id === m[1]).map(item => ({...item, deleted_at:'2026-10-19T00:00:00Z'}))]; cf.tunnels = cf.tunnels.filter(item => item.id !== m[1]); return [200, ok({id:m[1]})]; }
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)$/))) { const found = [...cf.tunnels, ...cf.deletedTunnels ?? []].find(item => item.id === m[1]); return found ? [200, ok({deleted_at:null, ...found})] : fail(404, 1003, 'tunnel not found'); }
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? [], ...(cf.warpRouting ? {'warp-routing':{enabled:true}} : {})}})];
     if (path.endsWith('/teamnet/routes')) return [200, {...ok((cf.privateRoutes ?? []).filter(route => route.tunnel_id === url.searchParams.get('tunnel_id'))), result_info:{page:1, total_pages:1}}];
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, cf.missingScriptCode ?? 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
       if (req.method === 'GET') {
         if (!cf.pageSize) return [200, {...ok(cf.services), result_info:{page:1, total_pages:1}}];
-        if (cf.ignorePage) return [200, ok(cf.services.slice(0, cf.pageSize))];
+        if (cf.ignorePage) return [200, {...ok(cf.services.slice(0, cf.pageSize)), ...(cf.totalCount ? {result_info:{total_count:cf.services.length}} : {})}];
         const page = Number(url.searchParams.get('page')), slice = cf.services.slice((page - 1) * cf.pageSize, page * cf.pageSize);
         return [200, cf.pageCount ? {...ok(slice), result_info:{page, total_pages:Math.ceil(cf.services.length / cf.pageSize)}} : ok(slice)];
       }
@@ -451,4 +452,44 @@ test('the CLI reads the API credential only from CLOUDFLARE_API_TOKEN', async t 
   assert.match(JSON.parse(missing.stderr).error.message, /CLOUDFLARE_API_TOKEN/);
   const flag = await cli(['setup', 'cloudflare', '--tunnel-token-file', join(dir, 't'), '--api-token', 'x']);
   assert.match(flag.stderr, /unknown option/);
+});
+
+test('an endpoint that ignores page and fills every page is not taken as complete', async t => {
+  const dir = await root(t);
+  const filler = Array.from({length:70}, (_, i) => ({service_id:`f-${i}`, name:`other-${i}`}));
+  const capped = await fakeCloudflare(t, {pageSize:50, ignorePage:true, services:filler});
+  await assert.rejects(run(capped, join(dir, 't')), error => { assert.equal(error.code, 'CLOUDFLARE_FAILED'); assert.match(error.message, /same 50 results/); return true; });
+  const counted = await fakeCloudflare(t, {pageSize:20, ignorePage:true, totalCount:true, services:filler.slice(0, 25)});
+  await assert.rejects(run(counted, join(dir, 'c')), error => { assert.equal(error.code, 'CLOUDFLARE_FAILED'); assert.match(error.message, /reported 25 results but sent 20/); return true; });
+  assert.deepEqual([capped.tunnels.length, counted.tunnels.length], [0, 0]);
+});
+
+test('a token for a deleted tunnel is stale, not in use, and a swapped token says to restart the tunnel', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  const first = await run(cf, join(dir, 't'));
+  assert.equal(first.tunnelTokenReplaced, false);
+  assert.ok(first.next.some(step => step === 'Start it: docker compose up -d'));
+  const again = await run(cf, join(dir, 't'));
+  assert.equal(again.tunnelTokenReplaced, false);
+  // Deleted in the dashboard: the rerun makes a new tunnel without --replace and says to restart cloudflared.
+  cf.deletedTunnels = cf.tunnels.map(item => ({...item, deleted_at:'2026-10-19T00:00:00Z'})); cf.tunnels = [];
+  const fresh = await run(cf, join(dir, 't'));
+  assert.equal(fresh.tunnel.created, true);
+  assert.notEqual(fresh.tunnel.id, first.tunnel.id);
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(fresh.tunnel.id));
+  assert.equal(fresh.tunnelTokenReplaced, true);
+  assert.ok(fresh.next.some(step => step.includes('docker compose up -d --force-recreate cloudflared')));
+  // A token for a tunnel that still exists elsewhere is still in use, and --replace also says to restart.
+  await holdToken(join(dir, 'u'), '99999999-2222-3333-4444-555555555555');
+  cf.tunnels.push({id:'99999999-2222-3333-4444-555555555555', name:'other', config_src:'cloudflare'});
+  await assert.rejects(run(cf, join(dir, 'u'), {name:'second'}), {code:'TOKEN_FILE_IN_USE'});
+  const replaced = await run(cf, join(dir, 'u'), {name:'second', replace:true});
+  assert.ok(replaced.next.some(step => step.includes('--force-recreate cloudflared')));
+});
+
+test('the missing-subdomain message names the address this --name gets', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {subdomain:null});
+  await assert.rejects(run(cf, join(dir, 't'), {name:'alice-waypost'}), error => { assert.match(error.message, /https:\/\/alice-waypost\.<name>\.workers\.dev/); return true; });
 });

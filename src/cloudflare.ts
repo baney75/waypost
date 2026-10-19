@@ -15,7 +15,7 @@ const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
 
 type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; replace?:boolean | undefined; reuse?:boolean | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
-type Envelope<T> = {success:boolean; result:T; errors?:{code:number; message:string}[]; result_info?:{page?:number; total_pages?:number}};
+type Envelope<T> = {success:boolean; result:T; errors?:{code:number; message:string}[]; result_info?:{page?:number; total_pages?:number; total_count?:number}};
 
 export async function setupCloudflare(options:Options) {
   const name = options.name ?? 'waypost';
@@ -56,14 +56,19 @@ export async function setupCloudflare(options:Options) {
   // change the user wasn't shown. First: the token of a different tunnel this host runs now, whose address would stop
   // working if a new or shared tunnel's token replaced it.
   const conflicts:{code:string; what:string}[] = [];
-  const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id);
+  // A token for a tunnel since deleted on this account is stale, not in use: nothing still answers on it.
+  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && /^[0-9a-f-]{36}$/i.test(held.tunnelId)
+    && await api.get<{deleted_at?:string | null}>(`/accounts/${account}/cfd_tunnel/${held.tunnelId}`, 'check the tunnel this host holds').then(item => !!item?.deleted_at, () => false);
+  const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({code:'TOKEN_FILE_IN_USE', what:`${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)`});
 
-  // A same-named VPC service is ours only if it already points at this tunnel's waypost container.
+  // A same-named VPC service is ours only if it already points at this tunnel's waypost container (or at the deleted
+  // tunnel this host held, which the rerun replaces).
   type Service = {service_id:string; name:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}}};
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
   const existing = services.find(item => item.name === name);
-  const serviceIsOurs = !!existing && !!reused && existing.host?.resolver_network?.tunnel_id === reused.id && existing.host?.hostname === originHost && existing.http_port === originPort;
+  const ownTunnel = reused?.id ?? (stale ? held.tunnelId : undefined);
+  const serviceIsOurs = !!existing && !!ownTunnel && existing.host?.resolver_network?.tunnel_id === ownTunnel && existing.host?.hostname === originHost && existing.http_port === originPort;
   if (existing && !serviceIsOurs) conflicts.push({code:'VPC_SERVICE_EXISTS', what:`the VPC service ${name}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed`});
 
   // Never overwrite someone's other Worker that happens to share the name: it counts as Waypost's only with exactly
@@ -91,7 +96,7 @@ export async function setupCloudflare(options:Options) {
 
   const zone = hostname ? await findZone(api, account, hostname) : undefined;
   const subdomain = hostname ? undefined : await workersSubdomain(api, account);
-  if (!hostname && !subdomain && !options.workersSubdomain) throw new WaypostError('WORKERS_SUBDOMAIN_NEEDED', 'This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://waypost.<name>.workers.dev.');
+  if (!hostname && !subdomain && !options.workersSubdomain) throw new WaypostError('WORKERS_SUBDOMAIN_NEEDED', `This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://${name}.<name>.workers.dev.`);
   if (subdomain && options.workersSubdomain && subdomain !== options.workersSubdomain) throw new WaypostError('INPUT_INVALID', `This account already uses the workers.dev subdomain ${subdomain}, so your address is https://${name}.${subdomain}.workers.dev. Leave out --workers-subdomain.`);
 
   // Writes, now that nothing above refused. A new workers.dev subdomain goes first: it is the one write that can
@@ -129,10 +134,13 @@ export async function setupCloudflare(options:Options) {
     await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:true, previews_enabled:false}, 'turn on the workers.dev address');
     publicUrl = `https://${name}.${registered}.workers.dev`;
   }
-  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!reused}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile,
+  // A running cloudflared keeps the token it started with (compose mounts the old file), so a swapped token needs a
+  // recreate; `up -d` alone leaves an unchanged container running.
+  const tokenReplaced = tokenInUse || stale;
+  return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!reused}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile, tunnelTokenReplaced:tokenReplaced,
     next:[
       `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
-      'Start it: docker compose up -d',
+      tokenReplaced ? 'Start it, restarting the tunnel so it uses the new token: docker compose up -d --force-recreate cloudflared && docker compose up -d' : 'Start it: docker compose up -d',
       `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`,
     ], cost:'Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account.'};
 }
@@ -158,17 +166,28 @@ function client(token:string, base:string) {
     send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
     // Ownership checks read these lists, so a partial list is an error, never a shorter answer.
     list: async <T>(path:string, step:string) => {
-      const items:T[] = [];
-      let previous = '';
+      const items:T[] = [], perPage = 50;
+      let previous = '', firstLength = 0, total:number | undefined;
+      const done = () => {
+        if (total !== undefined && items.length < total) throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare reported ${total} results but sent ${items.length} when asked to ${step}, so this can't check them all.`);
+        return items;
+      };
       for (let page = 1; page <= 40; page++) {
-        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=50&page=${page}`, undefined, step);
+        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=${perPage}&page=${page}`, undefined, step);
         const result = json.result ?? [], first = JSON.stringify(result[0] ?? null);
+        if (typeof json.result_info?.total_count === 'number') total = json.result_info.total_count;
         // Trust total_pages when Cloudflare sends it. Without it, page on until an empty page, since a server may cap
-        // pages below per_page; a page that repeats the last one means the endpoint doesn't page and sent everything.
-        if (!result.length || first === previous) return items;
+        // pages below per_page. A page that repeats the last one means the endpoint ignores `page`: that sent
+        // everything unless the first page was exactly per_page long, which could be a cap hiding the rest.
+        if (!result.length) return done();
+        if (first === previous) {
+          if (firstLength === perPage) throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare sent the same ${perPage} results for every page when asked to ${step}, so this can't check them all.`);
+          return done();
+        }
+        if (page === 1) firstLength = result.length;
         previous = first; items.push(...result);
         const pages = json.result_info?.total_pages;
-        if (pages !== undefined && pages <= page) return items;
+        if (pages !== undefined && pages <= page) return done();
       }
       throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare returned more than 40 pages when asked to ${step}, so this can't check them all.`);
     },
