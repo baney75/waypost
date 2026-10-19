@@ -52,7 +52,7 @@ On your account it creates a tunnel named `waypost`, a Workers VPC service that 
 - **Set up with an earlier version of this guide?** If a Worker such as `waypost-proxy` already serves Waypost on your domain, skip this step; that tunnel and Worker keep working. Running it would add a second front door on workers.dev, and switching Waypost's address to it would break the claude.ai connector you already have.
 - **Already have a domain on Cloudflare?** Add `--hostname waypost.example.com` to serve it there instead. Give the token two more permissions first: **Zone → Workers Routes → Edit** and **Zone → Zone → Read**. The hostname must not already have a DNS record. Cloudflare checks that last, when it attaches the domain; if it refuses, remove the record and run the same command again. Once a domain is set, keep passing the same `--hostname` on every rerun.
 
-The server opens no inbound port and has no public hostname. cloudflared dials out to Cloudflare over QUIC (outbound UDP port 7844), and only your Worker can reach it through Workers VPC.
+The server opens no inbound port and has no public hostname. cloudflared dials out to Cloudflare over QUIC (outbound UDP port 7844), and only Workers on your account that bind its VPC service (setup makes one, your front door) can reach it through Workers VPC. Every `/mcp` request still needs an OAuth or Waypost bearer token.
 
 <details><summary>Prefer the dashboard and Wrangler?</summary>
 

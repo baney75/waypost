@@ -33,8 +33,9 @@ export async function setupCloudflare(options:Options) {
   const originHost = options.originHost ?? 'waypost', originPort = options.originPort ?? 8787;
 
   // Read-only checks first, so a refusal leaves nothing half-made.
-  const tunnels = await api.get<{id:string; name:string; config_src?:string; remote_config?:boolean; status?:string; connections?:unknown[]}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
-  const reused = tunnels.find(item => item.name === name);
+  const tunnels = (await api.list<{id:string; name:string; config_src?:string; remote_config?:boolean; status?:string; connections?:unknown[]}>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels')).filter(item => item.name === name);
+  if (tunnels.length > 1) throw new WaypostError('TUNNEL_EXISTS', `This account has ${tunnels.length} tunnels named ${name}, so this can't tell which is this Waypost's. Delete the extras under Networking → Tunnels, or pass a different --name.`, {tunnels:tunnels.map(item => item.id)});
+  const reused = tunnels[0];
   if (reused) {
     // One Waypost per tunnel: a tunnel this host doesn't already hold belongs to another server (two people on one
     // account), and a second connector would split their agents' traffic between two Waypost instances.
@@ -73,18 +74,18 @@ export async function setupCloudflare(options:Options) {
   // A same-named VPC service is ours only if it already points at this tunnel's waypost container, or at a deleted
   // tunnel this host can prove was its own. Anyone else's is never repointed, even with --replace: every Worker bound
   // to it would get a path to this server around the front door.
-  type Service = {service_id:string; name:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}; network?:{tunnel_id?:string}}};
+  type Service = {service_id:string; name:string; type?:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}; network?:{tunnel_id?:string}}};
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
   const named = services.filter(item => item.name === name);
   if (named.length > 1) throw new WaypostError('VPC_SERVICE_EXISTS', `This account has ${named.length} VPC services named ${name}, so this can't tell which is this Waypost's. Delete the extras under Workers VPC, or pass a different --name.`, {services:named.map(item => item.service_id)});
   const existing = named[0];
   const via = (item:Service) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
-  // Ours: it reaches this origin through the reused tunnel; or through the deleted tunnel whose token this host holds;
-  // or, while this host holds the reused tunnel's token, through any deleted tunnel (a recovery that wrote the new
-  // token and then stopped leaves the service on the old one). No tunnel id at all is never ours.
+  // Ours: it reaches this origin through the reused tunnel, or through the deleted tunnel whose token this host holds.
+  // The service is repointed before the new token is written, so the token file stays the proof until both move
+  // together. No tunnel id at all is never ours.
   const tunnelOf = existing ? via(existing) : undefined;
   const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort
-    && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId) || (!!reused && held.tunnelId === reused.id && await deletedTunnel(tunnelOf)));
+    && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId));
   // Any other VPC service through a reused tunnel lets that service's Workers reach the server around this front door.
   const others = reused ? services.filter(item => item !== existing && via(item) === reused.id).map(item => item.name) : [];
   if (others.length) throw new WaypostError('TUNNEL_HAS_VPC_SERVICES', `The ${name} tunnel also carries the VPC service${others.length > 1 ? 's' : ''} ${others.join(', ')}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? 'them' : 'it'} under Workers VPC, or pass a different --name.`, {services:others});
@@ -114,28 +115,36 @@ export async function setupCloudflare(options:Options) {
     throw new WaypostError(conflicts[0]!.code, `This would change things on your account that aren't this Waypost's: ${conflicts.map(item => item.what).join('; ')}. Pass a different --name${taken ? ' or --hostname' : ''}${tokenInUse ? ' or --tunnel-token-file' : ''}, or --replace to make ${conflicts.length > 1 ? 'all of these changes' : 'that change'}.`, {conflicts:conflicts.map(item => item.code)});
 
   const zone = hostname ? await findZone(api, account, hostname) : undefined;
-  const subdomain = hostname ? undefined : await workersSubdomain(api, account);
+  const subdomain = await workersSubdomain(api, account);
   if (!hostname && !subdomain && !options.workersSubdomain) throw new WaypostError('WORKERS_SUBDOMAIN_NEEDED', `This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://${name}.<name>.workers.dev.`);
-  if (subdomain && options.workersSubdomain && subdomain !== options.workersSubdomain) throw new WaypostError('INPUT_INVALID', `This account already uses the workers.dev subdomain ${subdomain}, so your address is https://${name}.${subdomain}.workers.dev. Leave out --workers-subdomain.`);
+  if (!hostname && subdomain && options.workersSubdomain && subdomain !== options.workersSubdomain) throw new WaypostError('INPUT_INVALID', `This account already uses the workers.dev subdomain ${subdomain}, so your address is https://${name}.${subdomain}.workers.dev. Leave out --workers-subdomain.`);
 
   // Writes, now that nothing above refused. A new workers.dev subdomain goes first: it is the one write that can
   // fail on a name someone else holds, and it routes nothing.
   const registered = hostname ? undefined : subdomain ?? (await api.send<{subdomain:string}>('PUT', `/accounts/${account}/workers/subdomain`, {subdomain:options.workersSubdomain}, 'register your workers.dev subdomain')).subdomain;
   const tunnel = reused ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
+  // The VPC service moves to the tunnel before the token file does, and a new tunnel's run undoes both on failure, so
+  // a rerun always finds the token file and the service agreeing (the token file is this host's proof of ownership).
+  const servicesPath = `/accounts/${account}/connectivity/directory/services`;
+  let vpc:{service_id:string} | undefined;
   try {
     const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
     if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
+    const service = {name, type:'http', host:{hostname:originHost, resolver_network:{tunnel_id:tunnel.id}}, http_port:originPort};
+    vpc = existing
+      ? await api.send<{service_id:string}>('PUT', `${servicesPath}/${existing.service_id}`, service, 'update the VPC service')
+      : await api.send<{service_id:string}>('POST', servicesPath, service, 'create the VPC service');
     await writeSecret(options.tunnelTokenFile, tunnelToken);
   } catch (error) {
-    // A tunnel this run made but couldn't hand to this host would look like someone else's on the rerun; remove it.
-    if (!reused) await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
+    // A tunnel this run made but couldn't hand to this host would look like someone else's on the rerun; remove it,
+    // and put the VPC service back where it was.
+    if (!reused) {
+      if (vpc && existing) await api.call('PUT', `${servicesPath}/${existing.service_id}`, {name:existing.name, type:existing.type ?? 'http', host:existing.host, http_port:existing.http_port}, 'restore the VPC service').catch(() => undefined);
+      else if (vpc) await api.call('DELETE', `${servicesPath}/${vpc.service_id}`, undefined, 'remove the unfinished VPC service').catch(() => undefined);
+      await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
+    }
     throw error;
   }
-
-  const service = {name, type:'http', host:{hostname:originHost, resolver_network:{tunnel_id:tunnel.id}}, http_port:originPort};
-  const vpc = existing
-    ? await api.send<{service_id:string}>('PUT', `/accounts/${account}/connectivity/directory/services/${existing.service_id}`, service, 'update the VPC service')
-    : await api.send<{service_id:string}>('POST', `/accounts/${account}/connectivity/directory/services`, service, 'create the VPC service');
 
   const form = new FormData();
   form.set('metadata', JSON.stringify({main_module:'worker.js', compatibility_date:'2026-09-01', bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:vpc.service_id}], observability:{enabled:false}}));
@@ -146,7 +155,8 @@ export async function setupCloudflare(options:Options) {
   if (hostname) {
     // workers.dev goes off first, so a refused domain attach (a DNS record in the way, a token without Workers Routes
     // Edit) leaves no public address at all rather than the one the caller meant to retire. Rerunning resumes.
-    await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:false, previews_enabled:false}, 'turn off the workers.dev address');
+    // An account with no workers.dev subdomain serves nothing there, so there is nothing to turn off.
+    if (subdomain) await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:false, previews_enabled:false}, 'turn off the workers.dev address');
     await api.send('PUT', `/accounts/${account}/workers/domains`, {hostname, service:name, zone_id:zone, environment:'production'}, 'attach your domain', DOMAIN_PERMISSIONS);
     publicUrl = `https://${hostname}`;
   } else {
@@ -159,7 +169,7 @@ export async function setupCloudflare(options:Options) {
   const tokenReplaced = tokenInUse || stale;
   return {publicUrl, accountId:account, tunnel:{id:tunnel.id, name, created:!reused}, vpcService:{id:vpc.service_id, created:!existing}, worker:{name, created:!current}, tunnelTokenFile:options.tunnelTokenFile, tunnelTokenReplaced:tokenReplaced,
     next:[
-      `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
+      `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner <your Proton address> (add --enable-writes to let agents write to the Agents calendar)`,
       'Start it (this also restarts the tunnel so it uses secrets/tunnel_token): docker compose up -d --force-recreate cloudflared && docker compose up -d',
       `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`,
     ], cost:'Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account.'};
