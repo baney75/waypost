@@ -225,8 +225,9 @@ test('a tunnel another server on the account runs is not joined by default', asy
   assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor('99999999-2222-3333-4444-555555555555'));
   assert.equal((await run(cf, join(dir, 't'), {reuse:true, replace:true})).tunnel.created, false);
   assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(id));
+  // Without the token file, a tunnel that carries a service is someone's finished setup: --reuse no longer joins it.
   await rm(join(dir, 't'));
-  assert.equal((await run(cf, join(dir, 't'), {reuse:true})).tunnel.created, false);
+  await assert.rejects(run(cf, join(dir, 't'), {reuse:true}), {code:'TUNNEL_IN_USE'});
 });
 
 test('the token file is one more change --replace must show, not a separate refusal', async t => {
@@ -620,4 +621,44 @@ test('two tunnels with the same name are refused before anything is written', as
   const cf = await fakeCloudflare(t, {tunnels:[{id:'11111110-2222-3333-4444-555555555555', name:'waypost', config_src:'cloudflare'}, {id:'11111111-2222-3333-4444-555555555555', name:'waypost', config_src:'cloudflare'}]});
   await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_EXISTS'); assert.match(error.message, /2 tunnels named waypost/); return true; });
   assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
+
+test('--reuse never joins a tunnel that already carries a service: that is a finished setup elsewhere', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const theirs = {service_id:'svc-a', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:id}}, http_port:8787};
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare', status:'inactive'}], services:[theirs], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-a'}]}}}});
+  await assert.rejects(run(cf, join(dir, 't'), {reuse:true, replace:true}), error => { assert.equal(error.code, 'TUNNEL_IN_USE'); assert.match(error.message, /already has a VPC service/); return true; });
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+});
+
+test('a failed --reuse run removes the service it made and leaves the bare tunnel for the rerun', {skip:asRoot}, async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const folder = join(dir, 'secrets'); await mkdir(folder);
+  t.after(() => chmod(folder, 0o700).catch(() => undefined));
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare', status:'inactive'}], onServiceWrite:() => chmod(folder, 0o500)});
+  await assert.rejects(run(cf, join(folder, 't'), {reuse:true}), {code:'PATH_UNWRITABLE'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length], [1, 0]);
+  await chmod(folder, 0o700); cf.onServiceWrite = undefined;
+  assert.deepEqual(Object.values((await run(cf, join(folder, 't'), {reuse:true})).tunnel), [id, 'waypost', false]);
+});
+
+test('a service write whose response is lost is still undone', async t => {
+  const dir = await root(t);
+  const lost = () => { throw new Error('connection dropped after the write'); };
+  // First run: the POST lands but its answer doesn't, so the service and the tunnel both go.
+  const fresh = await fakeCloudflare(t, {onServiceWrite:lost});
+  await assert.rejects(run(fresh, join(dir, 'fresh')), {code:'CLOUDFLARE_FAILED'});
+  assert.deepEqual([fresh.tunnels.length, fresh.services.length], [0, 0]);
+  // Recovery over a deleted tunnel: the PUT lands but its answer doesn't, so the service goes back where it was.
+  const deleted = '99999999-2222-3333-4444-555555555555';
+  const ours = {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:deleted}}, http_port:8787};
+  const cf = await fakeCloudflare(t, {deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[structuredClone(ours)], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}, onServiceWrite:lost});
+  await holdToken(join(dir, 't'), deleted);
+  await assert.rejects(run(cf, join(dir, 't')), {code:'CLOUDFLARE_FAILED'});
+  assert.deepEqual([cf.tunnels.length, cf.services[0]], [0, ours]);
+  cf.onServiceWrite = undefined;
+  assert.equal((await run(cf, join(dir, 't'))).vpcService.created, false);
 });

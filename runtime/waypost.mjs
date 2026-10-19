@@ -129985,6 +129985,7 @@ async function setupCloudflare(options) {
   if (named.length > 1) throw new WaypostError("VPC_SERVICE_EXISTS", `This account has ${named.length} VPC services named ${name4}, so this can't tell which is this Waypost's. Delete the extras under Workers VPC, or pass a different --name.`, { services: named.map((item) => item.service_id) });
   const existing = named[0];
   const via = (item) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
+  if (reused && held.tunnelId !== reused.id && services2.some((item) => via(item) === reused.id)) throw new WaypostError("TUNNEL_IN_USE", `The ${name4} tunnel already has a VPC service on it, so it was set up on another host, and this host doesn't hold its token (${options.tunnelTokenFile}). Pass a different --name for your own tunnel.`, { status: reused.status ?? null });
   const tunnelOf = existing ? via(existing) : void 0;
   const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort && (!!reused && tunnelOf === reused.id || stale && tunnelOf === held.tunnelId);
   const others = reused ? services2.filter((item) => item !== existing && via(item) === reused.id).map((item) => item.name) : [];
@@ -130014,18 +130015,25 @@ async function setupCloudflare(options) {
   const registered = hostname3 ? void 0 : subdomain ?? (await api.send("PUT", `/accounts/${account}/workers/subdomain`, { subdomain: options.workersSubdomain }, "register your workers.dev subdomain")).subdomain;
   const tunnel = reused ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
   const servicesPath = `/accounts/${account}/connectivity/directory/services`;
-  let vpc;
+  const undo = !reused || held.tunnelId !== reused.id;
+  let vpc, wrote = false;
   try {
     const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
     if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
     const service = { name: name4, type: "http", host: { hostname: originHost, resolver_network: { tunnel_id: tunnel.id } }, http_port: originPort };
+    wrote = true;
     vpc = existing ? await api.send("PUT", `${servicesPath}/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", servicesPath, service, "create the VPC service");
     await writeSecret(options.tunnelTokenFile, tunnelToken);
   } catch (error64) {
-    if (!reused) {
-      if (vpc && existing) await api.call("PUT", `${servicesPath}/${existing.service_id}`, { name: existing.name, type: existing.type ?? "http", host: existing.host, http_port: existing.http_port }, "restore the VPC service").catch(() => void 0);
-      else if (vpc) await api.call("DELETE", `${servicesPath}/${vpc.service_id}`, void 0, "remove the unfinished VPC service").catch(() => void 0);
-      await api.call("DELETE", `/accounts/${account}/cfd_tunnel/${tunnel.id}`, void 0, "remove the unfinished tunnel").catch(() => void 0);
+    if (undo) {
+      if (wrote) {
+        const now2 = (await api.list(servicesPath, "list VPC services").catch(() => [])).find((item) => item.name === name4);
+        if (now2 && via(now2) === tunnel.id) {
+          if (existing) await api.call("PUT", `${servicesPath}/${existing.service_id}`, { name: existing.name, type: existing.type ?? "http", host: existing.host, http_port: existing.http_port }, "restore the VPC service").catch(() => void 0);
+          else await api.call("DELETE", `${servicesPath}/${now2.service_id}`, void 0, "remove the unfinished VPC service").catch(() => void 0);
+        }
+      }
+      if (!reused) await api.call("DELETE", `/accounts/${account}/cfd_tunnel/${tunnel.id}`, void 0, "remove the unfinished tunnel").catch(() => void 0);
     }
     throw error64;
   }
@@ -130311,7 +130319,7 @@ var setup = program2.command("setup").description("Guided setup for the agent ca
 setup.command("quick").description("One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.").requiredOption("--public-url <url>", "Public HTTPS origin, such as https://waypost.example.com").requiredOption("--data <dir>", "Absolute private directory for Waypost state").option("--owner <email>", "Your Proton address, for notes and invitations").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address, 0.0.0.0 inside a container (default 127.0.0.1, or the stored value)").option("--enable-writes", "Let agents create and change agent calendar events (each still needs confirm: true)").action(async (options) => output2(await setupQuick(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port), enableWrites: options.enableWrites })));
 setup.command("calendar").description("Create the agent calendar store.").requiredOption("--dir <dir>", "Absolute private directory for the store").option("--name <name>", "Calendar name shown in Proton (default Agents, or the stored value)").option("--owner <email>", "Your Proton address, for notes and invitations").option("--organizer <email>", "A sending address you own, different from --owner, for invitations").option("--enable-writes", "Let agents write (each call still needs confirm: true)").action(async (options) => output2(await setupCalendar(configPath(), options)));
 setup.command("remote").description("Configure the remote MCP endpoint and print a passcode.").requiredOption("--public-url <url>", "Public HTTPS origin").requiredOption("--state-dir <dir>", "Absolute private directory for OAuth state").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address (default 127.0.0.1, or the stored value)").action(async (options) => output2(await setupRemote(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port) })));
-setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker that is not Waypost's, take a domain another Worker serves, or swap in a new tunnel over the token file's old one").option("--reuse", "Pick up a same-named tunnel that never connected, such as one left by a run that stopped partway").action(async (options) => {
+setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker that is not Waypost's, take a domain another Worker serves, or swap in a new tunnel over the token file's old one").option("--reuse", "Pick up a same-named tunnel that never connected and has no VPC service yet, such as one left by a run that stopped partway").action(async (options) => {
   const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!apiToken) throw new WaypostError("INPUT_INVALID", `Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with ${API_TOKEN_PERMISSIONS.join(", ")}. Do not put the token in command arguments.`);
   output2(await setupCloudflare({ ...options, accountId: options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || void 0, apiToken }));

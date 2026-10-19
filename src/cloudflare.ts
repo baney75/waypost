@@ -83,6 +83,9 @@ export async function setupCloudflare(options:Options) {
   // Ours: it reaches this origin through the reused tunnel, or through the deleted tunnel whose token this host holds.
   // The service is repointed before the new token is written, so the token file stays the proof until both move
   // together. No tunnel id at all is never ours.
+  // A failed run removes or restores the services it wrote, so a tunnel this host doesn't hold that already carries a
+  // service is a finished setup on another host (maybe not started yet), not one this host left behind.
+  if (reused && held.tunnelId !== reused.id && services.some(item => via(item) === reused.id)) throw new WaypostError('TUNNEL_IN_USE', `The ${name} tunnel already has a VPC service on it, so it was set up on another host, and this host doesn't hold its token (${options.tunnelTokenFile}). Pass a different --name for your own tunnel.`, {status:reused.status ?? null});
   const tunnelOf = existing ? via(existing) : undefined;
   const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort
     && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId));
@@ -126,11 +129,15 @@ export async function setupCloudflare(options:Options) {
   // The VPC service moves to the tunnel before the token file does, and a new tunnel's run undoes both on failure, so
   // a rerun always finds the token file and the service agreeing (the token file is this host's proof of ownership).
   const servicesPath = `/accounts/${account}/connectivity/directory/services`;
-  let vpc:{service_id:string} | undefined;
+  // Until the token file is written, this run's tunnel isn't this host's: a failure undoes the service write (judged
+  // from what Cloudflare holds now, since a write can land after its response is lost) and a tunnel this run made.
+  const undo = !reused || held.tunnelId !== reused.id;
+  let vpc:{service_id:string} | undefined, wrote = false;
   try {
     const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
     if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
     const service = {name, type:'http', host:{hostname:originHost, resolver_network:{tunnel_id:tunnel.id}}, http_port:originPort};
+    wrote = true;
     vpc = existing
       ? await api.send<{service_id:string}>('PUT', `${servicesPath}/${existing.service_id}`, service, 'update the VPC service')
       : await api.send<{service_id:string}>('POST', servicesPath, service, 'create the VPC service');
@@ -138,10 +145,15 @@ export async function setupCloudflare(options:Options) {
   } catch (error) {
     // A tunnel this run made but couldn't hand to this host would look like someone else's on the rerun; remove it,
     // and put the VPC service back where it was.
-    if (!reused) {
-      if (vpc && existing) await api.call('PUT', `${servicesPath}/${existing.service_id}`, {name:existing.name, type:existing.type ?? 'http', host:existing.host, http_port:existing.http_port}, 'restore the VPC service').catch(() => undefined);
-      else if (vpc) await api.call('DELETE', `${servicesPath}/${vpc.service_id}`, undefined, 'remove the unfinished VPC service').catch(() => undefined);
-      await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
+    if (undo) {
+      if (wrote) {
+        const now = (await api.list<Service>(servicesPath, 'list VPC services').catch(() => [] as Service[])).find(item => item.name === name);
+        if (now && via(now) === tunnel.id) {
+          if (existing) await api.call('PUT', `${servicesPath}/${existing.service_id}`, {name:existing.name, type:existing.type ?? 'http', host:existing.host, http_port:existing.http_port}, 'restore the VPC service').catch(() => undefined);
+          else await api.call('DELETE', `${servicesPath}/${now.service_id}`, undefined, 'remove the unfinished VPC service').catch(() => undefined);
+        }
+      }
+      if (!reused) await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
     }
     throw error;
   }
