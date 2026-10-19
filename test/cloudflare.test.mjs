@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -11,7 +11,9 @@ import { WORKER_SOURCE } from '../dist/worker-source.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const FAKE_API = ['synthetic', 'api', '0123456789'].join('-');
-const FAKE_TUNNEL = ['synthetic', 'tunnel', 'eyJhIjoi'].join('-');
+const tokenFor = id => Buffer.from(JSON.stringify({a:ACCOUNT, t:id, s:'synthetic-secret'})).toString('base64');
+const FAKE_TUNNEL = tokenFor('11111110-2222-3333-4444-555555555555');
+const holdToken = (file, id) => writeFile(file, tokenFor(id));
 
 async function root(t) { const dir = await mkdtemp(join(tmpdir(), 'waypost-cf-')); t.after(() => rm(dir, {recursive:true, force:true})); return dir; }
 
@@ -33,10 +35,11 @@ async function fakeCloudflare(t, state = {}) {
       const tunnel = {id:`1111111${cf.tunnels.length}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
       cf.tunnels.push(tunnel); return [200, ok(tunnel)];
     }
-    if (/^\/accounts\/\w+\/cfd_tunnel\/[\w-]+\/token$/.test(path)) return [200, ok(FAKE_TUNNEL)];
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return [200, ok(tokenFor(m[1]))];
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? []}})];
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
+      if (req.method === 'GET' && cf.pageSize) { const page = Number(url.searchParams.get('page')); return [200, ok(cf.services.slice((page - 1) * cf.pageSize, page * cf.pageSize))]; }
       if (req.method === 'GET') return [200, {...ok(cf.services), result_info:{page:1, total_pages:1}}];
       const service = {service_id:`svc-${cf.services.length}`, ...JSON.parse(body.toString())};
       cf.services.push(service); return [200, ok(service)];
@@ -58,6 +61,7 @@ async function fakeCloudflare(t, state = {}) {
       cf.subdomain = wanted; return [200, ok({subdomain:cf.subdomain})];
     }
     if (path.endsWith('/workers/domains')) {
+      if (req.method !== 'GET' && cf.denyDomainAttach) return fail(403, 10000, 'Authentication error');
       if (req.method === 'GET') return [200, {...ok(cf.domains), result_info:{page:1, total_pages:1}}];
       const domain = JSON.parse(body.toString());
       cf.domains = [...cf.domains.filter(item => item.hostname !== domain.hostname), domain]; return [200, ok(domain)];
@@ -88,9 +92,9 @@ test('setup cloudflare builds a free workers.dev front door on the caller\'s own
   assert.equal(result.accountId, ACCOUNT);
   assert.equal(result.tunnel.created, true);
   assert.equal(result.vpcService.created, true);
-  assert.equal(await readFile(tokenFile, 'utf8'), FAKE_TUNNEL);
+  assert.equal(await readFile(tokenFile, 'utf8'), tokenFor(cf.tunnels[0].id));
   assert.equal((await stat(tokenFile)).mode & 0o777, 0o600);
-  assert.ok(!JSON.stringify(result).includes(FAKE_TUNNEL) && !JSON.stringify(result).includes(FAKE_API), 'no secret in the output');
+  assert.ok(!JSON.stringify(result).includes(tokenFor(cf.tunnels[0].id)) && !JSON.stringify(result).includes(FAKE_API), 'no secret in the output');
   assert.deepEqual(cf.services[0], {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:cf.tunnels[0].id}}, http_port:8787});
   const script = cf.scripts.waypost;
   assert.deepEqual(script.metadata.bindings, [{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]);
@@ -188,14 +192,70 @@ test('setup cloudflare refuses to write the tunnel token through a link', async 
   await symlink(join(dir, 'elsewhere'), join(dir, 'tunnel_token'));
   await assert.rejects(run(cf, join(dir, 'tunnel_token')), {code:'PATH_UNSAFE'});
   assert.equal(await readFile(join(dir, 'elsewhere'), 'utf8'), '');
+  assert.deepEqual(cf.calls, [], 'refused before any Cloudflare call');
+});
+
+test('an unusable token destination is refused before anything is created on Cloudflare', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await assert.rejects(run(cf, join(dir, 'no-such-folder', 'tunnel_token')), {code:'PATH_UNWRITABLE'});
+  await mkdir(join(dir, 'folder'));
+  await assert.rejects(run(cf, join(dir, 'folder')), {code:'PATH_UNSAFE'});
+  assert.deepEqual([cf.calls.length, cf.tunnels.length, cf.services.length], [0, 0, 0]);
+});
+
+test('a tunnel another server on the account runs is not joined by default', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}]});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TUNNEL_EXISTS'});
+  await holdToken(join(dir, 't'), '99999999-2222-3333-4444-555555555555');
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TUNNEL_EXISTS'});
+  assert.deepEqual([cf.services.length, Object.keys(cf.scripts).length], [0, 0]);
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor('99999999-2222-3333-4444-555555555555'));
+  assert.equal((await run(cf, join(dir, 't'), {reuse:true})).tunnel.created, false);
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(id));
+});
+
+test('a new tunnel does not silently replace the token of a tunnel this host runs', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await holdToken(join(dir, 't'), '99999999-2222-3333-4444-555555555555');
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TOKEN_FILE_IN_USE'});
+  await writeFile(join(dir, 'junk'), 'not a tunnel token');
+  await assert.rejects(run(cf, join(dir, 'junk')), {code:'TOKEN_FILE_IN_USE'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length], [0, 0]);
+  await writeFile(join(dir, 'empty'), '');
+  assert.equal((await run(cf, join(dir, 'empty'))).tunnel.created, true);
+  await rm(join(dir, 'empty'));
+  const moved = await fakeCloudflare(t);
+  await holdToken(join(dir, 't'), '99999999-2222-3333-4444-555555555555');
+  assert.equal((await run(moved, join(dir, 't'), {replace:true})).tunnel.created, true);
+});
+
+test('a domain Cloudflare refuses to attach leaves no workers.dev address behind', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {zones:[{id:'zone-1', name:'example.com'}], denyDomainAttach:true});
+  await assert.rejects(run(cf, join(dir, 't'), {hostname:'waypost.example.com'}), {code:'CLOUDFLARE_DENIED'});
+  assert.deepEqual(cf.scriptSubdomain.waypost, {enabled:false, previews_enabled:false});
+});
+
+test('a same-named service on a later page is still found when Cloudflare omits the page count', async t => {
+  const dir = await root(t);
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db', resolver_network:{tunnel_id:'99999999-2222-3333-4444-555555555555'}}, http_port:5432};
+  const filler = Array.from({length:50}, (_, i) => ({service_id:`f-${i}`, name:`other-${i}`}));
+  const cf = await fakeCloudflare(t, {pageSize:50, services:[...filler, foreign]});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'VPC_SERVICE_EXISTS'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length], [0, 51]);
 });
 
 test('setup cloudflare stops when a reused tunnel still publishes a public hostname', async t => {
   const dir = await root(t);
   const id = '11111110-2222-3333-4444-555555555555';
   const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], ingress:{[id]:[{hostname:'waypost.example.com', service:'http://waypost:8787'}, {service:'http_status:404'}]}});
+  await holdToken(join(dir, 't'), id);
   await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_HAS_PUBLIC_HOSTNAME'); assert.match(error.message, /waypost\.example\.com/); return true; });
-  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(id));
 });
 
 test('setup cloudflare never overwrites a different Worker that shares the name unless told to', async t => {
@@ -226,13 +286,14 @@ test('a same-named Worker with no bindings is not Waypost\'s either, and a refus
 test('a reused tunnel that forwards traffic, or whose routes Cloudflare cannot see, is refused', async t => {
   const dir = await root(t);
   const id = '11111110-2222-3333-4444-555555555555';
+  await holdToken(join(dir, 't'), id);
   const forwarding = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], ingress:{[id]:[{service:'http://waypost:8787'}]}});
   await assert.rejects(run(forwarding, join(dir, 't')), {code:'TUNNEL_HAS_PUBLIC_HOSTNAME'});
   const local = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'local'}]});
   await assert.rejects(run(local, join(dir, 't')), {code:'TUNNEL_LOCALLY_MANAGED'});
   const unknown = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}]});
   await assert.rejects(run(unknown, join(dir, 't')), {code:'TUNNEL_LOCALLY_MANAGED'});
-  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(id));
 });
 
 test('a same-named VPC service that points elsewhere is not repointed unless told to', async t => {
@@ -265,8 +326,13 @@ test('setup cloudflare rejects a malformed account id', async t => {
   await assert.rejects(run(cf, join(dir, 't'), {accountId:'../zones'}), {code:'INPUT_INVALID'});
 });
 
-test('the embedded front door is the committed deploy/cloudflare-worker/worker.js', async () => {
-  assert.equal(WORKER_SOURCE, await readFile(resolve('deploy/cloudflare-worker/worker.js'), 'utf8'));
+test('the committed src/worker-source.ts is what embed-worker.mjs generates from deploy/cloudflare-worker/worker.js', async t => {
+  // npm test rebuilds src/ and dist/ from worker.js first, so only the committed blob can show drift.
+  const committed = await new Promise(done => execFile('git', ['show', 'HEAD:src/worker-source.ts'], {maxBuffer:1 << 24}, (error, stdout) => done(error ? null : stdout)));
+  if (committed === null) return t.skip('not a git checkout');
+  const worker = await readFile(resolve('deploy/cloudflare-worker/worker.js'), 'utf8');
+  assert.equal(committed, `// Generated by scripts/embed-worker.mjs from deploy/cloudflare-worker/worker.js. Do not edit.\nexport const WORKER_SOURCE:string=${JSON.stringify(worker)};\n`);
+  assert.equal(WORKER_SOURCE, worker);
 });
 
 test('the CLI reads the API credential only from CLOUDFLARE_API_TOKEN', async t => {

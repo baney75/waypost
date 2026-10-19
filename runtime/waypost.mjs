@@ -129468,7 +129468,7 @@ async function remoteDoctor(base2) {
 
 // src/cloudflare.ts
 import { constants as constants11 } from "node:fs";
-import { lstat as lstat4, open as open11, rename as rename5, rm } from "node:fs/promises";
+import { lstat as lstat4, open as open11, readFile as readFile6, rename as rename5, rm, stat as stat8 } from "node:fs/promises";
 import { dirname as dirname5, isAbsolute as isAbsolute6, join as join10 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 
@@ -129485,6 +129485,7 @@ async function setupCloudflare(options) {
   if (!NAME.test(name4)) throw new WaypostError("INPUT_INVALID", "--name must be lowercase letters, digits and hyphens, up to 63 characters.");
   if (options.workersSubdomain !== void 0 && !NAME.test(options.workersSubdomain)) throw new WaypostError("INPUT_INVALID", "--workers-subdomain must be lowercase letters, digits and hyphens, up to 63 characters.");
   if (!isAbsolute6(options.tunnelTokenFile)) throw new WaypostError("INPUT_INVALID", "--tunnel-token-file must be an absolute path.");
+  const held = await inspectTokenFile(options.tunnelTokenFile);
   const hostname3 = options.hostname === void 0 ? void 0 : hostOnly(options.hostname);
   const api = client2(options.apiToken, options.apiBase ?? "https://api.cloudflare.com/client/v4");
   if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError("INPUT_INVALID", "--account-id must be the 32-character id from the Cloudflare dashboard.");
@@ -129493,6 +129494,7 @@ async function setupCloudflare(options) {
   const tunnels = await api.get(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels");
   const reused = tunnels.find((item) => item.name === name4);
   if (reused) {
+    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError("TUNNEL_EXISTS", `The ${name4} tunnel already exists and this host doesn't hold its token (${options.tunnelTokenFile}), so it probably belongs to another server on this account. Pass a different --name for your own tunnel, or --reuse if you mean to share it.`);
     if (!(reused.config_src === "cloudflare" || reused.config_src === void 0 && reused.remote_config === true)) throw new WaypostError("TUNNEL_LOCALLY_MANAGED", `The ${name4} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
     const ingress = await api.call("GET", `/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, void 0, "read the tunnel configuration").then((json3) => json3.result?.config?.ingress ?? [], (error64) => {
       if (error64 instanceof WaypostError && error64.details?.httpStatus === 404) return [];
@@ -129501,6 +129503,8 @@ async function setupCloudflare(options) {
     const routes = ingress.filter((rule) => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ""));
     if (routes.length) throw new WaypostError("TUNNEL_HAS_PUBLIC_HOSTNAME", `The ${name4} tunnel still routes public traffic (${routes.map((rule) => rule.hostname ?? `catch-all to ${rule.service}`).join(", ")}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking \u2192 Tunnels \u2192 ${name4}, or pass a different --name.`, { routes: routes.map((rule) => rule.hostname ?? rule.service ?? "") });
   }
+  if (!reused && held.present && !options.replace)
+    throw new WaypostError("TOKEN_FILE_IN_USE", `${options.tunnelTokenFile} already holds the token of a different tunnel, and a new one would replace it: the address you set up before would stop working and its claude.ai connector would need adding again. Pass --replace to move to the new tunnel, or a different --tunnel-token-file.`);
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
   const existing = services2.find((item) => item.name === name4);
   const serviceIsOurs = !!existing && !!reused && existing.host?.resolver_network?.tunnel_id === reused.id && existing.host?.hostname === originHost && existing.http_port === originPort;
@@ -129535,8 +129539,8 @@ async function setupCloudflare(options) {
   await api.send("PUT", `/accounts/${account}/workers/scripts/${name4}`, form, "upload the Worker");
   let publicUrl;
   if (hostname3) {
-    await api.send("PUT", `/accounts/${account}/workers/domains`, { hostname: hostname3, service: name4, zone_id: zone, environment: "production" }, "attach your domain", DOMAIN_PERMISSIONS);
     await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: false, previews_enabled: false }, "turn off the workers.dev address");
+    await api.send("PUT", `/accounts/${account}/workers/domains`, { hostname: hostname3, service: name4, zone_id: zone, environment: "production" }, "attach your domain", DOMAIN_PERMISSIONS);
     publicUrl = `https://${hostname3}`;
   } else {
     await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: true, previews_enabled: false }, "turn on the workers.dev address");
@@ -129577,13 +129581,14 @@ function client2(token3, base2) {
     get: async (path4, step, extra = []) => (await call("GET", path4, void 0, step, extra)).result,
     send: async (method, path4, body2, step, extra = []) => (await call(method, path4, body2, step, extra)).result,
     list: async (path4, step) => {
-      const items = [];
-      for (let page = 1; page <= 20; page++) {
-        const json3 = await call("GET", `${path4}${path4.includes("?") ? "&" : "?"}page=${page}`, void 0, step);
+      const items = [], perPage = 50;
+      for (let page = 1; page <= 40; page++) {
+        const json3 = await call("GET", `${path4}${path4.includes("?") ? "&" : "?"}per_page=${perPage}&page=${page}`, void 0, step);
         items.push(...json3.result ?? []);
-        if (!json3.result?.length || (json3.result_info?.total_pages ?? 1) <= page) break;
+        const pages = json3.result_info?.total_pages;
+        if (!json3.result?.length || (pages === void 0 ? json3.result.length < perPage : pages <= page)) return items;
       }
-      return items;
+      throw new WaypostError("CLOUDFLARE_FAILED", `Cloudflare returned more than ${40 * perPage} results to ${step}; narrow the account before running setup.`);
     }
   };
 }
@@ -129634,6 +129639,30 @@ async function writeSecret(path4, value) {
     await rm(temp, { force: true });
     if (error64 instanceof WaypostError) throw error64;
     throw new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
+  }
+}
+async function inspectTokenFile(path4) {
+  const unwritable = () => new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
+  const folder = await stat8(dirname5(path4)).catch(() => null);
+  if (!folder?.isDirectory()) throw unwritable();
+  const existing = await lstat4(path4).catch(() => null);
+  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", "--tunnel-token-file must be a regular file, not a link or directory.");
+  const probe = join10(dirname5(path4), `.${randomBytes4(6).toString("hex")}.tmp`);
+  try {
+    await (await open11(probe, constants11.O_WRONLY | constants11.O_CREAT | constants11.O_EXCL | constants11.O_NOFOLLOW, 384)).close();
+  } catch {
+    throw unwritable();
+  } finally {
+    await rm(probe, { force: true });
+  }
+  if (!existing || existing.size === 0 || existing.size > 4096) return { present: !!existing && existing.size > 0 };
+  const text3 = (await readFile6(path4, "utf8").catch(() => "")).trim();
+  if (!text3) return { present: false };
+  try {
+    const id2 = JSON.parse(Buffer.from(text3, "base64").toString("utf8")).t;
+    return typeof id2 === "string" ? { present: true, tunnelId: id2 } : { present: true };
+  } catch {
+    return { present: true };
   }
 }
 
@@ -129768,7 +129797,7 @@ var setup = program2.command("setup").description("Guided setup for the agent ca
 setup.command("quick").description("One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.").requiredOption("--public-url <url>", "Public HTTPS origin, such as https://waypost.example.com").requiredOption("--data <dir>", "Absolute private directory for Waypost state").option("--owner <email>", "Your Proton address, for notes and invitations").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address, 0.0.0.0 inside a container (default 127.0.0.1, or the stored value)").option("--enable-writes", "Let agents create and change agent calendar events (each still needs confirm: true)").action(async (options) => output2(await setupQuick(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port), enableWrites: options.enableWrites })));
 setup.command("calendar").description("Create the agent calendar store.").requiredOption("--dir <dir>", "Absolute private directory for the store").option("--name <name>", "Calendar name shown in Proton (default Agents, or the stored value)").option("--owner <email>", "Your Proton address, for notes and invitations").option("--organizer <email>", "A sending address you own, different from --owner, for invitations").option("--enable-writes", "Let agents write (each call still needs confirm: true)").action(async (options) => output2(await setupCalendar(configPath(), options)));
 setup.command("remote").description("Configure the remote MCP endpoint and print a passcode.").requiredOption("--public-url <url>", "Public HTTPS origin").requiredOption("--state-dir <dir>", "Absolute private directory for OAuth state").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address (default 127.0.0.1, or the stored value)").action(async (options) => output2(await setupRemote(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port) })));
-setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker or VPC service that is not Waypost's").action(async (options) => {
+setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker or VPC service that is not Waypost's, or swap in a new tunnel over the token file's old one").option("--reuse", "Share an existing same-named tunnel this host does not hold the token for").action(async (options) => {
   const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!apiToken) throw new WaypostError("INPUT_INVALID", `Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with ${API_TOKEN_PERMISSIONS.join(", ")}. Do not put the token in command arguments.`);
   output2(await setupCloudflare({ ...options, accountId: options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || void 0, apiToken }));

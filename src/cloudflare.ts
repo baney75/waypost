@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, open, rename, rm } from 'node:fs/promises';
+import { lstat, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { WaypostError } from './errors.js';
@@ -14,7 +14,7 @@ const DOMAIN_PERMISSIONS = ['Zone: Workers Routes Edit', 'Zone: Zone Read'];
 const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
 
-type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; replace?:boolean | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
+type Options = {apiToken:string; accountId?:string | undefined; name?:string | undefined; tunnelTokenFile:string; workersSubdomain?:string | undefined; hostname?:string | undefined; replace?:boolean | undefined; reuse?:boolean | undefined; originHost?:string | undefined; originPort?:number | undefined; apiBase?:string | undefined};
 type Envelope<T> = {success:boolean; result:T; errors?:{code:number; message:string}[]; result_info?:{page?:number; total_pages?:number}};
 
 export async function setupCloudflare(options:Options) {
@@ -22,6 +22,8 @@ export async function setupCloudflare(options:Options) {
   if (!NAME.test(name)) throw new WaypostError('INPUT_INVALID', '--name must be lowercase letters, digits and hyphens, up to 63 characters.');
   if (options.workersSubdomain !== undefined && !NAME.test(options.workersSubdomain)) throw new WaypostError('INPUT_INVALID', '--workers-subdomain must be lowercase letters, digits and hyphens, up to 63 characters.');
   if (!isAbsolute(options.tunnelTokenFile)) throw new WaypostError('INPUT_INVALID', '--tunnel-token-file must be an absolute path.');
+  // The token destination is checked before any Cloudflare call, so an unusable path leaves nothing half-made.
+  const held = await inspectTokenFile(options.tunnelTokenFile);
   const hostname = options.hostname === undefined ? undefined : hostOnly(options.hostname);
   const api = client(options.apiToken, options.apiBase ?? 'https://api.cloudflare.com/client/v4');
   if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError('INPUT_INVALID', '--account-id must be the 32-character id from the Cloudflare dashboard.');
@@ -33,6 +35,9 @@ export async function setupCloudflare(options:Options) {
   const tunnels = await api.get<{id:string; name:string; config_src?:string; remote_config?:boolean}[]>(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`, 'list tunnels');
   const reused = tunnels.find(item => item.name === name);
   if (reused) {
+    // One Waypost per tunnel: a tunnel this host doesn't already hold belongs to another server (two people on one
+    // account), and a second connector would split their agents' traffic between two Waypost instances.
+    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists and this host doesn't hold its token (${options.tunnelTokenFile}), so it probably belongs to another server on this account. Pass a different --name for your own tunnel, or --reuse if you mean to share it.`);
     // Cloudflare can't see the routes of a locally managed tunnel (they live in a cloudflared config.yml), so it
     // can't promise Worker-only access; a tunnel that doesn't say it's remotely managed counts as local. A remotely
     // managed one may still route public traffic from an earlier setup; only an empty ingress or a catch-all that
@@ -43,6 +48,10 @@ export async function setupCloudflare(options:Options) {
     const routes = ingress.filter(rule => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ''));
     if (routes.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still routes public traffic (${routes.map(rule => rule.hostname ?? `catch-all to ${rule.service}`).join(', ')}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {routes:routes.map(rule => rule.hostname ?? rule.service ?? '')});
   }
+
+  // A new tunnel would replace the token of a different tunnel this host runs now; that tunnel's address would stop working.
+  if (!reused && held.present && !options.replace)
+    throw new WaypostError('TOKEN_FILE_IN_USE', `${options.tunnelTokenFile} already holds the token of a different tunnel, and a new one would replace it: the address you set up before would stop working and its claude.ai connector would need adding again. Pass --replace to move to the new tunnel, or a different --tunnel-token-file.`);
 
   // A same-named VPC service is ours only if it already points at this tunnel's waypost container.
   type Service = {service_id:string; name:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}}};
@@ -93,8 +102,10 @@ export async function setupCloudflare(options:Options) {
 
   let publicUrl:string;
   if (hostname) {
-    await api.send('PUT', `/accounts/${account}/workers/domains`, {hostname, service:name, zone_id:zone, environment:'production'}, 'attach your domain', DOMAIN_PERMISSIONS);
+    // workers.dev goes off first, so a refused domain attach (a DNS record in the way, a token without Workers Routes
+    // Edit) leaves no public address at all rather than the one the caller meant to retire. Rerunning resumes.
     await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:false, previews_enabled:false}, 'turn off the workers.dev address');
+    await api.send('PUT', `/accounts/${account}/workers/domains`, {hostname, service:name, zone_id:zone, environment:'production'}, 'attach your domain', DOMAIN_PERMISSIONS);
     publicUrl = `https://${hostname}`;
   } else {
     await api.send('POST', `/accounts/${account}/workers/scripts/${name}/subdomain`, {enabled:true, previews_enabled:false}, 'turn on the workers.dev address');
@@ -128,13 +139,15 @@ function client(token:string, base:string) {
     get: async <T>(path:string, step:string, extra:string[] = []) => (await call<T>('GET', path, undefined, step, extra)).result,
     send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
     list: async <T>(path:string, step:string) => {
-      const items:T[] = [];
-      for (let page = 1; page <= 20; page++) {
-        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}page=${page}`, undefined, step);
+      const items:T[] = [], perPage = 50;
+      for (let page = 1; page <= 40; page++) {
+        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=${perPage}&page=${page}`, undefined, step);
         items.push(...(json.result ?? []));
-        if (!json.result?.length || (json.result_info?.total_pages ?? 1) <= page) break;
+        const pages = json.result_info?.total_pages;
+        // Trust total_pages when Cloudflare sends it; otherwise a full page means there may be another.
+        if (!json.result?.length || (pages === undefined ? json.result.length < perPage : pages <= page)) return items;
       }
-      return items;
+      throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare returned more than ${40 * perPage} results to ${step}; narrow the account before running setup.`);
     },
   };
 }
@@ -181,4 +194,25 @@ async function writeSecret(path:string, value:string) {
     if (error instanceof WaypostError) throw error;
     throw new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${path}. Check that its folder exists and that this user can write to it.`);
   }
+}
+
+// Reads what this host's tunnel token file holds, before any write. Cloudflare's tunnel token is base64 JSON whose
+// `t` is the tunnel id. Also proves a temp file can be created next to it, the way writeSecret will.
+async function inspectTokenFile(path:string):Promise<{present:boolean; tunnelId?:string}> {
+  const unwritable = () => new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${path}. Check that its folder exists and that this user can write to it.`);
+  const folder = await stat(dirname(path)).catch(() => null);
+  if (!folder?.isDirectory()) throw unwritable();
+  const existing = await lstat(path).catch(() => null);
+  if (existing && !existing.isFile()) throw new WaypostError('PATH_UNSAFE', '--tunnel-token-file must be a regular file, not a link or directory.');
+  const probe = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
+  try { await (await open(probe, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)).close(); }
+  catch { throw unwritable(); }
+  finally { await rm(probe, {force:true}); }
+  if (!existing || existing.size === 0 || existing.size > 4096) return {present:!!existing && existing.size > 0};
+  const text = (await readFile(path, 'utf8').catch(() => '')).trim();
+  if (!text) return {present:false};
+  try {
+    const id = (JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as {t?:unknown}).t;
+    return typeof id === 'string' ? {present:true, tunnelId:id} : {present:true};
+  } catch { return {present:true}; }
 }
