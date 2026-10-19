@@ -129965,8 +129965,7 @@ async function setupCloudflare(options) {
   const tunnels = await api.get(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels");
   const reused = tunnels.find((item) => item.name === name4);
   if (reused) {
-    const live = reused.status === "healthy" || reused.status === "degraded" || (reused.connections?.length ?? 0) > 0;
-    if (held.tunnelId !== reused.id && live) throw new WaypostError("TUNNEL_IN_USE", `The ${name4} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared) and run again with --reuse.`);
+    if (held.tunnelId !== reused.id && (reused.status !== "inactive" || (reused.connections?.length ?? 0) > 0)) throw new WaypostError("TUNNEL_IN_USE", reused.status === "healthy" || reused.status === "degraded" ? `The ${name4} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the tunnel under Networking \u2192 Tunnels and run again.` : `The ${name4} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the tunnel under Networking \u2192 Tunnels and run again.`, { status: reused.status ?? null });
     if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError("TUNNEL_EXISTS", `The ${name4} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
     if (!(reused.config_src === "cloudflare" || reused.config_src === void 0 && reused.remote_config === true)) throw new WaypostError("TUNNEL_LOCALLY_MANAGED", `The ${name4} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
     const config2 = (await api.get(`/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, "read the tunnel configuration"))?.config;
@@ -129976,13 +129975,15 @@ async function setupCloudflare(options) {
     if (routes.length) throw new WaypostError("TUNNEL_HAS_PUBLIC_HOSTNAME", `The ${name4} tunnel still routes public traffic (${routes.map((rule) => rule.hostname ?? `catch-all to ${rule.service}`).join(", ")}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking \u2192 Tunnels \u2192 ${name4}, or pass a different --name.`, { routes: routes.map((rule) => rule.hostname ?? rule.service ?? "") });
   }
   const conflicts = [];
-  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && /^[0-9a-f-]{36}$/i.test(held.tunnelId) && await api.get(`/accounts/${account}/cfd_tunnel/${held.tunnelId}`, "check the tunnel this host holds").then((item) => !!item?.deleted_at, () => false);
+  const deletedTunnel = async (id2) => /^[0-9a-f-]{36}$/i.test(id2) && await api.get(`/accounts/${account}/cfd_tunnel/${id2}`, "check a tunnel").then((item) => !!item?.deleted_at, () => false);
+  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({ code: "TOKEN_FILE_IN_USE", what: `${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)` });
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
   const existing = services2.find((item) => item.name === name4);
   const via = (item) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
-  const serviceIsOurs = !!existing && (via(existing) === reused?.id || stale && via(existing) === held.tunnelId) && existing.host?.hostname === originHost && existing.http_port === originPort;
+  const tunnelOf = existing ? via(existing) : void 0;
+  const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort && (!!reused && tunnelOf === reused.id || stale && tunnelOf === held.tunnelId || tunnelOf !== reused?.id && await deletedTunnel(tunnelOf));
   const others = reused ? services2.filter((item) => item.name !== name4 && via(item) === reused.id).map((item) => item.name) : [];
   if (others.length) throw new WaypostError("TUNNEL_HAS_VPC_SERVICES", `The ${name4} tunnel also carries the VPC service${others.length > 1 ? "s" : ""} ${others.join(", ")}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? "them" : "it"} under Workers VPC, or pass a different --name.`, { services: others });
   if (existing && !serviceIsOurs) conflicts.push({ code: "VPC_SERVICE_EXISTS", what: `the VPC service ${name4}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed` });

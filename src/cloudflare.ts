@@ -38,10 +38,12 @@ export async function setupCloudflare(options:Options) {
   if (reused) {
     // One Waypost per tunnel: a tunnel this host doesn't already hold belongs to another server (two people on one
     // account), and a second connector would split their agents' traffic between two Waypost instances.
-    // A tunnel with connectors up right now is serving someone, so joining it is refused even with --reuse; if those
-    // connectors are this host's own (its token file was lost), stopping cloudflared here first clears the way.
-    const live = reused.status === 'healthy' || reused.status === 'degraded' || (reused.connections?.length ?? 0) > 0;
-    if (held.tunnelId !== reused.id && live) throw new WaypostError('TUNNEL_IN_USE', `The ${name} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared) and run again with --reuse.`);
+    // Only a tunnel that has never connected ('inactive', what a run that stopped partway leaves) may be joined without
+    // its token. One that is up, or 'down' after running somewhere, belongs to a server that would lose its traffic.
+    // A missing status counts as in use.
+    if (held.tunnelId !== reused.id && (reused.status !== 'inactive' || (reused.connections?.length ?? 0) > 0)) throw new WaypostError('TUNNEL_IN_USE', reused.status === 'healthy' || reused.status === 'degraded'
+      ? `The ${name} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the tunnel under Networking → Tunnels and run again.`
+      : `The ${name} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the tunnel under Networking → Tunnels and run again.`, {status:reused.status ?? null});
     if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
     // Cloudflare can't see the routes of a locally managed tunnel (they live in a cloudflared config.yml), so it
     // can't promise Worker-only access; a tunnel that doesn't say it's remotely managed counts as local. A remotely
@@ -60,9 +62,11 @@ export async function setupCloudflare(options:Options) {
   // change the user wasn't shown. First: the token of a different tunnel this host runs now, whose address would stop
   // working if a new or shared tunnel's token replaced it.
   const conflicts:{code:string; what:string}[] = [];
-  // A token for a tunnel since deleted on this account is stale, not in use: nothing still answers on it.
-  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && /^[0-9a-f-]{36}$/i.test(held.tunnelId)
-    && await api.get<{deleted_at?:string | null}>(`/accounts/${account}/cfd_tunnel/${held.tunnelId}`, 'check the tunnel this host holds').then(item => !!item?.deleted_at, () => false);
+  // A token for a tunnel since deleted on this account is stale, not in use: nothing still answers on it. Any error
+  // reading the tunnel counts as not deleted.
+  const deletedTunnel = async (id:string) => /^[0-9a-f-]{36}$/i.test(id)
+    && await api.get<{deleted_at?:string | null}>(`/accounts/${account}/cfd_tunnel/${id}`, 'check a tunnel').then(item => !!item?.deleted_at, () => false);
+  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({code:'TOKEN_FILE_IN_USE', what:`${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)`});
 
@@ -72,7 +76,11 @@ export async function setupCloudflare(options:Options) {
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
   const existing = services.find(item => item.name === name);
   const via = (item:Service) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
-  const serviceIsOurs = !!existing && (via(existing) === reused?.id || (stale && via(existing) === held.tunnelId)) && existing.host?.hostname === originHost && existing.http_port === originPort;
+  // Ours: it reaches this origin through the reused tunnel, or through a tunnel since deleted, which routes nothing
+  // (a recovery that stopped partway leaves the service on the old one). No tunnel id at all is never ours.
+  const tunnelOf = existing ? via(existing) : undefined;
+  const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort
+    && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId) || (tunnelOf !== reused?.id && await deletedTunnel(tunnelOf)));
   // Any other VPC service through a reused tunnel lets that service's Workers reach the server around this front door.
   const others = reused ? services.filter(item => item.name !== name && via(item) === reused.id).map(item => item.name) : [];
   if (others.length) throw new WaypostError('TUNNEL_HAS_VPC_SERVICES', `The ${name} tunnel also carries the VPC service${others.length > 1 ? 's' : ''} ${others.join(', ')}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? 'them' : 'it'} under Workers VPC, or pass a different --name.`, {services:others});

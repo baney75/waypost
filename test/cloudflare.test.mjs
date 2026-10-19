@@ -29,7 +29,7 @@ async function fakeCloudflare(t, state = {}) {
     if (path === '/accounts') return [200, ok(cf.accounts)];
     let m;
     if (/^\/accounts\/\w+\/cfd_tunnel$/.test(path)) {
-      if (req.method === 'GET') return [200, ok(cf.tunnels.filter(item => item.name === url.searchParams.get('name')))];
+      if (req.method === 'GET') return [200, ok(cf.tunnels.filter(item => item.name === url.searchParams.get('name')).map(item => ({status:'inactive', ...item})))];
       const json = JSON.parse(body.toString());
       assert.equal(json.config_src, 'cloudflare');
       const tunnel = {id:`1111111${cf.tunnels.length + (cf.deletedTunnels?.length ?? 0)}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
@@ -535,4 +535,36 @@ test('a run interrupted after making a tunnel, over a deleted one, resumes with 
   assert.deepEqual([resumed.tunnel.id, resumed.vpcService.created, resumed.worker.created, resumed.tunnelTokenReplaced], [made, false, false, true]);
   assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(made));
   assert.equal(cf.services[0].host.resolver_network.tunnel_id, made);
+});
+
+test('a same-named service with no tunnel id is never taken as ours', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {services:[{service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'waypost'}, http_port:8787}], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-x'}]}}}});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.deepEqual(error.details.conflicts, ['VPC_SERVICE_EXISTS', 'WORKER_EXISTS']); return true; });
+  assert.deepEqual([cf.calls.filter(call => !call.startsWith('GET ')), cf.tunnels.length], [[], 0]);
+});
+
+test('a tunnel that ran somewhere before, or reports no status, is not joined without its token', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  for (const status of ['down', undefined]) {
+    const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare', status}]});
+    await assert.rejects(run(cf, join(dir, String(status)), {reuse:true}), error => { assert.equal(error.code, 'TUNNEL_IN_USE'); assert.match(error.message, /delete the tunnel under Networking → Tunnels/); return true; });
+    await holdToken(join(dir, `${status}-held`), id);
+    assert.equal((await run(cf, join(dir, `${status}-held`))).tunnel.created, false);
+  }
+});
+
+test('a recovery that wrote the new token and then failed resumes without --replace', async t => {
+  const dir = await root(t);
+  const deleted = '99999999-2222-3333-4444-555555555555', made = '11111110-2222-3333-4444-555555555555';
+  const ours = {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:deleted}}, http_port:8787};
+  const cf = await fakeCloudflare(t, {tunnels:[{id:made, name:'waypost', config_src:'cloudflare'}], deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[ours], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}});
+  await holdToken(join(dir, 't'), made);
+  const resumed = await run(cf, join(dir, 't'));
+  assert.deepEqual([resumed.tunnel.created, resumed.vpcService.created, resumed.worker.created], [false, false, false]);
+  assert.equal(cf.services[0].host.resolver_network.tunnel_id, made);
+  // A service on a tunnel that is still alive elsewhere stays someone else's.
+  const live = await fakeCloudflare(t, {tunnels:[{id:made, name:'waypost', config_src:'cloudflare'}, {id:deleted, name:'other', config_src:'cloudflare'}], services:[ours]});
+  await assert.rejects(run(live, join(dir, 't')), {code:'VPC_SERVICE_EXISTS'});
 });
