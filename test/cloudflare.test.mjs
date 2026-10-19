@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, rm, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -35,7 +35,8 @@ async function fakeCloudflare(t, state = {}) {
       const tunnel = {id:`1111111${cf.tunnels.length}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
       cf.tunnels.push(tunnel); return [200, ok(tunnel)];
     }
-    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return [200, ok(tokenFor(m[1]))];
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return cf.failTokenRead ? fail(500, 1000, 'internal error') : [200, ok(tokenFor(m[1]))];
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)$/)) && req.method === 'DELETE') { cf.tunnels = cf.tunnels.filter(item => item.id !== m[1]); return [200, ok({id:m[1]})]; }
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? []}})];
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, cf.missingScriptCode ?? 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
@@ -217,8 +218,39 @@ test('a tunnel another server on the account runs is not joined by default', asy
   await assert.rejects(run(cf, join(dir, 't')), {code:'TUNNEL_EXISTS'});
   assert.deepEqual([cf.services.length, Object.keys(cf.scripts).length], [0, 0]);
   assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor('99999999-2222-3333-4444-555555555555'));
-  assert.equal((await run(cf, join(dir, 't'), {reuse:true})).tunnel.created, false);
+  await assert.rejects(run(cf, join(dir, 't'), {reuse:true}), {code:'TOKEN_FILE_IN_USE'});
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor('99999999-2222-3333-4444-555555555555'));
+  assert.equal((await run(cf, join(dir, 't'), {reuse:true, replace:true})).tunnel.created, false);
   assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(id));
+  await rm(join(dir, 't'));
+  assert.equal((await run(cf, join(dir, 't'), {reuse:true})).tunnel.created, false);
+});
+
+test('the token file is one more change --replace must show, not a separate refusal', async t => {
+  const dir = await root(t);
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db', resolver_network:{tunnel_id:'99999999-2222-3333-4444-555555555555'}}, http_port:5432};
+  const cf = await fakeCloudflare(t, {services:[foreign]});
+  await holdToken(join(dir, 't'), '99999999-2222-3333-4444-555555555555');
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.deepEqual(error.details.conflicts, ['TOKEN_FILE_IN_USE', 'VPC_SERVICE_EXISTS']); assert.match(error.message, /--tunnel-token-file/); return true; });
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
+
+test('an unreadable token file counts as held, not absent', {skip:process.getuid?.() === 0 && 'root reads everything'}, async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await holdToken(join(dir, 't'), '99999999-2222-3333-4444-555555555555');
+  await chmod(join(dir, 't'), 0o000);
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TOKEN_FILE_IN_USE'});
+  assert.equal(cf.tunnels.length, 0);
+});
+
+test('a tunnel this run made but could not hand over is removed, so the rerun starts clean', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {failTokenRead:true});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'CLOUDFLARE_FAILED'});
+  assert.equal(cf.tunnels.length, 0);
+  cf.failTokenRead = false;
+  assert.equal((await run(cf, join(dir, 't'))).tunnel.created, true);
 });
 
 test('a new tunnel does not silently replace the token of a tunnel this host runs', async t => {

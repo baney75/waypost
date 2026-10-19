@@ -37,7 +37,7 @@ export async function setupCloudflare(options:Options) {
   if (reused) {
     // One Waypost per tunnel: a tunnel this host doesn't already hold belongs to another server (two people on one
     // account), and a second connector would split their agents' traffic between two Waypost instances.
-    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists and this host doesn't hold its token (${options.tunnelTokenFile}), so it probably belongs to another server on this account. Pass a different --name for your own tunnel, or --reuse if you mean to share it.`);
+    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists and this host doesn't hold its token (${options.tunnelTokenFile}), so it probably belongs to another server on this account. Pass a different --name for your own tunnel, or --reuse if you mean to share it (or if an earlier run of this command stopped partway).`);
     // Cloudflare can't see the routes of a locally managed tunnel (they live in a cloudflared config.yml), so it
     // can't promise Worker-only access; a tunnel that doesn't say it's remotely managed counts as local. A remotely
     // managed one may still route public traffic from an earlier setup; only an empty ingress or a catch-all that
@@ -49,18 +49,18 @@ export async function setupCloudflare(options:Options) {
     if (routes.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still routes public traffic (${routes.map(rule => rule.hostname ?? `catch-all to ${rule.service}`).join(', ')}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {routes:routes.map(rule => rule.hostname ?? rule.service ?? '')});
   }
 
-  // A new tunnel would replace the token of a different tunnel this host runs now; that tunnel's address would stop working.
-  if (!reused && held.present && !options.replace)
-    throw new WaypostError('TOKEN_FILE_IN_USE', `${options.tunnelTokenFile} already holds the token of a different tunnel, and a new one would replace it: the address you set up before would stop working and its claude.ai connector would need adding again. Pass --replace to move to the new tunnel, or a different --tunnel-token-file.`);
+  // Everything --replace would overwrite is gathered first and refused together, so one flag never approves a
+  // change the user wasn't shown. First: the token of a different tunnel this host runs now, whose address would stop
+  // working if a new or shared tunnel's token replaced it.
+  const conflicts:{code:string; what:string}[] = [];
+  const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id);
+  if (tokenInUse) conflicts.push({code:'TOKEN_FILE_IN_USE', what:`${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)`});
 
   // A same-named VPC service is ours only if it already points at this tunnel's waypost container.
   type Service = {service_id:string; name:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}}};
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
   const existing = services.find(item => item.name === name);
   const serviceIsOurs = !!existing && !!reused && existing.host?.resolver_network?.tunnel_id === reused.id && existing.host?.hostname === originHost && existing.http_port === originPort;
-  // Everything --replace would overwrite is gathered first and refused together, so one flag never approves a
-  // change the user wasn't shown.
-  const conflicts:{code:string; what:string}[] = [];
   if (existing && !serviceIsOurs) conflicts.push({code:'VPC_SERVICE_EXISTS', what:`the VPC service ${name}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed`});
 
   // Never overwrite someone's other Worker that happens to share the name: it counts as Waypost's only with exactly
@@ -81,7 +81,7 @@ export async function setupCloudflare(options:Options) {
   const taken = hostname ? domains.find(item => item.hostname === hostname && item.service !== name) : undefined;
   if (taken) conflicts.push({code:'HOSTNAME_IN_USE', what:`${hostname}, which points at the Worker ${taken.service}, would move to ${name}`});
   if (conflicts.length && !options.replace)
-    throw new WaypostError(conflicts[0]!.code, `This would change things on your account that aren't this Waypost's: ${conflicts.map(item => item.what).join('; ')}. Pass a different --name${taken ? ' or --hostname' : ''}, or --replace to make ${conflicts.length > 1 ? 'all of these changes' : 'that change'}.`, {conflicts:conflicts.map(item => item.code)});
+    throw new WaypostError(conflicts[0]!.code, `This would change things on your account that aren't this Waypost's: ${conflicts.map(item => item.what).join('; ')}. Pass a different --name${taken ? ' or --hostname' : ''}${tokenInUse ? ' or --tunnel-token-file' : ''}, or --replace to make ${conflicts.length > 1 ? 'all of these changes' : 'that change'}.`, {conflicts:conflicts.map(item => item.code)});
 
   const zone = hostname ? await findZone(api, account, hostname) : undefined;
   const subdomain = hostname ? undefined : await workersSubdomain(api, account);
@@ -92,9 +92,15 @@ export async function setupCloudflare(options:Options) {
   // fail on a name someone else holds, and it routes nothing.
   const registered = hostname ? undefined : subdomain ?? (await api.send<{subdomain:string}>('PUT', `/accounts/${account}/workers/subdomain`, {subdomain:options.workersSubdomain}, 'register your workers.dev subdomain')).subdomain;
   const tunnel = reused ?? await api.send<{id:string; name:string}>('POST', `/accounts/${account}/cfd_tunnel`, {name, config_src:'cloudflare'}, 'create the tunnel');
-  const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
-  if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
-  await writeSecret(options.tunnelTokenFile, tunnelToken);
+  try {
+    const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
+    if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
+    await writeSecret(options.tunnelTokenFile, tunnelToken);
+  } catch (error) {
+    // A tunnel this run made but couldn't hand to this host would look like someone else's on the rerun; remove it.
+    if (!reused) await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
+    throw error;
+  }
 
   const service = {name, type:'http', host:{hostname:originHost, resolver_network:{tunnel_id:tunnel.id}}, http_port:originPort};
   const vpc = existing
@@ -216,7 +222,8 @@ async function inspectTokenFile(path:string):Promise<{present:boolean; tunnelId?
   catch { throw unwritable(); }
   finally { await rm(probe, {force:true}); }
   if (!existing || existing.size === 0 || existing.size > 4096) return {present:!!existing && existing.size > 0};
-  const text = (await readFile(path, 'utf8').catch(() => '')).trim();
+  const text = await readFile(path, 'utf8').then(value => value.trim(), () => null);
+  if (text === null) return {present:true};   // unreadable is not absent
   if (!text) return {present:false};
   try {
     const id = (JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as {t?:unknown}).t;
