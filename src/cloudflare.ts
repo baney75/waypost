@@ -42,8 +42,8 @@ export async function setupCloudflare(options:Options) {
     // its token. One that is up, or 'down' after running somewhere, belongs to a server that would lose its traffic.
     // A missing status counts as in use.
     if (held.tunnelId !== reused.id && (reused.status !== 'inactive' || (reused.connections?.length ?? 0) > 0)) throw new WaypostError('TUNNEL_IN_USE', reused.status === 'healthy' || reused.status === 'degraded'
-      ? `The ${name} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the tunnel under Networking → Tunnels and run again.`
-      : `The ${name} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the tunnel under Networking → Tunnels and run again.`, {status:reused.status ?? null});
+      ? `The ${name} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`
+      : `The ${name} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`, {status:reused.status ?? null});
     if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
     // Cloudflare can't see the routes of a locally managed tunnel (they live in a cloudflared config.yml), so it
     // can't promise Worker-only access; a tunnel that doesn't say it's remotely managed counts as local. A remotely
@@ -70,21 +70,25 @@ export async function setupCloudflare(options:Options) {
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({code:'TOKEN_FILE_IN_USE', what:`${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)`});
 
-  // A same-named VPC service is ours only if it already points at this tunnel's waypost container (or at the deleted
-  // tunnel this host held, which the rerun replaces).
+  // A same-named VPC service is ours only if it already points at this tunnel's waypost container, or at a deleted
+  // tunnel this host can prove was its own. Anyone else's is never repointed, even with --replace: every Worker bound
+  // to it would get a path to this server around the front door.
   type Service = {service_id:string; name:string; http_port?:number; host?:{hostname?:string; resolver_network?:{tunnel_id?:string}; network?:{tunnel_id?:string}}};
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
-  const existing = services.find(item => item.name === name);
+  const named = services.filter(item => item.name === name);
+  if (named.length > 1) throw new WaypostError('VPC_SERVICE_EXISTS', `This account has ${named.length} VPC services named ${name}, so this can't tell which is this Waypost's. Delete the extras under Workers VPC, or pass a different --name.`, {services:named.map(item => item.service_id)});
+  const existing = named[0];
   const via = (item:Service) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
-  // Ours: it reaches this origin through the reused tunnel, or through a tunnel since deleted, which routes nothing
-  // (a recovery that stopped partway leaves the service on the old one). No tunnel id at all is never ours.
+  // Ours: it reaches this origin through the reused tunnel; or through the deleted tunnel whose token this host holds;
+  // or, while this host holds the reused tunnel's token, through any deleted tunnel (a recovery that wrote the new
+  // token and then stopped leaves the service on the old one). No tunnel id at all is never ours.
   const tunnelOf = existing ? via(existing) : undefined;
   const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort
-    && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId) || (tunnelOf !== reused?.id && await deletedTunnel(tunnelOf)));
+    && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId) || (!!reused && held.tunnelId === reused.id && await deletedTunnel(tunnelOf)));
   // Any other VPC service through a reused tunnel lets that service's Workers reach the server around this front door.
-  const others = reused ? services.filter(item => item.name !== name && via(item) === reused.id).map(item => item.name) : [];
+  const others = reused ? services.filter(item => item !== existing && via(item) === reused.id).map(item => item.name) : [];
   if (others.length) throw new WaypostError('TUNNEL_HAS_VPC_SERVICES', `The ${name} tunnel also carries the VPC service${others.length > 1 ? 's' : ''} ${others.join(', ')}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? 'them' : 'it'} under Workers VPC, or pass a different --name.`, {services:others});
-  if (existing && !serviceIsOurs) conflicts.push({code:'VPC_SERVICE_EXISTS', what:`the VPC service ${name}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed`});
+  if (existing && !serviceIsOurs) throw new WaypostError('VPC_SERVICE_EXISTS', `The VPC service ${name} already exists and isn't this Waypost's. Repointing it would give every Worker bound to it a path to this server, so this won't, even with --replace. Pass a different --name. If it is yours (say, after losing ${options.tunnelTokenFile}), delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`, {services:[existing.service_id]});
 
   // Never overwrite someone's other Worker that happens to share the name: it counts as Waypost's only with exactly
   // the one ORIGIN_VPC binding this uploads, bound to the VPC service checked above.
