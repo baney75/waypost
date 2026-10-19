@@ -129965,7 +129965,9 @@ async function setupCloudflare(options) {
   const tunnels = await api.get(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels");
   const reused = tunnels.find((item) => item.name === name4);
   if (reused) {
-    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError("TUNNEL_EXISTS", `The ${name4} tunnel already exists and this host doesn't hold its token (${options.tunnelTokenFile}), so it probably belongs to another server on this account. Pass a different --name for your own tunnel, or --reuse if you mean to share it (or if an earlier run of this command stopped partway).`);
+    const live = reused.status === "healthy" || reused.status === "degraded" || (reused.connections?.length ?? 0) > 0;
+    if (held.tunnelId !== reused.id && live) throw new WaypostError("TUNNEL_IN_USE", `The ${name4} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared) and run again with --reuse.`);
+    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError("TUNNEL_EXISTS", `The ${name4} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
     if (!(reused.config_src === "cloudflare" || reused.config_src === void 0 && reused.remote_config === true)) throw new WaypostError("TUNNEL_LOCALLY_MANAGED", `The ${name4} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
     const config2 = (await api.get(`/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, "read the tunnel configuration"))?.config;
     const routes = (config2?.ingress ?? []).filter((rule) => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ""));
@@ -129979,8 +129981,10 @@ async function setupCloudflare(options) {
   if (tokenInUse) conflicts.push({ code: "TOKEN_FILE_IN_USE", what: `${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)` });
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
   const existing = services2.find((item) => item.name === name4);
-  const ownTunnel = reused?.id ?? (stale ? held.tunnelId : void 0);
-  const serviceIsOurs = !!existing && !!ownTunnel && existing.host?.resolver_network?.tunnel_id === ownTunnel && existing.host?.hostname === originHost && existing.http_port === originPort;
+  const via = (item) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
+  const serviceIsOurs = !!existing && (via(existing) === reused?.id || stale && via(existing) === held.tunnelId) && existing.host?.hostname === originHost && existing.http_port === originPort;
+  const others = reused ? services2.filter((item) => item.name !== name4 && via(item) === reused.id).map((item) => item.name) : [];
+  if (others.length) throw new WaypostError("TUNNEL_HAS_VPC_SERVICES", `The ${name4} tunnel also carries the VPC service${others.length > 1 ? "s" : ""} ${others.join(", ")}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? "them" : "it"} under Workers VPC, or pass a different --name.`, { services: others });
   if (existing && !serviceIsOurs) conflicts.push({ code: "VPC_SERVICE_EXISTS", what: `the VPC service ${name4}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed` });
   const current = await api.call("GET", `/accounts/${account}/workers/scripts/${name4}/settings`, void 0, "check for an existing Worker").then((json3) => json3.result, (error64) => {
     if (error64 instanceof WaypostError && error64.details?.cloudflareCode === 10007) return null;
@@ -130039,7 +130043,7 @@ async function setupCloudflare(options) {
     tunnelTokenReplaced: tokenReplaced,
     next: [
       `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner you@proton.me`,
-      tokenReplaced ? "Start it, restarting the tunnel so it uses the new token: docker compose up -d --force-recreate cloudflared && docker compose up -d" : "Start it: docker compose up -d",
+      "Start it (this also restarts the tunnel so it uses secrets/tunnel_token): docker compose up -d --force-recreate cloudflared && docker compose up -d",
       `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`
     ],
     cost: "Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account."

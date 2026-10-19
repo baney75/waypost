@@ -469,7 +469,8 @@ test('a token for a deleted tunnel is stale, not in use, and a swapped token say
   const cf = await fakeCloudflare(t);
   const first = await run(cf, join(dir, 't'));
   assert.equal(first.tunnelTokenReplaced, false);
-  assert.ok(first.next.some(step => step === 'Start it: docker compose up -d'));
+  // The start step always recreates cloudflared: a run that swapped the token and then failed leaves no trace a retry could see.
+  assert.ok(first.next.some(step => step.includes('docker compose up -d --force-recreate cloudflared')));
   const again = await run(cf, join(dir, 't'));
   assert.equal(again.tunnelTokenReplaced, false);
   // Deleted in the dashboard: the rerun makes a new tunnel without --replace and says to restart cloudflared.
@@ -492,4 +493,46 @@ test('the missing-subdomain message names the address this --name gets', async t
   const dir = await root(t);
   const cf = await fakeCloudflare(t, {subdomain:null});
   await assert.rejects(run(cf, join(dir, 't'), {name:'alice-waypost'}), error => { assert.match(error.message, /https:\/\/alice-waypost\.<name>\.workers\.dev/); return true; });
+});
+
+test('a tunnel with a connector up is never joined, even with --reuse', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare', status:'healthy', connections:[{id:'c1'}]}]});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TUNNEL_IN_USE'});
+  await assert.rejects(run(cf, join(dir, 't'), {reuse:true}), error => { assert.equal(error.code, 'TUNNEL_IN_USE'); assert.match(error.message, /docker compose stop cloudflared/); return true; });
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  cf.tunnels[0] = {id, name:'waypost', config_src:'cloudflare', status:'inactive', connections:[]};
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_EXISTS'); assert.match(error.message, /stopped partway, run again with --reuse/); return true; });
+  assert.equal((await run(cf, join(dir, 't'), {reuse:true})).tunnel.created, false);
+  // Holding the token is enough on a live tunnel: that is this host's own rerun.
+  cf.tunnels[0].status = 'healthy';
+  assert.equal((await run(cf, join(dir, 't'))).tunnel.created, false);
+});
+
+test('a reused tunnel that carries another VPC service is refused', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  for (const other of [
+    {service_id:'svc-blog', name:'blog-origin', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:id}}, http_port:8787},
+    {service_id:'svc-ip', name:'db', type:'tcp', host:{ipv4:'172.18.0.5', network:{tunnel_id:id}}, tcp_port:5432},
+  ]) {
+    const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], services:[other]});
+    await holdToken(join(dir, other.name), id);
+    await assert.rejects(run(cf, join(dir, other.name)), error => { assert.equal(error.code, 'TUNNEL_HAS_VPC_SERVICES'); assert.deepEqual(error.details.services, [other.name]); return true; });
+    assert.deepEqual([cf.services.length, Object.keys(cf.scripts).length], [1, 0]);
+  }
+});
+
+test('a run interrupted after making a tunnel, over a deleted one, resumes with --reuse and keeps its own service', async t => {
+  const dir = await root(t);
+  const deleted = '99999999-2222-3333-4444-555555555555', made = '11111110-2222-3333-4444-555555555555';
+  const ours = {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:deleted}}, http_port:8787};
+  const cf = await fakeCloudflare(t, {tunnels:[{id:made, name:'waypost', config_src:'cloudflare', status:'inactive'}], deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[ours], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}});
+  await holdToken(join(dir, 't'), deleted);
+  await assert.rejects(run(cf, join(dir, 't')), {code:'TUNNEL_EXISTS'});
+  const resumed = await run(cf, join(dir, 't'), {reuse:true});
+  assert.deepEqual([resumed.tunnel.id, resumed.vpcService.created, resumed.worker.created, resumed.tunnelTokenReplaced], [made, false, false, true]);
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(made));
+  assert.equal(cf.services[0].host.resolver_network.tunnel_id, made);
 });
