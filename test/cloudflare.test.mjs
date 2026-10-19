@@ -37,10 +37,14 @@ async function fakeCloudflare(t, state = {}) {
     }
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return [200, ok(tokenFor(m[1]))];
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? []}})];
-    if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, 10007, 'workers.api.error.script_not_found');
+    if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, cf.missingScriptCode ?? 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
-      if (req.method === 'GET' && cf.pageSize) { const page = Number(url.searchParams.get('page')); return [200, ok(cf.services.slice((page - 1) * cf.pageSize, page * cf.pageSize))]; }
-      if (req.method === 'GET') return [200, {...ok(cf.services), result_info:{page:1, total_pages:1}}];
+      if (req.method === 'GET') {
+        if (!cf.pageSize) return [200, {...ok(cf.services), result_info:{page:1, total_pages:1}}];
+        if (cf.ignorePage) return [200, ok(cf.services.slice(0, cf.pageSize))];
+        const page = Number(url.searchParams.get('page')), slice = cf.services.slice((page - 1) * cf.pageSize, page * cf.pageSize);
+        return [200, cf.pageCount ? {...ok(slice), result_info:{page, total_pages:Math.ceil(cf.services.length / cf.pageSize)}} : ok(slice)];
+      }
       const service = {service_id:`svc-${cf.services.length}`, ...JSON.parse(body.toString())};
       cf.services.push(service); return [200, ok(service)];
     }
@@ -273,6 +277,48 @@ test('a same-named Worker bound to some other VPC service is not Waypost\'s', as
   await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
   assert.deepEqual([cf.tunnels.length, cf.services.length, cf.scripts.waypost.metadata.bindings], [0, 0, [foreign]]);
   await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+});
+
+test('a same-named Worker bound to another service is refused even beside our own tunnel and service', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const ours = {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:id}}, http_port:8787};
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], services:[ours], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-other'}]}}}});
+  await holdToken(join(dir, 't'), id);
+  await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+  cf.scripts.waypost.metadata.bindings[0].service_id = 'svc-0';
+  assert.equal((await run(cf, join(dir, 't'))).worker.created, false);
+});
+
+test('--replace is never asked for one overwrite while hiding another', async t => {
+  const dir = await root(t);
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db', resolver_network:{tunnel_id:'99999999-2222-3333-4444-555555555555'}}, http_port:5432};
+  const cf = await fakeCloudflare(t, {services:[foreign], scripts:{waypost:{metadata:{bindings:[{type:'kv_namespace', name:'BLOG'}]}}}});
+  await assert.rejects(run(cf, join(dir, 't')), error => {
+    assert.deepEqual(error.details.conflicts, ['VPC_SERVICE_EXISTS', 'WORKER_EXISTS']);
+    assert.match(error.message, /VPC service waypost.*Worker waypost/);
+    return true;
+  });
+});
+
+test('a missing Worker is only one Cloudflare says is missing; other 404s stop the run', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {missingScriptCode:7003});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'CLOUDFLARE_FAILED'});
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
+
+test('ownership checks read every page of a list', async t => {
+  const dir = await root(t);
+  const filler = n => Array.from({length:n}, (_, i) => ({service_id:`svc-f${i}`, name:`other-${i}`, type:'http', host:{hostname:'x'}, http_port:80}));
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db'}, http_port:5432};
+  const paged = await fakeCloudflare(t, {pageSize:2, pageCount:true, services:[...filler(5), foreign]});
+  await assert.rejects(run(paged, join(dir, 't')), {code:'VPC_SERVICE_EXISTS'});
+  const unpaged = await fakeCloudflare(t, {pageSize:2, ignorePage:true, services:filler(2)});
+  assert.equal((await run(unpaged, join(dir, 'unpaged'))).vpcService.created, true);
+  const endless = await fakeCloudflare(t, {pageSize:1, pageCount:true, services:filler(101)});
+  await assert.rejects(run(endless, join(dir, 'endless')), error => { assert.equal(error.code, 'CLOUDFLARE_FAILED'); assert.match(error.message, /more than 2000 results/); return true; });
 });
 
 test('a same-named Worker with no bindings is not Waypost\'s either, and a refusal writes nothing', async t => {

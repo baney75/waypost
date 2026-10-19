@@ -58,24 +58,30 @@ export async function setupCloudflare(options:Options) {
   const services = await api.list<Service>(`/accounts/${account}/connectivity/directory/services`, 'list VPC services');
   const existing = services.find(item => item.name === name);
   const serviceIsOurs = !!existing && !!reused && existing.host?.resolver_network?.tunnel_id === reused.id && existing.host?.hostname === originHost && existing.http_port === originPort;
-  if (existing && !serviceIsOurs && !options.replace)
-    throw new WaypostError('VPC_SERVICE_EXISTS', `A VPC service named ${name} already exists and points somewhere other than this tunnel's ${originHost}:${originPort}. Pass a different --name, or --replace to repoint it.`);
+  // Everything --replace would overwrite is gathered first and refused together, so one flag never approves a
+  // change the user wasn't shown.
+  const conflicts:{code:string; what:string}[] = [];
+  if (existing && !serviceIsOurs) conflicts.push({code:'VPC_SERVICE_EXISTS', what:`the VPC service ${name}, which points somewhere other than this tunnel's ${originHost}:${originPort}, would be repointed`});
 
   // Never overwrite someone's other Worker that happens to share the name: it counts as Waypost's only with exactly
   // the one ORIGIN_VPC binding this uploads, bound to the VPC service checked above.
   const current = await api.call<{bindings?:{type:string; name:string; service_id?:string}[]}>('GET', `/accounts/${account}/workers/scripts/${name}/settings`, undefined, 'check for an existing Worker')
-    .then(json => json.result, (error:unknown) => { if (error instanceof WaypostError && (error.details?.httpStatus === 404 || error.details?.cloudflareCode === 10007)) return null; throw error; });
+    .then(json => json.result, (error:unknown) => { if (error instanceof WaypostError && error.details?.cloudflareCode === 10007) return null; throw error; });
   const bindings = current?.bindings ?? [];
-  if (current && !(serviceIsOurs && bindings.length === 1 && bindings[0]!.name === 'ORIGIN_VPC' && bindings[0]!.type === 'vpc_service' && bindings[0]!.service_id === existing!.service_id) && !options.replace)
-    throw new WaypostError('WORKER_EXISTS', `A Worker named ${name} already exists on this account and isn't this Waypost's front door. Pass a different --name, or --replace to overwrite it.`);
+  const workerIsOurs = !!current && serviceIsOurs && bindings.length === 1 && bindings[0]!.name === 'ORIGIN_VPC' && bindings[0]!.type === 'vpc_service' && bindings[0]!.service_id === existing!.service_id;
+  if (current && !workerIsOurs) conflicts.push({code:'WORKER_EXISTS', what:`the Worker ${name}, which isn't this Waypost's front door, would be overwritten`});
 
   // Custom domains: one this Worker already serves must be the one asked for now, or the rerun would leave a second
   // front door whose Host Waypost refuses; one another Worker serves is not taken over without --replace.
   const domains = await api.list<{hostname:string; service:string}>(`/accounts/${account}/workers/domains`, 'list Worker custom domains');
   const attached = domains.filter(item => item.service === name && item.hostname !== hostname).map(item => item.hostname);
-  if (attached.length) throw new WaypostError('HOSTNAME_ATTACHED', `The ${name} Worker already serves ${attached.join(', ')}. Run again with --hostname ${attached[0]}, or remove ${attached.length > 1 ? 'those domains' : 'that domain'} under Workers & Pages → ${name} → Domains & Routes first.`, {hostnames:attached});
+  if (attached.length) throw new WaypostError('HOSTNAME_ATTACHED', workerIsOurs
+    ? `The ${name} Worker already serves ${attached.join(', ')}. Run again with --hostname ${attached[0]}, or remove ${attached.length > 1 ? 'those domains' : 'that domain'} under Workers & Pages → ${name} → Domains & Routes first.`
+    : `The Worker ${name} serves ${attached.join(', ')} and isn't this Waypost's front door. Pass a different --name.`, {hostnames:attached});
   const taken = hostname ? domains.find(item => item.hostname === hostname && item.service !== name) : undefined;
-  if (taken && !options.replace) throw new WaypostError('HOSTNAME_IN_USE', `${hostname} already points at the Worker ${taken.service}. Pass a different --hostname, or --replace to move it to ${name}.`);
+  if (taken) conflicts.push({code:'HOSTNAME_IN_USE', what:`${hostname}, which points at the Worker ${taken.service}, would move to ${name}`});
+  if (conflicts.length && !options.replace)
+    throw new WaypostError(conflicts[0]!.code, `This would change things on your account that aren't this Waypost's: ${conflicts.map(item => item.what).join('; ')}. Pass a different --name${taken ? ' or --hostname' : ''}, or --replace to make ${conflicts.length > 1 ? 'all of these changes' : 'that change'}.`, {conflicts:conflicts.map(item => item.code)});
 
   const zone = hostname ? await findZone(api, account, hostname) : undefined;
   const subdomain = hostname ? undefined : await workersSubdomain(api, account);
@@ -138,6 +144,7 @@ function client(token:string, base:string) {
     call,
     get: async <T>(path:string, step:string, extra:string[] = []) => (await call<T>('GET', path, undefined, step, extra)).result,
     send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
+    // Ownership checks read these lists, so a partial list is an error, never a shorter answer.
     list: async <T>(path:string, step:string) => {
       const items:T[] = [], perPage = 50;
       for (let page = 1; page <= 40; page++) {
