@@ -30,7 +30,7 @@ async function fakeCloudflare(t, state = {}) {
       if (req.method === 'GET') return [200, ok(cf.tunnels.filter(item => item.name === url.searchParams.get('name')))];
       const json = JSON.parse(body.toString());
       assert.equal(json.config_src, 'cloudflare');
-      const tunnel = {id:`1111111${cf.tunnels.length}-2222-3333-4444-555555555555`, name:json.name};
+      const tunnel = {id:`1111111${cf.tunnels.length}-2222-3333-4444-555555555555`, name:json.name, config_src:'cloudflare'};
       cf.tunnels.push(tunnel); return [200, ok(tunnel)];
     }
     if (/^\/accounts\/\w+\/cfd_tunnel\/[\w-]+\/token$/.test(path)) return [200, ok(FAKE_TUNNEL)];
@@ -53,9 +53,15 @@ async function fakeCloudflare(t, state = {}) {
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/subdomain$/))) { cf.scriptSubdomain[m[1]] = JSON.parse(body.toString()); return [200, ok(cf.scriptSubdomain[m[1]])]; }
     if (path.endsWith('/workers/subdomain')) {
       if (req.method === 'GET') return cf.subdomain ? [200, ok({subdomain:cf.subdomain})] : fail(404, 10007, 'workers.dev subdomain not found');
-      cf.subdomain = JSON.parse(body.toString()).subdomain; return [200, ok({subdomain:cf.subdomain})];
+      const wanted = JSON.parse(body.toString()).subdomain;
+      if (cf.takenSubdomains?.includes(wanted)) return fail(409, 10036, 'subdomain is unavailable');
+      cf.subdomain = wanted; return [200, ok({subdomain:cf.subdomain})];
     }
-    if (path.endsWith('/workers/domains')) { cf.domains.push(JSON.parse(body.toString())); return [200, ok({})]; }
+    if (path.endsWith('/workers/domains')) {
+      if (req.method === 'GET') return [200, {...ok(cf.domains), result_info:{page:1, total_pages:1}}];
+      const domain = JSON.parse(body.toString());
+      cf.domains = [...cf.domains.filter(item => item.hostname !== domain.hostname), domain]; return [200, ok(domain)];
+    }
     if (path === '/zones') return [200, ok(cf.zones.filter(zone => zone.name === url.searchParams.get('name')))];
     return fail(404, 7003, `No route for ${req.method} ${path}`);
   };
@@ -115,6 +121,8 @@ test('setup cloudflare registers a workers.dev subdomain only when asked', async
   const result = await run(cf, join(dir, 't'), {workersSubdomain:'grace'});
   assert.equal(result.publicUrl, 'https://waypost.grace.workers.dev');
   await assert.rejects(run(cf, join(dir, 't'), {workersSubdomain:'Not Valid'}), {code:'INPUT_INVALID'});
+  await assert.rejects(run(cf, join(dir, 't'), {workersSubdomain:'hopper'}), error => { assert.equal(error.code, 'INPUT_INVALID'); assert.match(error.message, /waypost\.grace\.workers\.dev/); return true; });
+  assert.equal((await run(cf, join(dir, 't'), {workersSubdomain:'grace'})).publicUrl, 'https://waypost.grace.workers.dev');
 });
 
 test('setup cloudflare names the missing permissions and never echoes the API credential', async t => {
@@ -148,8 +156,29 @@ test('setup cloudflare serves an existing domain when --hostname is given and tu
   assert.equal(result.publicUrl, 'https://waypost.example.com');
   assert.deepEqual(cf.domains, [{hostname:'waypost.example.com', service:'waypost', zone_id:'zone-1', environment:'production'}]);
   assert.deepEqual(cf.scriptSubdomain.waypost, {enabled:false, previews_enabled:false});
-  await assert.rejects(run(cf, join(dir, 't'), {hostname:'waypost.other.org'}), {code:'ZONE_NOT_FOUND'});
+  assert.equal((await run(cf, join(dir, 't'), {hostname:'waypost.example.com'})).worker.created, false);
   await assert.rejects(run(cf, join(dir, 't'), {hostname:'https://'}), {code:'INPUT_INVALID'});
+});
+
+test('a rerun never leaves a second front door: the domain already served must be asked for again', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {zones:[{id:'zone-1', name:'example.com'}, {id:'zone-2', name:'other.org'}]});
+  await run(cf, join(dir, 't'), {hostname:'waypost.example.com'});
+  const calls = cf.calls.length;
+  for (const extra of [{}, {hostname:'waypost.other.org'}])
+    await assert.rejects(run(cf, join(dir, 't'), extra), error => { assert.equal(error.code, 'HOSTNAME_ATTACHED'); assert.match(error.message, /--hostname waypost\.example\.com/); return true; });
+  assert.ok(cf.calls.slice(calls).every(call => call.startsWith('GET ')));
+  assert.deepEqual(cf.scriptSubdomain.waypost, {enabled:false, previews_enabled:false});
+});
+
+test('a domain another Worker serves is not taken over unless told to, and a refusal writes nothing', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {zones:[{id:'zone-1', name:'example.com'}], domains:[{hostname:'waypost.example.com', service:'blog', zone_id:'zone-1', environment:'production'}]});
+  await assert.rejects(run(cf, join(dir, 't'), {hostname:'waypost.example.com'}), {code:'HOSTNAME_IN_USE'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length, Object.keys(cf.scripts).length], [0, 0, 0]);
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
+  await run(cf, join(dir, 't'), {hostname:'waypost.example.com', replace:true});
+  assert.deepEqual(cf.domains.map(item => item.service), ['waypost']);
 });
 
 test('setup cloudflare refuses to write the tunnel token through a link', async t => {
@@ -164,7 +193,7 @@ test('setup cloudflare refuses to write the tunnel token through a link', async 
 test('setup cloudflare stops when a reused tunnel still publishes a public hostname', async t => {
   const dir = await root(t);
   const id = '11111110-2222-3333-4444-555555555555';
-  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}], ingress:{[id]:[{hostname:'waypost.example.com', service:'http://waypost:8787'}, {service:'http_status:404'}]}});
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], ingress:{[id]:[{hostname:'waypost.example.com', service:'http://waypost:8787'}, {service:'http_status:404'}]}});
   await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_HAS_PUBLIC_HOSTNAME'); assert.match(error.message, /waypost\.example\.com/); return true; });
   await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
 });
@@ -175,6 +204,15 @@ test('setup cloudflare never overwrites a different Worker that shares the name 
   await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
   assert.deepEqual(cf.scripts.waypost.metadata.bindings, [{type:'kv_namespace', name:'BLOG'}]);
   assert.equal((await run(cf, join(dir, 't'), {replace:true})).worker.created, false);
+});
+
+test('a same-named Worker bound to some other VPC service is not Waypost\'s', async t => {
+  const dir = await root(t);
+  const foreign = {type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-other'};
+  const cf = await fakeCloudflare(t, {scripts:{waypost:{metadata:{bindings:[foreign]}}}});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'WORKER_EXISTS'});
+  assert.deepEqual([cf.tunnels.length, cf.services.length, cf.scripts.waypost.metadata.bindings], [0, 0, [foreign]]);
+  await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
 });
 
 test('a same-named Worker with no bindings is not Waypost\'s either, and a refusal writes nothing', async t => {
@@ -188,10 +226,12 @@ test('a same-named Worker with no bindings is not Waypost\'s either, and a refus
 test('a reused tunnel that forwards traffic, or whose routes Cloudflare cannot see, is refused', async t => {
   const dir = await root(t);
   const id = '11111110-2222-3333-4444-555555555555';
-  const forwarding = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}], ingress:{[id]:[{service:'http://waypost:8787'}]}});
+  const forwarding = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], ingress:{[id]:[{service:'http://waypost:8787'}]}});
   await assert.rejects(run(forwarding, join(dir, 't')), {code:'TUNNEL_HAS_PUBLIC_HOSTNAME'});
   const local = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'local'}]});
   await assert.rejects(run(local, join(dir, 't')), {code:'TUNNEL_LOCALLY_MANAGED'});
+  const unknown = await fakeCloudflare(t, {tunnels:[{id, name:'waypost'}]});
+  await assert.rejects(run(unknown, join(dir, 't')), {code:'TUNNEL_LOCALLY_MANAGED'});
   await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
 });
 
@@ -213,7 +253,9 @@ test('a missing workers.dev subdomain or domain is caught before anything is wri
   await assert.rejects(run(none, join(dir, 't')), {code:'WORKERS_SUBDOMAIN_NEEDED'});
   const nozone = await fakeCloudflare(t);
   await assert.rejects(run(nozone, join(dir, 't'), {hostname:'waypost.other.org'}), {code:'ZONE_NOT_FOUND'});
-  for (const cf of [none, nozone]) assert.deepEqual([cf.tunnels.length, cf.services.length, Object.keys(cf.scripts).length], [0, 0, 0]);
+  const held = await fakeCloudflare(t, {subdomain:null, takenSubdomains:['ada']});
+  await assert.rejects(run(held, join(dir, 't'), {workersSubdomain:'ada'}), {code:'CLOUDFLARE_FAILED'});
+  for (const cf of [none, nozone, held]) assert.deepEqual([cf.tunnels.length, cf.services.length, Object.keys(cf.scripts).length], [0, 0, 0]);
   await assert.rejects(stat(join(dir, 't')), {code:'ENOENT'});
 });
 

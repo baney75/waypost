@@ -34,7 +34,7 @@ Under **Account Resources** pick your account, then create the token and copy it
 
 **Run the setup.** Still in `waypost/deploy`:
 
-The containers run as user 1000, and this step writes `secrets/tunnel_token` as that user. If `id -u` prints something other than 1000, run `mkdir -p secrets && sudo chown 1000:1000 secrets` before it and `sudo chown "$(id -u)" secrets` after it; the token file stays owned by 1000 and readable only by it. Secret files you make by hand later, such as the mail ones in step 7, are created the same way as always: with `umask 077`, then `sudo chown 1000:1000 secrets/<file>`.
+The containers run as user 1000, and this step writes `secrets/tunnel_token` as that user. If `id -u` prints something other than 1000, run `mkdir -p secrets && sudo chown 1000:1000 secrets` before it and `sudo chown "$(id -u)" secrets` after it, every time you run it; the token file stays owned by 1000 and readable only by it. Secret files you make by hand later, such as the mail ones in step 7, are created the same way as always: with `umask 077`, then `sudo chown 1000:1000 secrets/<file>`.
 
 ```sh
 mkdir -p secrets
@@ -45,11 +45,11 @@ docker compose run --rm -e CLOUDFLARE_API_TOKEN -v "$PWD/secrets:/secrets" waypo
 unset CLOUDFLARE_API_TOKEN
 ```
 
-On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made. It checks before it changes anything, and it stops rather than overwrite a same-named Worker or VPC service that isn't Waypost's (`--replace` overrides). It also stops if a reused tunnel could carry traffic around the Worker: one that still publishes a public hostname, or one made with `cloudflared tunnel create`, whose routes Cloudflare can't see. For those, pass a different `--name`.
+On your account it creates a tunnel named `waypost`, a Workers VPC service that reaches the `waypost` container through that tunnel, and a Worker named `waypost` on workers.dev. It writes the tunnel token to `secrets/tunnel_token` (owner-only, never printed) and prints your `publicUrl`. Use that address in step 3. Run it again whenever you like; it reuses what it made. It checks your account before it changes anything, and it stops rather than overwrite a same-named Worker or VPC service that isn't this Waypost's, or take a domain another Worker serves (`--replace` overrides). It also stops if a reused tunnel could carry traffic around the Worker: one that still publishes a public hostname, or one made with `cloudflared tunnel create`, whose routes Cloudflare can't see. For those, pass a different `--name`.
 
-- **First Worker on this account?** If it says the account has no workers.dev subdomain yet, run it again with `--workers-subdomain <name>`. Your address becomes `https://waypost.<name>.workers.dev`.
+- **First Worker on this account?** If it says the account has no workers.dev subdomain yet, run it again with `--workers-subdomain <name>`. Your address becomes `https://waypost.<name>.workers.dev`. Subdomains are unique across Cloudflare; if yours is taken, it stops before making anything else, so pick another name.
 - **Several accounts?** Add `--account-id <id>` (it lists the ones it can see).
-- **Already have a domain on Cloudflare?** Add `--hostname waypost.example.com` to serve it there instead. Give the token two more permissions first: **Zone → Workers Routes → Edit** and **Zone → Zone → Read**. The hostname must not already have a DNS record.
+- **Already have a domain on Cloudflare?** Add `--hostname waypost.example.com` to serve it there instead. Give the token two more permissions first: **Zone → Workers Routes → Edit** and **Zone → Zone → Read**. The hostname must not already have a DNS record. Cloudflare checks that last, when it attaches the domain; if it refuses, remove the record and run the same command again. Once a domain is set, keep passing the same `--hostname` on every rerun.
 
 The server opens no inbound port and has no public hostname. cloudflared dials out to Cloudflare over QUIC (outbound UDP port 7844), and only your Worker can reach it through Workers VPC.
 
