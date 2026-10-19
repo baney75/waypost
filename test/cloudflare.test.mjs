@@ -37,7 +37,8 @@ async function fakeCloudflare(t, state = {}) {
     }
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/token$/))) return cf.failTokenRead ? fail(500, 1000, 'internal error') : [200, ok(tokenFor(m[1]))];
     if ((m = path.match(/\/cfd_tunnel\/([\w-]+)$/)) && req.method === 'DELETE') { cf.tunnels = cf.tunnels.filter(item => item.id !== m[1]); return [200, ok({id:m[1]})]; }
-    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? []}})];
+    if ((m = path.match(/\/cfd_tunnel\/([\w-]+)\/configurations$/))) return [200, ok({config:{ingress:cf.ingress[m[1]] ?? [], ...(cf.warpRouting ? {'warp-routing':{enabled:true}} : {})}})];
+    if (path.endsWith('/teamnet/routes')) return [200, {...ok((cf.privateRoutes ?? []).filter(route => route.tunnel_id === url.searchParams.get('tunnel_id'))), result_info:{page:1, total_pages:1}}];
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)\/settings$/))) return cf.scripts[m[1]] ? [200, ok({bindings:cf.scripts[m[1]].metadata.bindings})] : fail(404, cf.missingScriptCode ?? 10007, 'workers.api.error.script_not_found');
     if (path.endsWith('/connectivity/directory/services')) {
       if (req.method === 'GET') {
@@ -67,7 +68,7 @@ async function fakeCloudflare(t, state = {}) {
     }
     if (path.endsWith('/workers/domains')) {
       if (req.method !== 'GET' && cf.denyDomainAttach) return fail(403, 10000, 'Authentication error');
-      if (req.method === 'GET') return [200, {...ok(cf.domains), result_info:{page:1, total_pages:1}}];
+      if (req.method === 'GET') return [200, {...ok(cf.domains.filter(item => ['service', 'hostname'].every(key => !url.searchParams.has(key) || item[key] === url.searchParams.get(key)))), result_info:{page:1, total_pages:1}}];
       const domain = JSON.parse(body.toString());
       cf.domains = [...cf.domains.filter(item => item.hostname !== domain.hostname), domain]; return [200, ok(domain)];
     }
@@ -341,6 +342,34 @@ test('a missing Worker is only one Cloudflare says is missing; other 404s stop t
   assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
 });
 
+test('a reused tunnel with private-network routes or WARP routing is refused', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const routed = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], privateRoutes:[{network:'172.16.0.0/12', tunnel_id:id}]});
+  await holdToken(join(dir, 't'), id);
+  await assert.rejects(run(routed, join(dir, 't')), error => { assert.equal(error.code, 'TUNNEL_HAS_PRIVATE_ROUTES'); assert.match(error.message, /172\.16\.0\.0\/12/); return true; });
+  const warp = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}], warpRouting:true});
+  await assert.rejects(run(warp, join(dir, 't')), {code:'TUNNEL_HAS_PRIVATE_ROUTES'});
+  for (const cf of [routed, warp]) assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
+
+test('--workers-subdomain with --hostname is refused before any call', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t, {zones:[{id:'zone-1', name:'example.com'}]});
+  await assert.rejects(run(cf, join(dir, 't'), {hostname:'waypost.example.com', workersSubdomain:'grace'}), {code:'INPUT_INVALID'});
+  assert.deepEqual(cf.calls, []);
+});
+
+test('a page shorter than asked for is not taken as the last one without a page count', async t => {
+  const dir = await root(t);
+  const filler = Array.from({length:20}, (_, i) => ({service_id:`f-${i}`, name:`other-${i}`}));
+  const foreign = {service_id:'svc-x', name:'waypost', type:'http', host:{hostname:'db'}, http_port:5432};
+  const cf = await fakeCloudflare(t, {pageSize:20, services:[...filler, foreign]});
+  await assert.rejects(run(cf, join(dir, 't')), {code:'VPC_SERVICE_EXISTS'});
+  const big = await fakeCloudflare(t, {pageSize:60, ignorePage:true, services:Array.from({length:60}, (_, i) => ({service_id:`g-${i}`, name:`other-${i}`}))});
+  assert.equal((await run(big, join(dir, 'big'))).vpcService.created, true);
+});
+
 test('ownership checks read every page of a list', async t => {
   const dir = await root(t);
   const filler = n => Array.from({length:n}, (_, i) => ({service_id:`svc-f${i}`, name:`other-${i}`, type:'http', host:{hostname:'x'}, http_port:80}));
@@ -350,7 +379,7 @@ test('ownership checks read every page of a list', async t => {
   const unpaged = await fakeCloudflare(t, {pageSize:2, ignorePage:true, services:filler(2)});
   assert.equal((await run(unpaged, join(dir, 'unpaged'))).vpcService.created, true);
   const endless = await fakeCloudflare(t, {pageSize:1, pageCount:true, services:filler(101)});
-  await assert.rejects(run(endless, join(dir, 'endless')), error => { assert.equal(error.code, 'CLOUDFLARE_FAILED'); assert.match(error.message, /more than 2000 results/); return true; });
+  await assert.rejects(run(endless, join(dir, 'endless')), error => { assert.equal(error.code, 'CLOUDFLARE_FAILED'); assert.match(error.message, /more than 40 pages/); return true; });
 });
 
 test('a same-named Worker with no bindings is not Waypost\'s either, and a refusal writes nothing', async t => {

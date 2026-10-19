@@ -25,6 +25,7 @@ export async function setupCloudflare(options:Options) {
   // The token destination is checked before any Cloudflare call, so an unusable path leaves nothing half-made.
   const held = await inspectTokenFile(options.tunnelTokenFile);
   const hostname = options.hostname === undefined ? undefined : hostOnly(options.hostname);
+  if (hostname && options.workersSubdomain !== undefined) throw new WaypostError('INPUT_INVALID', '--workers-subdomain applies only to the workers.dev address; leave it out with --hostname.');
   const api = client(options.apiToken, options.apiBase ?? 'https://api.cloudflare.com/client/v4');
   if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError('INPUT_INVALID', '--account-id must be the 32-character id from the Cloudflare dashboard.');
   const account = options.accountId || await onlyAccount(api);
@@ -43,9 +44,11 @@ export async function setupCloudflare(options:Options) {
     // managed one may still route public traffic from an earlier setup; only an empty ingress or a catch-all that
     // answers http_status:* is safe.
     if (!(reused.config_src === 'cloudflare' || (reused.config_src === undefined && reused.remote_config === true))) throw new WaypostError('TUNNEL_LOCALLY_MANAGED', `The ${name} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
-    const ingress = await api.call<{config?:{ingress?:{hostname?:string; service?:string}[]} | null}>('GET', `/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, undefined, 'read the tunnel configuration')
-      .then(json => json.result?.config?.ingress ?? [], (error:unknown) => { if (error instanceof WaypostError && error.details?.httpStatus === 404) return []; throw error; });
-    const routes = ingress.filter(rule => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ''));
+    const config = (await api.get<{config?:{ingress?:{hostname?:string; service?:string}[]; 'warp-routing'?:{enabled?:boolean}} | null}>(`/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, 'read the tunnel configuration'))?.config;
+    const routes = (config?.ingress ?? []).filter(rule => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ''));
+    // Private-network routes let WARP clients on the account reach the server without the Worker too.
+    const privateRoutes = (await api.list<{network?:string}>(`/accounts/${account}/teamnet/routes?tunnel_id=${reused.id}&is_deleted=false`, 'list the tunnel\'s private routes')).map(route => route.network ?? 'a private route');
+    if (config?.['warp-routing']?.enabled || privateRoutes.length) throw new WaypostError('TUNNEL_HAS_PRIVATE_ROUTES', `The ${name} tunnel carries private-network traffic (${privateRoutes.length ? privateRoutes.join(', ') : 'WARP routing is on'}), which reaches the server without the Worker. Remove those routes under Networking → Routes and turn off WARP routing for ${name}, or pass a different --name.`, {routes:privateRoutes});
     if (routes.length) throw new WaypostError('TUNNEL_HAS_PUBLIC_HOSTNAME', `The ${name} tunnel still routes public traffic (${routes.map(rule => rule.hostname ?? `catch-all to ${rule.service}`).join(', ')}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking → Tunnels → ${name}, or pass a different --name.`, {routes:routes.map(rule => rule.hostname ?? rule.service ?? '')});
   }
 
@@ -73,7 +76,10 @@ export async function setupCloudflare(options:Options) {
 
   // Custom domains: one this Worker already serves must be the one asked for now, or the rerun would leave a second
   // front door whose Host Waypost refuses; one another Worker serves is not taken over without --replace.
-  const domains = await api.list<{hostname:string; service:string}>(`/accounts/${account}/workers/domains`, 'list Worker custom domains');
+  const domains = [
+    ...await api.list<{hostname:string; service:string}>(`/accounts/${account}/workers/domains?service=${name}`, 'list Worker custom domains'),
+    ...hostname ? await api.list<{hostname:string; service:string}>(`/accounts/${account}/workers/domains?hostname=${hostname}`, 'list Worker custom domains') : [],
+  ];
   const attached = domains.filter(item => item.service === name && item.hostname !== hostname).map(item => item.hostname);
   if (attached.length) throw new WaypostError('HOSTNAME_ATTACHED', workerIsOurs
     ? `The ${name} Worker already serves ${attached.join(', ')}. Run again with --hostname ${attached[0]}, or remove ${attached.length > 1 ? 'those domains' : 'that domain'} under Workers & Pages → ${name} → Domains & Routes first.`
@@ -152,15 +158,19 @@ function client(token:string, base:string) {
     send: async <T>(method:string, path:string, body:unknown, step:string, extra:string[] = []) => (await call<T>(method, path, body, step, extra)).result,
     // Ownership checks read these lists, so a partial list is an error, never a shorter answer.
     list: async <T>(path:string, step:string) => {
-      const items:T[] = [], perPage = 50;
+      const items:T[] = [];
+      let previous = '';
       for (let page = 1; page <= 40; page++) {
-        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=${perPage}&page=${page}`, undefined, step);
-        items.push(...(json.result ?? []));
+        const json = await call<T[]>('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=50&page=${page}`, undefined, step);
+        const result = json.result ?? [], first = JSON.stringify(result[0] ?? null);
+        // Trust total_pages when Cloudflare sends it. Without it, page on until an empty page, since a server may cap
+        // pages below per_page; a page that repeats the last one means the endpoint doesn't page and sent everything.
+        if (!result.length || first === previous) return items;
+        previous = first; items.push(...result);
         const pages = json.result_info?.total_pages;
-        // Trust total_pages when Cloudflare sends it; otherwise a full page means there may be another.
-        if (!json.result?.length || (pages === undefined ? json.result.length < perPage : pages <= page)) return items;
+        if (pages !== undefined && pages <= page) return items;
       }
-      throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare returned more than ${40 * perPage} results to ${step}; narrow the account before running setup.`);
+      throw new WaypostError('CLOUDFLARE_FAILED', `Cloudflare returned more than 40 pages when asked to ${step}, so this can't check them all.`);
     },
   };
 }
