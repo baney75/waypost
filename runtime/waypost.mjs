@@ -129957,6 +129957,8 @@ async function setupCloudflare(options) {
   if (!isAbsolute6(options.tunnelTokenFile)) throw new WaypostError("INPUT_INVALID", "--tunnel-token-file must be an absolute path.");
   const held = await inspectTokenFile(options.tunnelTokenFile);
   const pendingPath = join10(dirname5(options.tunnelTokenFile), `.${basename3(options.tunnelTokenFile)}.pending`);
+  const pendingEntry = await lstat4(pendingPath).catch(() => null);
+  if (pendingEntry && !pendingEntry.isFile()) throw new WaypostError("PATH_UNSAFE", `${pendingPath} must be a regular file, not a link or directory. Remove it and run again.`);
   const pending2 = await readTokenId(pendingPath);
   const owns = (id2) => held.tunnelId === id2 || pending2 === id2;
   const hostname3 = options.hostname === void 0 ? void 0 : hostOnly(options.hostname);
@@ -130019,7 +130021,7 @@ async function setupCloudflare(options) {
   const tunnel = reused ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
   const servicesPath = `/accounts/${account}/connectivity/directory/services`;
   const undo = !reused || !owns(reused.id);
-  let vpc, wrote = false;
+  let vpc, wrote = false, staged = false;
   const undoService = async () => {
     const now2 = await api.list(servicesPath, "list VPC services").then((items) => items.find((item) => item.name === name4), () => null);
     if (now2 === null) return false;
@@ -130030,6 +130032,7 @@ async function setupCloudflare(options) {
     const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
     if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
     await writeSecret(pendingPath, tunnelToken);
+    staged = true;
     const service = { name: name4, type: "http", host: { hostname: originHost, resolver_network: { tunnel_id: tunnel.id } }, http_port: originPort };
     wrote = true;
     vpc = existing ? await api.send("PUT", `${servicesPath}/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", servicesPath, service, "create the VPC service");
@@ -130039,7 +130042,7 @@ async function setupCloudflare(options) {
   } catch (error64) {
     if (undo) {
       if (!wrote || await undoService()) {
-        await rm(pendingPath, { force: true }).catch(() => void 0);
+        if (staged) await rm(pendingPath, { force: true }).catch(() => void 0);
         if (!reused) await api.call("DELETE", `/accounts/${account}/cfd_tunnel/${tunnel.id}`, void 0, "remove the unfinished tunnel").catch(() => void 0);
       } else if (error64 instanceof WaypostError) {
         throw new WaypostError(error64.code, `${error64.message} Cleanup on Cloudflare couldn't finish, so this host kept what it needs to resume: fix the cause and run the same command again.`, { ...error64.details, resumable: true });
@@ -130155,7 +130158,7 @@ function hostOnly(value) {
 }
 async function writeSecret(path4, value) {
   const existing = await lstat4(path4).catch(() => null);
-  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", "--tunnel-token-file must be a regular file, not a link or directory.");
+  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", `${path4} must be a regular file, not a link or directory.`);
   const temp = join10(dirname5(path4), `.${randomBytes4(6).toString("hex")}.tmp`);
   try {
     const file2 = await open11(temp, constants11.O_WRONLY | constants11.O_CREAT | constants11.O_EXCL | constants11.O_NOFOLLOW, 384);

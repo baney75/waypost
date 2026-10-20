@@ -696,3 +696,25 @@ test('when the rollback cannot confirm the service is back, the run keeps what i
   assert.deepEqual([resumed.tunnel.created, resumed.vpcService.created], [false, false]);
   await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
 });
+
+test('a failed run never removes a pending token an earlier run left for another tunnel', async t => {
+  const dir = await root(t);
+  const earlier = '11111119-2222-3333-4444-555555555555';
+  await writeFile(join(dir, '.t.pending'), tokenFor(earlier), {mode:0o600});
+  const cf = await fakeCloudflare(t, {failTokenRead:true});
+  await assert.rejects(run(cf, join(dir, 't'), {name:'alice'}), {code:'CLOUDFLARE_FAILED'});
+  assert.equal(await readFile(join(dir, '.t.pending'), 'utf8'), tokenFor(earlier));
+  assert.equal(cf.tunnels.length, 0);
+});
+
+test('a link or directory at the pending path is refused before anything is created', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await mkdir(join(dir, '.t.pending'));
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /\.t\.pending must be a regular file/); return true; });
+  assert.deepEqual(cf.calls, []);
+  await rm(join(dir, '.t.pending'), {recursive:true});
+  await symlink(join(dir, 'elsewhere'), join(dir, '.t.pending'));
+  await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
+  assert.deepEqual(cf.calls, []);
+});
