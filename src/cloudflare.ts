@@ -305,26 +305,26 @@ async function writeSecret(path:string, value:string) {
   }
 }
 
-// Reads what this host's tunnel token file holds, before any write. Cloudflare's tunnel token is base64 JSON whose
-// `t` is the tunnel id. Also proves a temp file can be created next to it, the way writeSecret will.
-// The tunnel id in a pending token file, or undefined when there is none (a link or anything odd counts as none).
-// The tunnel and account named in a pending token file. Missing or empty is absent; anything this can't read or parse
-// is refused, since it may be another run's only proof of a half-made setup.
+// The tunnel and account named in a pending token file (setupCloudflare has already refused a link or directory).
+// Missing or empty is absent; anything this can't read or parse is refused, since it may be another run's only proof
+// of a half-made setup.
 async function readPending(path:string):Promise<{tunnelId:string; account:string | undefined} | undefined> {
   const entry = await lstat(path).catch(() => null);
   if (!entry || entry.size === 0) return undefined;
-  const unreadable = () => new WaypostError('PATH_UNSAFE', `${path} is left from an earlier run and this user can't read it. Fix its owner (or run as the user who made it), or delete it if you abandoned that setup, and run again.`);
-  if (!entry.isFile() || entry.size > 4096) throw unreadable();
+  const refuse = (why:string) => new WaypostError('PATH_UNSAFE', `${path} is left from an earlier run and ${why}. Delete it if you abandoned that setup, and run again.`);
+  if (entry.size > 4096) throw refuse('is too large to be a tunnel token');
   const text = await readFile(path, 'utf8').then(value => value.trim(), () => null);
-  if (text === null) throw unreadable();
+  if (text === null) throw refuse('this user can\'t read it (fix its owner, or run as the user who made it)');
   if (!text) return undefined;
   try {
     const token = JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as {t?:unknown; a?:unknown};
     if (typeof token.t === 'string') return {tunnelId:token.t, account:typeof token.a === 'string' ? token.a : undefined};
   } catch { /* refused below */ }
-  throw unreadable();
+  throw refuse('doesn\'t hold a tunnel token');
 }
 
+// Reads what this host's tunnel token file holds, before any write. Cloudflare's tunnel token is base64 JSON whose
+// `t` is the tunnel id. Also proves a temp file can be created next to it, the way writeSecret will.
 async function inspectTokenFile(path:string):Promise<{present:boolean; tunnelId?:string}> {
   const unwritable = () => new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${path}. Check that its folder exists and that this user can write to it.`);
   const folder = await stat(dirname(path)).catch(() => null);

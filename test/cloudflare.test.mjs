@@ -745,11 +745,11 @@ test('a pending token on another account, or one that can\'t be read, is refused
   await writeFile(join(dir, '.t.pending'), foreign, {mode:0o600});
   await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PENDING_EXISTS'); assert.match(error.message, /--account-id bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/); assert.match(error.message, /delete .*\.t\.pending and run again/); return true; });
   await writeFile(join(dir, '.t.pending'), 'not a token', {mode:0o600});
-  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /delete it if you abandoned that setup/); return true; });
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /doesn't hold a tunnel token\. Delete it if you abandoned that setup/); assert.doesNotMatch(error.message, /owner/); return true; });
   if (process.getuid?.() !== 0) {
     await writeFile(join(dir, '.t.pending'), tokenFor('11111119-2222-3333-4444-555555555555'), {mode:0o600});
     await chmod(join(dir, '.t.pending'), 0o000);
-    await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
+    await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /can't read it \(fix its owner/); return true; });
     await chmod(join(dir, '.t.pending'), 0o600);
   }
   assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
