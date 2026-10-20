@@ -53,7 +53,7 @@ async function fakeCloudflare(t, state = {}) {
     }
     if ((m = path.match(/\/connectivity\/directory\/services\/([\w-]+)$/))) {
       const index = cf.services.findIndex(item => item.service_id === m[1]);
-      if (req.method === 'DELETE') { cf.services.splice(index, 1); return [200, ok({service_id:m[1]})]; }
+      if (req.method === 'DELETE') { if (cf.failServiceDelete) return fail(500, 1000, 'internal error'); cf.services.splice(index, 1); return [200, ok({service_id:m[1]})]; }
       cf.services[index] = {service_id:m[1], ...JSON.parse(body.toString())}; await cf.onServiceWrite?.(); return [200, ok(cf.services[index])];
     }
     if ((m = path.match(/\/workers\/scripts\/([\w-]+)$/))) {
@@ -604,6 +604,7 @@ test('a first run that fails after creating the service leaves no tunnel and no 
   t.after(() => chmod(folder, 0o700).catch(() => undefined));
   const cf = await fakeCloudflare(t, {onServiceWrite:() => chmod(folder, 0o500)});
   await assert.rejects(run(cf, join(folder, 't')), {code:'PATH_UNWRITABLE'});
+  await chmod(folder, 0o700);
   assert.deepEqual([cf.tunnels.length, cf.services.length], [0, 0]);
 });
 
@@ -647,18 +648,51 @@ test('a failed --reuse run removes the service it made and leaves the bare tunne
 
 test('a service write whose response is lost is still undone', async t => {
   const dir = await root(t);
-  const lost = () => { throw new Error('connection dropped after the write'); };
+  // Only the first write's answer is lost; the rollback's own write goes through.
+  const lostOnce = () => { let first = true; return () => { if (first) { first = false; throw new Error('connection dropped after the write'); } }; };
   // First run: the POST lands but its answer doesn't, so the service and the tunnel both go.
-  const fresh = await fakeCloudflare(t, {onServiceWrite:lost});
+  const fresh = await fakeCloudflare(t, {onServiceWrite:lostOnce()});
   await assert.rejects(run(fresh, join(dir, 'fresh')), {code:'CLOUDFLARE_FAILED'});
   assert.deepEqual([fresh.tunnels.length, fresh.services.length], [0, 0]);
   // Recovery over a deleted tunnel: the PUT lands but its answer doesn't, so the service goes back where it was.
   const deleted = '99999999-2222-3333-4444-555555555555';
   const ours = {service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:deleted}}, http_port:8787};
-  const cf = await fakeCloudflare(t, {deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[structuredClone(ours)], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}, onServiceWrite:lost});
+  const cf = await fakeCloudflare(t, {deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[structuredClone(ours)], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}, onServiceWrite:lostOnce()});
   await holdToken(join(dir, 't'), deleted);
   await assert.rejects(run(cf, join(dir, 't')), {code:'CLOUDFLARE_FAILED'});
   assert.deepEqual([cf.tunnels.length, cf.services[0]], [0, ours]);
   cf.onServiceWrite = undefined;
   assert.equal((await run(cf, join(dir, 't'))).vpcService.created, false);
+});
+
+test('a run killed between moving the service and saving the token resumes from the pending token', async t => {
+  const dir = await root(t);
+  const deleted = '99999999-2222-3333-4444-555555555555', made = '11111110-2222-3333-4444-555555555555';
+  // What a killed recovery leaves: the token file still names deleted X, the service already sits on new tunnel Y,
+  // and Y's token waits in the pending file.
+  const cf = await fakeCloudflare(t, {tunnels:[{id:made, name:'waypost', config_src:'cloudflare'}], deletedTunnels:[{id:deleted, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}], services:[{service_id:'svc-0', name:'waypost', type:'http', host:{hostname:'waypost', resolver_network:{tunnel_id:made}}, http_port:8787}], scripts:{waypost:{metadata:{bindings:[{type:'vpc_service', name:'ORIGIN_VPC', service_id:'svc-0'}]}}}});
+  await holdToken(join(dir, 't'), deleted);
+  await writeFile(join(dir, '.t.pending'), tokenFor(made), {mode:0o600});
+  const resumed = await run(cf, join(dir, 't'));
+  assert.deepEqual([resumed.tunnel.id, resumed.tunnel.created, resumed.vpcService.created, resumed.worker.created], [made, false, false, false]);
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(made));
+  await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
+  // Without the pending token, the same account state is someone else's finished setup.
+  await assert.rejects(run(cf, join(dir, 'other')), {code:'TUNNEL_EXISTS'});
+  await assert.rejects(run(cf, join(dir, 'other'), {reuse:true}), {code:'TUNNEL_IN_USE'});
+});
+
+test('when the rollback cannot confirm the service is back, the run keeps what it needs and the same command finishes', async t => {
+  const dir = await root(t);
+  let first = true;
+  // The create's answer is lost and the rollback's delete fails too.
+  const cf = await fakeCloudflare(t, {failServiceDelete:true, onServiceWrite:() => { if (first) { first = false; throw new Error('dropped'); } }});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.details.resumable, true); assert.match(error.message, /run the same command again/); return true; });
+  assert.deepEqual([cf.tunnels.length, cf.services.length], [1, 1]);
+  const pending = await stat(join(dir, '.t.pending'));
+  assert.equal(pending.mode & 0o777, 0o600);
+  cf.failServiceDelete = false;
+  const resumed = await run(cf, join(dir, 't'));
+  assert.deepEqual([resumed.tunnel.created, resumed.vpcService.created], [false, false]);
+  await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
 });

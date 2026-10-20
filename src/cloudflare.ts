@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { lstat, open, readFile, rename, rm, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { WaypostError } from './errors.js';
 import { WORKER_SOURCE } from './worker-source.js';
@@ -24,6 +24,11 @@ export async function setupCloudflare(options:Options) {
   if (!isAbsolute(options.tunnelTokenFile)) throw new WaypostError('INPUT_INVALID', '--tunnel-token-file must be an absolute path.');
   // The token destination is checked before any Cloudflare call, so an unusable path leaves nothing half-made.
   const held = await inspectTokenFile(options.tunnelTokenFile);
+  // The new token waits here, owner-only beside the token file, from before the VPC service moves until it is renamed
+  // into place, so a run killed in between leaves this host proof that the half-made setup is its own.
+  const pendingPath = join(dirname(options.tunnelTokenFile), `.${basename(options.tunnelTokenFile)}.pending`);
+  const pending = await readTokenId(pendingPath);
+  const owns = (id:string) => held.tunnelId === id || pending === id;
   const hostname = options.hostname === undefined ? undefined : hostOnly(options.hostname);
   if (hostname && options.workersSubdomain !== undefined) throw new WaypostError('INPUT_INVALID', '--workers-subdomain applies only to the workers.dev address; leave it out with --hostname.');
   const api = client(options.apiToken, options.apiBase ?? 'https://api.cloudflare.com/client/v4');
@@ -42,10 +47,10 @@ export async function setupCloudflare(options:Options) {
     // Only a tunnel that has never connected ('inactive', what a run that stopped partway leaves) may be joined without
     // its token. One that is up, or 'down' after running somewhere, belongs to a server that would lose its traffic.
     // A missing status counts as in use.
-    if (held.tunnelId !== reused.id && (reused.status !== 'inactive' || (reused.connections?.length ?? 0) > 0)) throw new WaypostError('TUNNEL_IN_USE', reused.status === 'healthy' || reused.status === 'degraded'
+    if (!owns(reused.id) && (reused.status !== 'inactive' || (reused.connections?.length ?? 0) > 0)) throw new WaypostError('TUNNEL_IN_USE', reused.status === 'healthy' || reused.status === 'degraded'
       ? `The ${name} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`
       : `The ${name} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`, {status:reused.status ?? null});
-    if (held.tunnelId !== reused.id && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
+    if (!owns(reused.id) && !options.reuse) throw new WaypostError('TUNNEL_EXISTS', `The ${name} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
     // Cloudflare can't see the routes of a locally managed tunnel (they live in a cloudflared config.yml), so it
     // can't promise Worker-only access; a tunnel that doesn't say it's remotely managed counts as local. A remotely
     // managed one may still route public traffic from an earlier setup; only an empty ingress or a catch-all that
@@ -85,7 +90,7 @@ export async function setupCloudflare(options:Options) {
   // together. No tunnel id at all is never ours.
   // A failed run removes or restores the services it wrote, so a tunnel this host doesn't hold that already carries a
   // service is a finished setup on another host (maybe not started yet), not one this host left behind.
-  if (reused && held.tunnelId !== reused.id && services.some(item => via(item) === reused.id)) throw new WaypostError('TUNNEL_IN_USE', `The ${name} tunnel already has a VPC service on it, so it was set up on another host, and this host doesn't hold its token (${options.tunnelTokenFile}). Pass a different --name for your own tunnel.`, {status:reused.status ?? null});
+  if (reused && !owns(reused.id) && services.some(item => via(item) === reused.id)) throw new WaypostError('TUNNEL_IN_USE', `The ${name} tunnel already has a VPC service on it and this host doesn't hold its token (${options.tunnelTokenFile}), so it was set up on another host. Pass a different --name for your own tunnel. If it was this host's and its token files are gone, delete the ${name} tunnel, VPC service and Worker in the dashboard and run again.`, {status:reused.status ?? null});
   const tunnelOf = existing ? via(existing) : undefined;
   const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort
     && ((!!reused && tunnelOf === reused.id) || (stale && tunnelOf === held.tunnelId));
@@ -131,29 +136,37 @@ export async function setupCloudflare(options:Options) {
   const servicesPath = `/accounts/${account}/connectivity/directory/services`;
   // Until the token file is written, this run's tunnel isn't this host's: a failure undoes the service write (judged
   // from what Cloudflare holds now, since a write can land after its response is lost) and a tunnel this run made.
-  const undo = !reused || held.tunnelId !== reused.id;
+  const undo = !reused || !owns(reused.id);
   let vpc:{service_id:string} | undefined, wrote = false;
+  // True when Cloudflare no longer shows the service on this run's tunnel, after putting it back if needed.
+  const undoService = async () => {
+    const now = await api.list<Service>(servicesPath, 'list VPC services').then(items => items.find(item => item.name === name), () => null);
+    if (now === null) return false;
+    if (!now || via(now) !== tunnel.id) return true;
+    return (existing
+      ? api.call('PUT', `${servicesPath}/${existing.service_id}`, {name:existing.name, type:existing.type ?? 'http', host:existing.host, http_port:existing.http_port}, 'restore the VPC service')
+      : api.call('DELETE', `${servicesPath}/${now.service_id}`, undefined, 'remove the unfinished VPC service')).then(() => true, () => false);
+  };
   try {
     const tunnelToken = await api.get<string>(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, 'read the tunnel token');
     if (typeof tunnelToken !== 'string' || !tunnelToken) throw new WaypostError('CLOUDFLARE_FAILED', 'Cloudflare returned an empty tunnel token. Try again in a minute.');
+    await writeSecret(pendingPath, tunnelToken);
     const service = {name, type:'http', host:{hostname:originHost, resolver_network:{tunnel_id:tunnel.id}}, http_port:originPort};
     wrote = true;
     vpc = existing
       ? await api.send<{service_id:string}>('PUT', `${servicesPath}/${existing.service_id}`, service, 'update the VPC service')
       : await api.send<{service_id:string}>('POST', servicesPath, service, 'create the VPC service');
-    await writeSecret(options.tunnelTokenFile, tunnelToken);
+    await rename(pendingPath, options.tunnelTokenFile).catch(() => { throw new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${options.tunnelTokenFile}. Check that its folder exists and that this user can write to it.`); });
   } catch (error) {
-    // A tunnel this run made but couldn't hand to this host would look like someone else's on the rerun; remove it,
-    // and put the VPC service back where it was.
+    // Undo what this run did to a tunnel this host didn't hold yet: put the VPC service back, then remove the pending
+    // token and a tunnel this run made. If the service can't be confirmed back, keep both, so the same command resumes.
     if (undo) {
-      if (wrote) {
-        const now = (await api.list<Service>(servicesPath, 'list VPC services').catch(() => [] as Service[])).find(item => item.name === name);
-        if (now && via(now) === tunnel.id) {
-          if (existing) await api.call('PUT', `${servicesPath}/${existing.service_id}`, {name:existing.name, type:existing.type ?? 'http', host:existing.host, http_port:existing.http_port}, 'restore the VPC service').catch(() => undefined);
-          else await api.call('DELETE', `${servicesPath}/${now.service_id}`, undefined, 'remove the unfinished VPC service').catch(() => undefined);
-        }
+      if (!wrote || await undoService()) {
+        await rm(pendingPath, {force:true}).catch(() => undefined);
+        if (!reused) await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
+      } else if (error instanceof WaypostError) {
+        throw new WaypostError(error.code, `${error.message} Cleanup on Cloudflare couldn't finish, so this host kept what it needs to resume: fix the cause and run the same command again.`, {...error.details, resumable:true});
       }
-      if (!reused) await api.call('DELETE', `/accounts/${account}/cfd_tunnel/${tunnel.id}`, undefined, 'remove the unfinished tunnel').catch(() => undefined);
     }
     throw error;
   }
@@ -282,6 +295,15 @@ async function writeSecret(path:string, value:string) {
 
 // Reads what this host's tunnel token file holds, before any write. Cloudflare's tunnel token is base64 JSON whose
 // `t` is the tunnel id. Also proves a temp file can be created next to it, the way writeSecret will.
+// The tunnel id in a pending token file, or undefined when there is none (a link or anything odd counts as none).
+async function readTokenId(path:string):Promise<string | undefined> {
+  const entry = await lstat(path).catch(() => null);
+  if (!entry?.isFile() || entry.size === 0 || entry.size > 4096) return undefined;
+  const text = await readFile(path, 'utf8').then(value => value.trim(), () => '');
+  try { const id = (JSON.parse(Buffer.from(text, 'base64').toString('utf8')) as {t?:unknown}).t; return typeof id === 'string' ? id : undefined; }
+  catch { return undefined; }
+}
+
 async function inspectTokenFile(path:string):Promise<{present:boolean; tunnelId?:string}> {
   const unwritable = () => new WaypostError('PATH_UNWRITABLE', `Could not write the tunnel token to ${path}. Check that its folder exists and that this user can write to it.`);
   const folder = await stat(dirname(path)).catch(() => null);
