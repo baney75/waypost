@@ -129983,6 +129983,7 @@ async function setupCloudflare(options) {
   const conflicts = [];
   const deletedTunnel = async (id2) => /^[0-9a-f-]{36}$/i.test(id2) && await api.get(`/accounts/${account}/cfd_tunnel/${id2}`, "check a tunnel").then((item) => !!item?.deleted_at, () => false);
   const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
+  if (pending2 && pending2 !== reused?.id && !await deletedTunnel(pending2)) throw new WaypostError("PENDING_EXISTS", `${pendingPath} holds the token of an unfinished setup for another tunnel. Finish it by running again with the --name you used then, or delete that tunnel in the dashboard and run again.`, { tunnel: pending2 });
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({ code: "TOKEN_FILE_IN_USE", what: `${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)` });
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");

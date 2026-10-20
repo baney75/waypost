@@ -697,14 +697,23 @@ test('when the rollback cannot confirm the service is back, the run keeps what i
   await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
 });
 
-test('a failed run never removes a pending token an earlier run left for another tunnel', async t => {
+test('an earlier run\'s pending token for another tunnel is never overwritten or removed', async t => {
   const dir = await root(t);
   const earlier = '11111119-2222-3333-4444-555555555555';
   await writeFile(join(dir, '.t.pending'), tokenFor(earlier), {mode:0o600});
-  const cf = await fakeCloudflare(t, {failTokenRead:true});
-  await assert.rejects(run(cf, join(dir, 't'), {name:'alice'}), {code:'CLOUDFLARE_FAILED'});
+  // That tunnel still exists, so a run under another --name is refused before any write.
+  const live = await fakeCloudflare(t, {tunnels:[{id:earlier, name:'waypost', config_src:'cloudflare'}]});
+  await assert.rejects(run(live, join(dir, 't'), {name:'alice'}), error => { assert.equal(error.code, 'PENDING_EXISTS'); assert.match(error.message, /--name you used then/); return true; });
+  assert.deepEqual(live.calls.filter(call => !call.startsWith('GET ')), []);
   assert.equal(await readFile(join(dir, '.t.pending'), 'utf8'), tokenFor(earlier));
-  assert.equal(cf.tunnels.length, 0);
+  // Once that tunnel is gone the file is just stale: a failed run leaves it alone, and a good run replaces it.
+  const gone = await fakeCloudflare(t, {failTokenRead:true, deletedTunnels:[{id:earlier, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}]});
+  await assert.rejects(run(gone, join(dir, 't'), {name:'alice'}), {code:'CLOUDFLARE_FAILED'});
+  assert.equal(await readFile(join(dir, '.t.pending'), 'utf8'), tokenFor(earlier));
+  gone.failTokenRead = false;
+  const done = await run(gone, join(dir, 't'), {name:'alice'});
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(done.tunnel.id));
+  await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
 });
 
 test('a link or directory at the pending path is refused before anything is created', async t => {

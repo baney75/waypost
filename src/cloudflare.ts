@@ -75,6 +75,8 @@ export async function setupCloudflare(options:Options) {
   const deletedTunnel = async (id:string) => /^[0-9a-f-]{36}$/i.test(id)
     && await api.get<{deleted_at?:string | null}>(`/accounts/${account}/cfd_tunnel/${id}`, 'check a tunnel').then(item => !!item?.deleted_at, () => false);
   const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
+  // A pending token for a different tunnel that still exists is an unfinished setup this host must not overwrite.
+  if (pending && pending !== reused?.id && !(await deletedTunnel(pending))) throw new WaypostError('PENDING_EXISTS', `${pendingPath} holds the token of an unfinished setup for another tunnel. Finish it by running again with the --name you used then, or delete that tunnel in the dashboard and run again.`, {tunnel:pending});
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({code:'TOKEN_FILE_IN_USE', what:`${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)`});
 
