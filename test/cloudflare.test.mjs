@@ -727,3 +727,30 @@ test('a link or directory at the pending path is refused before anything is crea
   await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
   assert.deepEqual(cf.calls, []);
 });
+
+test('a pending copy of the token file\'s own token never blocks a run', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}]});
+  await holdToken(join(dir, 't'), id);
+  await writeFile(join(dir, '.t.pending'), tokenFor(id), {mode:0o600});
+  const other = await run(cf, join(dir, 't'), {name:'alice', replace:true});
+  assert.equal(other.tunnel.created, true);
+});
+
+test('a pending token on another account, or one that can\'t be read, is refused before any write, with a way out', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  const foreign = Buffer.from(JSON.stringify({a:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', t:'11111119-2222-3333-4444-555555555555', s:'synthetic-secret'})).toString('base64');
+  await writeFile(join(dir, '.t.pending'), foreign, {mode:0o600});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PENDING_EXISTS'); assert.match(error.message, /--account-id bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/); assert.match(error.message, /delete .*\.t\.pending and run again/); return true; });
+  await writeFile(join(dir, '.t.pending'), 'not a token', {mode:0o600});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /delete it if you abandoned that setup/); return true; });
+  if (process.getuid?.() !== 0) {
+    await writeFile(join(dir, '.t.pending'), tokenFor('11111119-2222-3333-4444-555555555555'), {mode:0o600});
+    await chmod(join(dir, '.t.pending'), 0o000);
+    await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
+    await chmod(join(dir, '.t.pending'), 0o600);
+  }
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
