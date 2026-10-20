@@ -130184,17 +130184,17 @@ async function writeSecret(path4, value) {
 async function readPending(path4) {
   const entry = await lstat4(path4).catch(() => null);
   if (!entry || entry.size === 0) return void 0;
-  const unreadable = () => new WaypostError("PATH_UNSAFE", `${path4} is left from an earlier run and this user can't read it. Fix its owner (or run as the user who made it), or delete it if you abandoned that setup, and run again.`);
-  if (!entry.isFile() || entry.size > 4096) throw unreadable();
+  const refuse = (why) => new WaypostError("PATH_UNSAFE", `${path4} is left from an earlier run and ${why}. Delete it if you abandoned that setup, and run again.`);
+  if (entry.size > 4096) throw refuse("is too large to be a tunnel token");
   const text3 = await readFile6(path4, "utf8").then((value) => value.trim(), () => null);
-  if (text3 === null) throw unreadable();
+  if (text3 === null) throw refuse("this user can't read it (fix its owner, or run as the user who made it)");
   if (!text3) return void 0;
   try {
     const token3 = JSON.parse(Buffer.from(text3, "base64").toString("utf8"));
     if (typeof token3.t === "string") return { tunnelId: token3.t, account: typeof token3.a === "string" ? token3.a : void 0 };
   } catch {
   }
-  throw unreadable();
+  throw refuse("doesn't hold a tunnel token");
 }
 async function inspectTokenFile(path4) {
   const unwritable = () => new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
