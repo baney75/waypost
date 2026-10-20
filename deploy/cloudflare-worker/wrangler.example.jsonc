@@ -1,12 +1,14 @@
-// Copy to wrangler.jsonc, fill in the values, then: npx wrangler deploy
+// waypost setup cloudflare does all of this for you. To do it by hand: copy to wrangler.jsonc, fill in the values,
+// then npx wrangler deploy. "workers_dev" serves https://<name>.<your-subdomain>.workers.dev for free; to use a
+// domain on your account instead, set "workers_dev": false and add "routes": [{ "pattern": "waypost.example.com", "custom_domain": true }].
 // Pick one origin. Workers VPC (recommended with a Cloudflare tunnel): keep "vpc_services" and delete "vars".
 // An HTTPS origin such as Tailscale Funnel: keep "vars" and delete "vpc_services".
 {
-  "name": "waypost-proxy",
+  "name": "waypost",
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
   "account_id": "<your Cloudflare account id>",
-  "routes": [{ "pattern": "<waypost.example.com>", "custom_domain": true }],
+  "workers_dev": true,
   "vpc_services": [{ "binding": "ORIGIN_VPC", "service_id": "<id from wrangler vpc service create>", "remote": true }],
   "vars": { "ORIGIN": "<https://your-server.your-tailnet.ts.net>" },
   "observability": { "enabled": false }

@@ -27,5 +27,5 @@ jobs:
       # commit is checked before rebuild-runtime.yml commits the fresh bundle.
       - name: Check committed runtime matches source
         if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
-        run: git diff --exit-code -- runtime/waypost.mjs
+        run: git diff --exit-code -- runtime/waypost.mjs src/worker-source.ts
       - run: npm pack --dry-run

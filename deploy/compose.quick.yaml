@@ -1,5 +1,6 @@
-# Try Waypost without a Cloudflare account: a temporary trycloudflare.com address that changes whenever
-# cloudflared restarts. Use for testing or behind the Worker front door; use the named tunnel for daily use.
+# Look at Waypost without a Cloudflare account: a temporary trycloudflare.com address that changes whenever
+# cloudflared restarts. Quick tunnels don't carry Server-Sent Events, which remote MCP uses, so claude.ai can't
+# connect through one. For daily use run waypost setup cloudflare instead; it's free too.
 #   docker compose -f compose.yaml -f compose.quick.yaml up -d
 #   docker compose logs cloudflared | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
 # Set PUBLIC_HOST to the hostname in http.publicUrl so Waypost's Host check accepts the forwarded requests.

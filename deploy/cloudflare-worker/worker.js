@@ -1,6 +1,6 @@
-// Optional front door: serve Waypost on a Cloudflare custom domain. With a Workers VPC binding
+// Front door: serve Waypost on workers.dev (free, no domain) or a custom domain. With a Workers VPC binding
 // (ORIGIN_VPC) it reaches Waypost through a Cloudflare tunnel that has no public hostname, so the
-// server is reachable only through this Worker. Without one it forwards to the one fixed HTTPS
+// server is reachable only through this Worker. waypost setup cloudflare uploads this file as is. Without one it forwards to the one fixed HTTPS
 // ORIGIN (for example Tailscale Funnel). It passes Authorization and adds no caching, logging or state.
 export default {
   async fetch(request, env) {

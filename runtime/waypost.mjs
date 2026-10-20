@@ -2029,7 +2029,7 @@ var require_thread_stream = __commonJS({
     var { version: version4 } = require_package();
     var { EventEmitter: EventEmitter9 } = __require("events");
     var { Worker } = __require("worker_threads");
-    var { join: join10 } = __require("path");
+    var { join: join11 } = __require("path");
     var { pathToFileURL } = __require("url");
     var { wait } = require_wait();
     var {
@@ -2080,7 +2080,7 @@ var require_thread_stream = __commonJS({
     function createWorker(stream, opts) {
       const { filename, workerData } = opts;
       const bundlerOverrides = "__bundlerPathsOverrides" in globalThis ? globalThis.__bundlerPathsOverrides : {};
-      const toExecute = bundlerOverrides["thread-stream-worker"] || join10(__dirname, "lib", "worker.js");
+      const toExecute = bundlerOverrides["thread-stream-worker"] || join11(__dirname, "lib", "worker.js");
       const worker = new Worker(toExecute, {
         ...opts.workerOpts,
         name: opts.workerOpts?.name || "thread-stream",
@@ -2548,7 +2548,7 @@ var require_transport = __commonJS({
     var { createRequire } = __require("module");
     var { existsSync } = __require("node:fs");
     var getCallers = require_caller();
-    var { join: join10, isAbsolute: isAbsolute6, sep: sep3 } = __require("node:path");
+    var { join: join11, isAbsolute: isAbsolute7, sep: sep3 } = __require("node:path");
     var { fileURLToPath: fileURLToPath3 } = __require("node:url");
     var sleep2 = require_atomic_sleep();
     var onExit = require_on_exit_leak_free();
@@ -2620,7 +2620,7 @@ var require_transport = __commonJS({
           return false;
         }
       }
-      return isAbsolute6(path4) && !existsSync(path4);
+      return isAbsolute7(path4) && !existsSync(path4);
     }
     function stripQuotes(value) {
       const first2 = value[0];
@@ -2701,7 +2701,7 @@ var require_transport = __commonJS({
         throw new Error("only one of target or targets can be specified");
       }
       if (targets) {
-        target = bundlerOverrides["pino-worker"] || join10(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join11(__dirname, "worker.js");
         options.targets = targets.filter((dest) => dest.target).map((dest) => {
           return {
             ...dest,
@@ -2719,7 +2719,7 @@ var require_transport = __commonJS({
           });
         });
       } else if (pipeline3) {
-        target = bundlerOverrides["pino-worker"] || join10(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join11(__dirname, "worker.js");
         options.pipelines = [pipeline3.map((dest) => {
           return {
             ...dest,
@@ -2738,11 +2738,11 @@ var require_transport = __commonJS({
       return buildStream(fixTarget(target), options, worker, sync, name4);
       function fixTarget(origin) {
         origin = bundlerOverrides[origin] || origin;
-        if (isAbsolute6(origin) || origin.indexOf("file://") === 0) {
+        if (isAbsolute7(origin) || origin.indexOf("file://") === 0) {
           return origin;
         }
         if (origin === "pino/file") {
-          return join10(__dirname, "..", "file.js");
+          return join11(__dirname, "..", "file.js");
         }
         let fixTarget2;
         for (const filePath of callers) {
@@ -3722,7 +3722,7 @@ var require_safe_stable_stringify = __commonJS({
               return circularValue;
             }
             let res = "";
-            let join10 = ",";
+            let join11 = ",";
             const originalIndentation = indentation;
             if (Array.isArray(value)) {
               if (value.length === 0) {
@@ -3736,7 +3736,7 @@ var require_safe_stable_stringify = __commonJS({
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join10 = `,
+                join11 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -3744,13 +3744,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join10;
+                res += join11;
               }
               const tmp = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join10}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join11}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -3771,7 +3771,7 @@ ${originalIndentation}`;
             let separator = "";
             if (spacer !== "") {
               indentation += spacer;
-              join10 = `,
+              join11 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -3785,13 +3785,13 @@ ${indentation}`;
               const tmp = stringifyFnReplacer(key2, value, stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join10;
+                separator = join11;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`;
-              separator = join10;
+              separator = join11;
             }
             if (spacer !== "" && separator.length > 1) {
               res = `
@@ -3832,7 +3832,7 @@ ${originalIndentation}`;
             }
             const originalIndentation = indentation;
             let res = "";
-            let join10 = ",";
+            let join11 = ",";
             if (Array.isArray(value)) {
               if (value.length === 0) {
                 return "[]";
@@ -3845,7 +3845,7 @@ ${originalIndentation}`;
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join10 = `,
+                join11 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -3853,13 +3853,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join10;
+                res += join11;
               }
               const tmp = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join10}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join11}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -3872,7 +3872,7 @@ ${originalIndentation}`;
             let whitespace = "";
             if (spacer !== "") {
               indentation += spacer;
-              join10 = `,
+              join11 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -3881,7 +3881,7 @@ ${indentation}`;
               const tmp = stringifyArrayReplacer(key2, value[key2], stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join10;
+                separator = join11;
               }
             }
             if (spacer !== "" && separator.length > 1) {
@@ -3939,20 +3939,20 @@ ${originalIndentation}`;
               indentation += spacer;
               let res2 = `
 ${indentation}`;
-              const join11 = `,
+              const join12 = `,
 ${indentation}`;
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
               let i = 0;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyIndent(String(i), value[i], stack, spacer, indentation);
                 res2 += tmp2 !== void 0 ? tmp2 : "null";
-                res2 += join11;
+                res2 += join12;
               }
               const tmp = stringifyIndent(String(i), value[i], stack, spacer, indentation);
               res2 += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res2 += `${join11}"... ${getItemCount(removedKeys)} not stringified"`;
+                res2 += `${join12}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               res2 += `
 ${originalIndentation}`;
@@ -3968,16 +3968,16 @@ ${originalIndentation}`;
               return '"[Object]"';
             }
             indentation += spacer;
-            const join10 = `,
+            const join11 = `,
 ${indentation}`;
             let res = "";
             let separator = "";
             let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth);
             if (isTypedArrayWithEntries(value)) {
-              res += stringifyTypedArray(value, join10, maximumBreadth);
+              res += stringifyTypedArray(value, join11, maximumBreadth);
               keys = keys.slice(value.length);
               maximumPropertiesToStringify -= value.length;
-              separator = join10;
+              separator = join11;
             }
             if (deterministic) {
               keys = sort(keys, comparator);
@@ -3988,13 +3988,13 @@ ${indentation}`;
               const tmp = stringifyIndent(key2, value[key2], stack, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}: ${tmp}`;
-                separator = join10;
+                separator = join11;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`;
-              separator = join10;
+              separator = join11;
             }
             if (separator !== "") {
               res = `
@@ -6082,13 +6082,13 @@ var require_ipv4 = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.Address4 = void 0;
     var common = __importStar(require_common());
-    var constants11 = __importStar(require_constants3());
+    var constants12 = __importStar(require_constants3());
     var address_error_1 = require_address_error();
-    var isCorrect4 = common.isCorrect(constants11.BITS);
+    var isCorrect4 = common.isCorrect(constants12.BITS);
     var Address4 = class _Address4 {
       constructor(address2) {
         this.addressMinusSuffix = "";
-        this.groups = constants11.GROUPS;
+        this.groups = constants12.GROUPS;
         this.parsedAddress = [];
         this.parsedSubnet = "";
         this.subnet = "/32";
@@ -6098,17 +6098,17 @@ var require_ipv4 = __commonJS({
         this.isInSubnet = common.isInSubnet;
         this.isHostInSubnet = common.isHostInSubnet;
         this.address = address2;
-        const subnet = constants11.RE_SUBNET_STRING.exec(address2);
+        const subnet = constants12.RE_SUBNET_STRING.exec(address2);
         if (subnet) {
           this.parsedSubnet = subnet[0].replace("/", "");
           this.subnetMask = parseInt(this.parsedSubnet, 10);
           this.subnet = `/${this.subnetMask}`;
-          if (this.subnetMask < 0 || this.subnetMask > constants11.BITS) {
+          if (this.subnetMask < 0 || this.subnetMask > constants12.BITS) {
             throw new address_error_1.AddressError("Invalid subnet mask.");
           }
-          address2 = address2.replace(constants11.RE_SUBNET_STRING, "");
+          address2 = address2.replace(constants12.RE_SUBNET_STRING, "");
         }
-        const longest = constants11.GROUPS * 4 - 1;
+        const longest = constants12.GROUPS * 4 - 1;
         if (address2.length > longest) {
           throw new address_error_1.AddressError(`IPv4 addresses are at most ${longest} characters.`);
         }
@@ -6141,7 +6141,7 @@ var require_ipv4 = __commonJS({
         if (groups.some((group) => /^0\d/.test(group))) {
           throw new address_error_1.AddressError("IPv4 addresses can't have leading zeroes.");
         }
-        if (!address2.match(constants11.RE_ADDRESS)) {
+        if (!address2.match(constants12.RE_ADDRESS)) {
           throw new address_error_1.AddressError("Invalid IPv4 address.");
         }
         return groups;
@@ -6164,7 +6164,7 @@ var require_ipv4 = __commonJS({
        * address.subnetMask; // 24
        */
       static fromAddressAndMask(address2, mask) {
-        const bits = common.prefixLengthFromMask(new _Address4(mask).bigInt(), constants11.BITS);
+        const bits = common.prefixLengthFromMask(new _Address4(mask).bigInt(), constants12.BITS);
         return new _Address4(`${address2}/${bits}`);
       }
       /**
@@ -6178,9 +6178,9 @@ var require_ipv4 = __commonJS({
        */
       static fromAddressAndWildcardMask(address2, wildcardMask) {
         const wildcard2 = new _Address4(wildcardMask).bigInt();
-        const allOnes = (BigInt(1) << BigInt(constants11.BITS)) - BigInt(1);
+        const allOnes = (BigInt(1) << BigInt(constants12.BITS)) - BigInt(1);
         const mask = wildcard2 ^ allOnes;
-        const bits = common.prefixLengthFromMask(mask, constants11.BITS);
+        const bits = common.prefixLengthFromMask(mask, constants12.BITS);
         return new _Address4(`${address2}/${bits}`);
       }
       /**
@@ -6198,7 +6198,7 @@ var require_ipv4 = __commonJS({
        */
       static fromWildcard(input2) {
         const groups = input2.split(".");
-        if (groups.length !== constants11.GROUPS) {
+        if (groups.length !== constants12.GROUPS) {
           throw new address_error_1.AddressError("Wildcard pattern must have 4 octets");
         }
         let firstWildcard = -1;
@@ -6213,7 +6213,7 @@ var require_ipv4 = __commonJS({
         }
         const trailing = firstWildcard === -1 ? 0 : groups.length - firstWildcard;
         const replaced = groups.map((g) => g === "*" ? "0" : g);
-        const subnetBits = constants11.BITS - trailing * 8;
+        const subnetBits = constants12.BITS - trailing * 8;
         return new _Address4(`${replaced.join(".")}/${subnetBits}`);
       }
       /**
@@ -6259,7 +6259,7 @@ var require_ipv4 = __commonJS({
        * address.correctForm(); // '192.0.2.42'
        */
       static fromArpa(arpaFormAddress) {
-        const longest = constants11.GROUPS * 4 - 1 + "/32".length + ".in-addr.arpa.".length;
+        const longest = constants12.GROUPS * 4 - 1 + "/32".length + ".in-addr.arpa.".length;
         if (arpaFormAddress.length > longest) {
           throw new address_error_1.AddressError(`in-addr.arpa names are at most ${longest} characters.`);
         }
@@ -6290,7 +6290,7 @@ var require_ipv4 = __commonJS({
       toGroup6() {
         const output3 = [];
         let i;
-        for (i = 0; i < constants11.GROUPS; i += 2) {
+        for (i = 0; i < constants12.GROUPS; i += 2) {
           output3.push(`${common.stringToPaddedHex(this.parsedAddress[i])}${common.stringToPaddedHex(this.parsedAddress[i + 1])}`);
         }
         return output3.join(":");
@@ -6307,7 +6307,7 @@ var require_ipv4 = __commonJS({
        * @returns {bigint}
        */
       _startAddress() {
-        return BigInt(`0b${this.mask() + "0".repeat(constants11.BITS - this.subnetMask)}`);
+        return BigInt(`0b${this.mask() + "0".repeat(constants12.BITS - this.subnetMask)}`);
       }
       /**
        * The first address in the range given by this address' subnet.
@@ -6337,7 +6337,7 @@ var require_ipv4 = __commonJS({
        * new Address4('10.0.0.0/24').offset(1).correctForm(); // '10.0.0.1'
        */
       offset(n) {
-        return _Address4.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants11.BITS, "IPv4")).withSubnetMask(this.subnetMask);
+        return _Address4.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants12.BITS, "IPv4")).withSubnetMask(this.subnetMask);
       }
       /**
        * Returns the network that follows this address's network: the address after
@@ -6348,7 +6348,7 @@ var require_ipv4 = __commonJS({
        * new Address4('10.0.0.0/24').nextNetwork().networkForm(); // '10.0.1.0/24'
        */
       nextNetwork() {
-        return _Address4.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants11.BITS, "IPv4")).withSubnetMask(this.subnetMask);
+        return _Address4.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants12.BITS, "IPv4")).withSubnetMask(this.subnetMask);
       }
       withSubnetMask(subnetMask) {
         return new _Address4(`${this.correctForm()}/${subnetMask}`);
@@ -6358,7 +6358,7 @@ var require_ipv4 = __commonJS({
        * @returns {bigint}
        */
       _endAddress() {
-        return BigInt(`0b${this.mask() + "1".repeat(constants11.BITS - this.subnetMask)}`);
+        return BigInt(`0b${this.mask() + "1".repeat(constants12.BITS - this.subnetMask)}`);
       }
       /**
        * The last address in the range given by this address' subnet
@@ -6383,7 +6383,7 @@ var require_ipv4 = __commonJS({
        * @returns {Address4}
        */
       subnetMaskAddress() {
-        return _Address4.fromBigInt(BigInt(`0b${"1".repeat(this.subnetMask)}${"0".repeat(constants11.BITS - this.subnetMask)}`));
+        return _Address4.fromBigInt(BigInt(`0b${"1".repeat(this.subnetMask)}${"0".repeat(constants12.BITS - this.subnetMask)}`));
       }
       /**
        * The Cisco-style wildcard mask, e.g. `0.0.0.255` for a `/24`. This is
@@ -6392,7 +6392,7 @@ var require_ipv4 = __commonJS({
        * @returns {Address4}
        */
       wildcardMask() {
-        return _Address4.fromBigInt(BigInt(`0b${"0".repeat(this.subnetMask)}${"1".repeat(constants11.BITS - this.subnetMask)}`));
+        return _Address4.fromBigInt(BigInt(`0b${"0".repeat(this.subnetMask)}${"1".repeat(constants12.BITS - this.subnetMask)}`));
       }
       /**
        * The network address in CIDR string form, e.g. `192.168.1.0/24` for
@@ -6573,7 +6573,7 @@ var require_ipv4 = __commonJS({
        */
       binaryZeroPad() {
         if (this._binaryZeroPad === void 0) {
-          this._binaryZeroPad = this.bigInt().toString(2).padStart(constants11.BITS, "0");
+          this._binaryZeroPad = this.bigInt().toString(2).padStart(constants12.BITS, "0");
         }
         return this._binaryZeroPad;
       }
@@ -6588,7 +6588,7 @@ var require_ipv4 = __commonJS({
        */
       groupForV6() {
         const segments = this.parsedAddress;
-        return this.correctForm().replace(constants11.RE_ADDRESS, `<span class="hover-group group-v4 group-6">${segments.slice(0, 2).join(".")}</span>.<span class="hover-group group-v4 group-7">${segments.slice(2, 4).join(".")}</span>`);
+        return this.correctForm().replace(constants12.RE_ADDRESS, `<span class="hover-group group-v4 group-6">${segments.slice(0, 2).join(".")}</span>.<span class="hover-group group-v4 group-7">${segments.slice(2, 4).join(".")}</span>`);
       }
     };
     exports.Address4 = Address4;
@@ -6610,7 +6610,7 @@ var require_ipv4 = __commonJS({
     ];
     var BENCHMARKING_V4 = new Address4("198.18.0.0/15");
     var RESERVED_V4 = new Address4("240.0.0.0/4");
-    var SPECIAL_PURPOSE_V4 = constants11.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
+    var SPECIAL_PURPOSE_V4 = constants12.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
       subnet: new Address4(cidr),
       reachable
     }));
@@ -8446,10 +8446,10 @@ var require_socksclient = __commonJS({
               return reject(err);
             }
           }
-          const client2 = new _SocksClient(options);
-          client2.connect(options.existing_socket);
-          client2.once("established", (info) => {
-            client2.removeAllListeners();
+          const client3 = new _SocksClient(options);
+          client3.connect(options.existing_socket);
+          client3.once("established", (info) => {
+            client3.removeAllListeners();
             if (typeof callback === "function") {
               callback(null, info);
               resolve8(info);
@@ -8457,8 +8457,8 @@ var require_socksclient = __commonJS({
               resolve8(info);
             }
           });
-          client2.once("error", (err) => {
-            client2.removeAllListeners();
+          client3.once("error", (err) => {
+            client3.removeAllListeners();
             if (typeof callback === "function") {
               callback(err);
               resolve8(err);
@@ -36229,11 +36229,11 @@ var require_core = __commonJS({
     function mapOuter2(r, f) {
       return r.matched ? f(r) : r;
     }
-    function ab2(pa, pb, join10) {
-      return (data, i) => mapOuter2(pa(data, i), (ma) => mapInner2(pb(data, ma.position), (vb, j) => join10(ma.value, vb, data, i, j)));
+    function ab2(pa, pb, join11) {
+      return (data, i) => mapOuter2(pa(data, i), (ma) => mapInner2(pb(data, ma.position), (vb, j) => join11(ma.value, vb, data, i, j)));
     }
-    function abc2(pa, pb, pc, join10) {
-      return (data, i) => mapOuter2(pa(data, i), (ma) => mapOuter2(pb(data, ma.position), (mb) => mapInner2(pc(data, mb.position), (vc, j) => join10(ma.value, mb.value, vc, data, i, j))));
+    function abc2(pa, pb, pc, join11) {
+      return (data, i) => mapOuter2(pa(data, i), (ma) => mapOuter2(pb(data, ma.position), (mb) => mapInner2(pc(data, mb.position), (vc, j) => join11(ma.value, mb.value, vc, data, i, j))));
     }
     function action(f) {
       return (data, i) => {
@@ -47822,11 +47822,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names2, constants11) {
+      optimizeNames(names2, constants12) {
         if (!names2[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names2, constants11);
+          this.rhs = optimizeExpr(this.rhs, names2, constants12);
         return this;
       }
       get names() {
@@ -47843,10 +47843,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names2, constants11) {
+      optimizeNames(names2, constants12) {
         if (this.lhs instanceof code_1.Name && !names2[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names2, constants11);
+        this.rhs = optimizeExpr(this.rhs, names2, constants12);
         return this;
       }
       get names() {
@@ -47907,8 +47907,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names2, constants11) {
-        this.code = optimizeExpr(this.code, names2, constants11);
+      optimizeNames(names2, constants12) {
+        this.code = optimizeExpr(this.code, names2, constants12);
         return this;
       }
       get names() {
@@ -47937,12 +47937,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names2, constants11) {
+      optimizeNames(names2, constants12) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names2, constants11))
+          if (n.optimizeNames(names2, constants12))
             continue;
           subtractNames(names2, n.names);
           nodes.splice(i, 1);
@@ -47995,12 +47995,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names2, constants11) {
+      optimizeNames(names2, constants12) {
         var _a5;
-        this.else = (_a5 = this.else) === null || _a5 === void 0 ? void 0 : _a5.optimizeNames(names2, constants11);
-        if (!(super.optimizeNames(names2, constants11) || this.else))
+        this.else = (_a5 = this.else) === null || _a5 === void 0 ? void 0 : _a5.optimizeNames(names2, constants12);
+        if (!(super.optimizeNames(names2, constants12) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names2, constants11);
+        this.condition = optimizeExpr(this.condition, names2, constants12);
         return this;
       }
       get names() {
@@ -48023,10 +48023,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names2, constants11) {
-        if (!super.optimizeNames(names2, constants11))
+      optimizeNames(names2, constants12) {
+        if (!super.optimizeNames(names2, constants12))
           return;
-        this.iteration = optimizeExpr(this.iteration, names2, constants11);
+        this.iteration = optimizeExpr(this.iteration, names2, constants12);
         return this;
       }
       get names() {
@@ -48062,10 +48062,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names2, constants11) {
-        if (!super.optimizeNames(names2, constants11))
+      optimizeNames(names2, constants12) {
+        if (!super.optimizeNames(names2, constants12))
           return;
-        this.iterable = optimizeExpr(this.iterable, names2, constants11);
+        this.iterable = optimizeExpr(this.iterable, names2, constants12);
         return this;
       }
       get names() {
@@ -48107,11 +48107,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names2, constants11) {
+      optimizeNames(names2, constants12) {
         var _a5, _b;
-        super.optimizeNames(names2, constants11);
-        (_a5 = this.catch) === null || _a5 === void 0 ? void 0 : _a5.optimizeNames(names2, constants11);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names2, constants11);
+        super.optimizeNames(names2, constants12);
+        (_a5 = this.catch) === null || _a5 === void 0 ? void 0 : _a5.optimizeNames(names2, constants12);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names2, constants12);
         return this;
       }
       get names() {
@@ -48412,7 +48412,7 @@ var require_codegen = __commonJS({
     function addExprNames(names2, from) {
       return from instanceof code_1._CodeOrName ? addNames(names2, from.names) : names2;
     }
-    function optimizeExpr(expr, names2, constants11) {
+    function optimizeExpr(expr, names2, constants12) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -48427,14 +48427,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants11[n.str];
+        const c = constants12[n.str];
         if (c === void 0 || names2[n.str] !== 1)
           return n;
         delete names2[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names2[c.str] === 1 && constants11[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names2[c.str] === 1 && constants12[c.str] !== void 0);
       }
     }
     function subtractNames(names2, from) {
@@ -81457,39 +81457,39 @@ var isForeignAnswer = (response, expected) => {
   }
   return false;
 };
-async function fetchExpected(client2, range, query, options, expected) {
+async function fetchExpected(client3, range, query, options, expected) {
   for (let attempt = 1; ; attempt++) {
-    let response = await client2.fetchOne(range, query, options);
+    let response = await client3.fetchOne(range, query, options);
     if (response === false && expected.retryEmpty && expected.retryEmpty() && attempt < MAX_FETCH_ATTEMPTS) {
-      client2.log.warn({ msg: "Server answered a request for an existing message with no data, asking again", attempt, cid: client2.id });
+      client3.log.warn({ msg: "Server answered a request for an existing message with no data, asking again", attempt, cid: client3.id });
       continue;
     }
     if (!response || !isForeignAnswer(response, expected)) {
       return response;
     }
-    client2.log.warn({
+    client3.log.warn({
       msg: "Server answered with data of another request, asking again",
       uid: response.uid,
       origins: response.partialOrigins && Object.fromEntries(response.partialOrigins),
       attempt,
-      cid: client2.id
+      cid: client3.id
     });
     if (attempt >= MAX_FETCH_ATTEMPTS) {
-      throw createImapError("Server kept answering with data of another request", "DownloadIncomplete", { cid: client2.id });
+      throw createImapError("Server kept answering with data of another request", "DownloadIncomplete", { cid: client3.id });
     }
   }
 }
-async function refetchDroppedSections(client2, response, range, options, sections) {
+async function refetchDroppedSections(client3, response, range, options, sections) {
   if (!sections.length) {
     return;
   }
-  client2.log.debug({
+  client3.log.debug({
     msg: "Server answered a body section empty while its companion section was not, asking it again separately",
     sections: sections.map((section) => typeof section === "string" ? section : section.key),
-    cid: client2.id
+    cid: client3.id
   });
   let uid2 = response.uid;
-  let retry = await fetchExpected(client2, uid2 || range, { uid: true, bodyParts: sections }, uid2 ? { ...options, uid: true } : options, {
+  let retry = await fetchExpected(client3, uid2 || range, { uid: true, bodyParts: sections }, uid2 ? { ...options, uid: true } : options, {
     uid: uid2,
     origins: partialStarts(sections),
     retryEmpty: () => true
@@ -81509,8 +81509,8 @@ async function refetchDroppedSections(client2, response, range, options, section
     }
   }
 }
-async function downloadMessage(client2, range, part, options) {
-  if (!client2.mailbox) {
+async function downloadMessage(client3, range, part, options) {
+  if (!client3.mailbox) {
     return {};
   }
   let downloadOptions = Object.assign({
@@ -81524,7 +81524,7 @@ async function downloadMessage(client2, range, part, options) {
   let uid2 = false;
   if (part === "1") {
     let expectedUid = requestedUid(range, downloadOptions);
-    let response2 = await fetchExpected(client2, range, { uid: true, bodyStructure: true }, downloadOptions, {
+    let response2 = await fetchExpected(client3, range, { uid: true, bodyStructure: true }, downloadOptions, {
       uid: expectedUid,
       origins: /* @__PURE__ */ new Map(),
       // a message addressed by UID is taken to exist, see getNextPart() below
@@ -81585,10 +81585,10 @@ async function downloadMessage(client2, range, part, options) {
       // late one (Apache James), a message that is really gone costs two more requests
       retryEmpty: processed > 0 || expectedUid ? () => !downloadAborted() : void 0
     };
-    let response2 = await fetchExpected(client2, range, query, downloadOptions, expected);
+    let response2 = await fetchExpected(client3, range, query, downloadOptions, expected);
     if (!response2) {
-      if (!client2.usable) {
-        throw client2.createNoConnectionError(false, { rejectedFrom: "download" });
+      if (!client3.usable) {
+        throw client3.createNoConnectionError(false, { rejectedFrom: "download" });
       }
       return { response: false, chunk: false };
     }
@@ -81600,7 +81600,7 @@ async function downloadMessage(client2, range, part, options) {
     if (mimeKey && contentRequest) {
       let dropped = droppedSection(mimeKey === "header" ? response2.headers : response2.bodyParts?.get(mimeKey), response2.bodyParts?.get(part), mimeKey, contentRequest);
       if (dropped) {
-        await refetchDroppedSections(client2, response2, range, downloadOptions, [dropped]);
+        await refetchDroppedSections(client3, response2, range, downloadOptions, [dropped]);
       }
     }
     let chunk2 = !part ? response2.source : response2.bodyParts && response2.bodyParts.get(part);
@@ -81610,12 +81610,12 @@ async function downloadMessage(client2, range, part, options) {
     processed += chunk2.length;
     hasMore = chunk2.length === chunkSize;
     if (chunk2.length > chunkSize) {
-      client2.log.warn({
+      client3.log.warn({
         msg: "Server returned more than the requested window, treating the part as complete",
         chunkSize,
         received: chunk2.length,
         processed,
-        cid: client2.id
+        cid: client3.id
       });
     }
     let result = { chunk: chunk2 };
@@ -81711,7 +81711,7 @@ async function downloadMessage(client2, range, part, options) {
       try {
         let decoder = getDecoder(meta3.charset, maxBytes);
         decoder.on("error", (err) => {
-          client2.log.warn({ err, charset: meta3.charset, cid: client2.id });
+          client3.log.warn({ err, charset: meta3.charset, cid: client3.id });
         });
         limiters.push(pipeStage(decoder));
         meta3.charset = "utf-8";
@@ -81767,14 +81767,14 @@ async function downloadMessage(client2, range, part, options) {
     await writeAndDrain(head);
     while (hasMore && !isLimited() && !fetchAborted) {
       if (processed >= maxTotalBytes) {
-        throw createImapError("Download exceeded the expected message size", "DownloadOverflow", { maxSize: maxTotalBytes, cid: client2.id });
+        throw createImapError("Download exceeded the expected message size", "DownloadOverflow", { maxSize: maxTotalBytes, cid: client3.id });
       }
       let { response: response2, chunk: chunk2 } = await getNextPart();
       if (downloadAborted()) {
         break;
       }
       if (response2 === false) {
-        throw createImapError("Message disappeared before the download completed", "DownloadIncomplete", { cid: client2.id });
+        throw createImapError("Message disappeared before the download completed", "DownloadIncomplete", { cid: client3.id });
       }
       if (!chunk2) {
         break;
@@ -81782,13 +81782,13 @@ async function downloadMessage(client2, range, part, options) {
       await writeAndDrain(chunk2);
     }
   };
-  client2._openDownloads++;
+  client3._openDownloads++;
   let downloadDone = false;
   let finishDownload = () => {
     if (!downloadDone) {
       downloadDone = true;
-      client2._openDownloads--;
-      client2.autoidle();
+      client3._openDownloads--;
+      client3.autoidle();
     }
   };
   let runFetchAllParts = (head) => {
@@ -81796,12 +81796,12 @@ async function downloadMessage(client2, range, part, options) {
       if (!fetchAborted && stream && !stream.destroyed) {
         stream.destroy(err);
       } else {
-        client2.log.warn({
+        client3.log.warn({
           msg: "Download error after stream closed",
           err,
           fetchAborted,
           streamDestroyed: stream?.destroyed,
-          cid: client2.id
+          cid: client3.id
         });
       }
     }).finally(() => {
@@ -81809,7 +81809,7 @@ async function downloadMessage(client2, range, part, options) {
       if (!fetchAborted && stream && !stream.destroyed) {
         stream.end();
       }
-    }).catch((err) => client2.log.error({ msg: "Failed to fail the download stream", err, cid: client2.id }));
+    }).catch((err) => client3.log.error({ msg: "Failed to fail the download stream", err, cid: client3.id }));
   };
   setImmediate(() => runFetchAllParts(chunk));
   return {
@@ -81817,8 +81817,8 @@ async function downloadMessage(client2, range, part, options) {
     content: output3
   };
 }
-async function downloadMessageParts(client2, range, parts, options) {
-  if (!client2.mailbox) {
+async function downloadMessageParts(client3, range, parts, options) {
+  if (!client3.mailbox) {
     return {};
   }
   let downloadOptions = options || {};
@@ -81832,7 +81832,7 @@ async function downloadMessageParts(client2, range, parts, options) {
     query.bodyParts.push(contentRequest);
   }
   let expectedUid = requestedUid(range, downloadOptions);
-  let response = await fetchExpected(client2, range, query, downloadOptions, {
+  let response = await fetchExpected(client3, range, query, downloadOptions, {
     uid: expectedUid,
     origins: partialStarts(query.bodyParts),
     // a message addressed by UID is taken to exist, as for download()
@@ -81848,7 +81848,7 @@ async function downloadMessageParts(client2, range, parts, options) {
       dropped.push(section);
     }
   }
-  await refetchDroppedSections(client2, response, range, downloadOptions, dropped);
+  await refetchDroppedSections(client3, response, range, downloadOptions, dropped);
   let data = {};
   for (let [part, content] of response.bodyParts) {
     let keyParts = part.split(".mime");
@@ -81858,12 +81858,12 @@ async function downloadMessageParts(client2, range, parts, options) {
     if (keyParts.length === 1) {
       let key = keyParts[0];
       if (content.length > maxBytes) {
-        client2.log.warn({
+        client3.log.warn({
           msg: "Server returned more than the requested window, truncating the part",
           part: key,
           maxBytes,
           received: content.length,
-          cid: client2.id
+          cid: client3.id
         });
         content = content.subarray(0, maxBytes);
       }
@@ -100821,9 +100821,9 @@ function getTestMessageUrl(info) {
   const infoProps = /* @__PURE__ */ new Map();
   const response = info.response.toString();
   if (response.length > 2 && response.charAt(response.length - 1) === "]") {
-    const open11 = response.indexOf("[", response.lastIndexOf("]", response.length - 2) + 1);
-    if (open11 >= 0 && open11 < response.length - 2) {
-      const props = response.substring(open11 + 1, response.length - 1);
+    const open12 = response.indexOf("[", response.lastIndexOf("]", response.length - 2) + 1);
+    if (open12 >= 0 && open12 < response.length - 2) {
+      const props = response.substring(open12 + 1, response.length - 1);
       props.replace(/\b([A-Z0-9]+)=([^\s]+)/g, (m, key, value) => {
         infoProps.set(key, value);
         return m;
@@ -101397,11 +101397,11 @@ function mapInner(r, f) {
 function mapOuter(r, f) {
   return r.matched ? f(r) : r;
 }
-function ab(pa, pb, join10) {
-  return (data, i) => mapOuter(pa(data, i), (ma) => mapInner(pb(data, ma.position), (vb, j) => join10(ma.value, vb, data, i, j)));
+function ab(pa, pb, join11) {
+  return (data, i) => mapOuter(pa(data, i), (ma) => mapInner(pb(data, ma.position), (vb, j) => join11(ma.value, vb, data, i, j)));
 }
-function abc(pa, pb, pc, join10) {
-  return (data, i) => mapOuter(pa(data, i), (ma) => mapOuter(pb(data, ma.position), (mb) => mapInner(pc(data, mb.position), (vc, j) => join10(ma.value, mb.value, vc, data, i, j))));
+function abc(pa, pb, pc, join11) {
+  return (data, i) => mapOuter(pa(data, i), (ma) => mapOuter(pb(data, ma.position), (mb) => mapInner(pc(data, mb.position), (vc, j) => join11(ma.value, mb.value, vc, data, i, j))));
 }
 function ahead(p) {
   return (data, i) => mapOuter(p(data, i), (m1) => ({
@@ -107069,22 +107069,22 @@ function imapError(error64, mail, mailboxName) {
 }
 async function imap(config2, operation) {
   const connection = await bridge(config2);
-  const client2 = new ImapFlow({ host: connection.mail.host, port: connection.mail.imapPort, secure: false, doSTARTTLS: true, auth: connection.auth, tls: connection.tls, logger: false, disableAutoIdle: true, disableCompression: true, connectionTimeout: config2.timeoutMs, greetingTimeout: config2.timeoutMs, socketTimeout: config2.timeoutMs });
-  client2.on("error", () => {
+  const client3 = new ImapFlow({ host: connection.mail.host, port: connection.mail.imapPort, secure: false, doSTARTTLS: true, auth: connection.auth, tls: connection.tls, logger: false, disableAutoIdle: true, disableCompression: true, connectionTimeout: config2.timeoutMs, greetingTimeout: config2.timeoutMs, socketTimeout: config2.timeoutMs });
+  client3.on("error", () => {
   });
   try {
-    await client2.connect();
-    return await operation(client2);
+    await client3.connect();
+    return await operation(client3);
   } catch (error64) {
     throw imapError(error64, connection.mail);
   } finally {
-    client2.close();
+    client3.close();
   }
 }
-async function examine(client2, name4, operation) {
+async function examine(client3, name4, operation) {
   let lock;
   try {
-    lock = await client2.getMailboxLock(name4, { readOnly: true });
+    lock = await client3.getMailboxLock(name4, { readOnly: true });
   } catch (error64) {
     throw imapError(error64, { host: "", imapPort: 0 }, name4);
   }
@@ -107162,10 +107162,10 @@ function headerRow(message, mailboxName) {
   };
 }
 var headerQuery = { uid: true, envelope: true, size: true, flags: true, bodyStructure: true };
-async function fetchRows(client2, uids2, mailboxName) {
+async function fetchRows(client3, uids2, mailboxName) {
   if (!uids2.length) return [];
   const rows = [];
-  for await (const message of client2.fetch(uids2.join(","), headerQuery, { uid: true })) rows.push(headerRow(message, mailboxName));
+  for await (const message of client3.fetch(uids2.join(","), headerQuery, { uid: true })) rows.push(headerRow(message, mailboxName));
   return rows;
 }
 var searched = (query) => Boolean(query.from || query.to || query.subject || query.text || query.unseen !== void 0 || query.since || query.before);
@@ -107180,14 +107180,14 @@ async function mailList(config2, input2) {
     return helperMailList(config2, helperQuery);
   }
   const filtered = searched(query);
-  return imap(config2, (client2) => examine(client2, query.mailbox, async () => {
-    const uidValidity = client2.mailbox && client2.mailbox.uidValidity !== void 0 ? String(client2.mailbox.uidValidity) : null;
+  return imap(config2, (client3) => examine(client3, query.mailbox, async () => {
+    const uidValidity = client3.mailbox && client3.mailbox.uidValidity !== void 0 ? String(client3.mailbox.uidValidity) : null;
     if (query.beforeUid && query.uidValidity !== uidValidity) throw new WaypostError("MAIL_CURSOR_STALE", "The mailbox changed since the previous page (UIDVALIDITY differs), so beforeUid no longer points to the same message. Start again without beforeUid.");
     const page = (rows2, total, oldest) => ({ mailbox: query.mailbox, messages: rows2, total, nextBeforeUid: oldest, uidValidity, readOnly: true, bodyFetched: false, searched: filtered });
     if (!filtered && !query.beforeUid) {
-      const total = client2.mailbox ? client2.mailbox.exists : 0;
+      const total = client3.mailbox ? client3.mailbox.exists : 0;
       const rows2 = [];
-      if (total) for await (const message of client2.fetch(`${Math.max(1, total - query.limit + 1)}:${total}`, headerQuery)) rows2.push(headerRow(message));
+      if (total) for await (const message of client3.fetch(`${Math.max(1, total - query.limit + 1)}:${total}`, headerQuery)) rows2.push(headerRow(message));
       rows2.sort((a, b) => b.uid - a.uid);
       return page(rows2, total, total > rows2.length && rows2.length ? rows2[rows2.length - 1].uid : null);
     }
@@ -107200,12 +107200,12 @@ async function mailList(config2, input2) {
     if (query.since) criteria.since = /* @__PURE__ */ new Date(`${query.since}T00:00:00Z`);
     if (query.before) criteria.before = /* @__PURE__ */ new Date(`${query.before}T00:00:00Z`);
     if (!Object.keys(criteria).length) criteria.all = true;
-    const found = await client2.search(criteria, { uid: true });
+    const found = await client3.search(criteria, { uid: true });
     if (!found) throw new WaypostError("MAIL_SEARCH", "Bridge rejected the mailbox search. Simplify the filters and retry.");
     const matches = [...new Set(found)].sort((a, b) => a - b);
     const older = query.beforeUid ? matches.filter((uid2) => uid2 < query.beforeUid) : matches;
     const uids2 = older.slice(-query.limit);
-    const rows = await fetchRows(client2, uids2);
+    const rows = await fetchRows(client3, uids2);
     rows.sort((a, b) => b.uid - a.uid);
     return page(rows, matches.length, older.length > uids2.length && uids2.length ? uids2[0] : null);
   }));
@@ -107213,8 +107213,8 @@ async function mailList(config2, input2) {
 async function mailMailboxes(config2, input2) {
   const options = mailMailboxesSchema.parse(input2);
   if (config2.mailHelper) throw new WaypostError("MAIL_HELPER_UNSUPPORTED", "The Mail helper cannot list mailboxes. Use INBOX or a mailbox name you already know.");
-  return imap(config2, async (client2) => {
-    const listed = await client2.list(options.counts ? { statusQuery: { messages: true, unseen: true } } : {});
+  return imap(config2, async (client3) => {
+    const listed = await client3.list(options.counts ? { statusQuery: { messages: true, unseen: true } } : {});
     const mailboxes = listed.slice(0, 500).map((item) => ({
       path: item.path.slice(0, 256),
       name: item.name.slice(0, 256),
@@ -107237,8 +107237,8 @@ async function mailRead(config2, input2) {
     if (query.textOffset || query.maxChars !== DEFAULT_TEXT) throw new WaypostError("MAIL_HELPER_UNSUPPORTED", "The Mail helper returns at most the first 12,000 characters. Omit textOffset and maxChars.");
     return helperMailRead(config2, { mailbox: query.mailbox, uid: query.uid });
   }
-  return imap(config2, (client2) => examine(client2, query.mailbox, async () => {
-    const message = await client2.fetchOne(String(query.uid), { uid: true, size: true, flags: true, bodyStructure: true, source: { start: 0, maxLength: MAX_BODY } }, { uid: true });
+  return imap(config2, (client3) => examine(client3, query.mailbox, async () => {
+    const message = await client3.fetchOne(String(query.uid), { uid: true, size: true, flags: true, bodyStructure: true, source: { start: 0, maxLength: MAX_BODY } }, { uid: true });
     if (!message || !message.source) throw new WaypostError("MAIL_NOT_FOUND", `UID ${query.uid} is not in ${JSON.stringify(query.mailbox)}. UIDs belong to one mailbox; call mail_list on the same mailbox.`);
     if (message.source.length > MAX_BODY) throw new WaypostError("MAIL_SIZE", "Bridge returned more than the requested body limit.");
     const parsed = await parseMessage(message.source);
@@ -107279,8 +107279,8 @@ var messageIdPattern = /^<[^<>\s"\\]{1,250}>$/;
 async function mailThread(config2, input2) {
   const query = mailThreadSchema.parse(input2);
   if (config2.mailHelper) throw new WaypostError("MAIL_HELPER_UNSUPPORTED", "The Mail helper cannot search conversations. Use direct Bridge.");
-  return imap(config2, (client2) => examine(client2, query.mailbox, async () => {
-    const message = await client2.fetchOne(String(query.uid), { uid: true, envelope: true, headers: ["references", "in-reply-to"] }, { uid: true });
+  return imap(config2, (client3) => examine(client3, query.mailbox, async () => {
+    const message = await client3.fetchOne(String(query.uid), { uid: true, envelope: true, headers: ["references", "in-reply-to"] }, { uid: true });
     if (!message) throw new WaypostError("MAIL_NOT_FOUND", `UID ${query.uid} is not in ${JSON.stringify(query.mailbox)}.`);
     const parsed = await (0, import_mailparser2.simpleParser)(message.headers ?? Buffer.alloc(0), { skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
@@ -107292,12 +107292,12 @@ async function mailThread(config2, input2) {
       if (root) terms.push({ header: { references: root } }, { header: { "in-reply-to": root } });
       const own2 = message.envelope?.messageId;
       if (own2 && messageIdPattern.test(own2)) terms.push({ header: { references: own2 } }, { header: { "in-reply-to": own2 } });
-      const found = await client2.search(terms.length === 1 ? terms[0] : { or: terms }, { uid: true });
+      const found = await client3.search(terms.length === 1 ? terms[0] : { or: terms }, { uid: true });
       if (!found) throw new WaypostError("MAIL_SEARCH", "Bridge rejected the conversation search.");
       uids2 = [.../* @__PURE__ */ new Set([...found, message.uid])].sort((a, b) => a - b);
     }
     const total = uids2.length;
-    const rows = await fetchRows(client2, uids2.slice(-query.limit));
+    const rows = await fetchRows(client3, uids2.slice(-query.limit));
     rows.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? "") || a.uid - b.uid);
     return { mailbox: query.mailbox, rootMessageId: root ?? null, messages: rows, total, partial: total > rows.length, ...total > rows.length ? { reason: `Showing the newest ${rows.length} of ${total} related messages.` } : {}, scope: 'One mailbox. Use mailbox "All Mail" to include sent replies.', readOnly: true };
   }));
@@ -107309,15 +107309,15 @@ function safeFilename(name4, part) {
 async function mailAttachment(config2, input2) {
   const query = mailAttachmentSchema.parse(input2);
   if (config2.mailHelper) throw new WaypostError("MAIL_HELPER_UNSUPPORTED", "The Mail helper does not return attachments. Use direct Bridge.");
-  return imap(config2, (client2) => examine(client2, query.mailbox, async () => {
-    const message = await client2.fetchOne(String(query.uid), { uid: true, bodyStructure: true }, { uid: true });
+  return imap(config2, (client3) => examine(client3, query.mailbox, async () => {
+    const message = await client3.fetchOne(String(query.uid), { uid: true, bodyStructure: true }, { uid: true });
     if (!message) throw new WaypostError("MAIL_NOT_FOUND", `UID ${query.uid} is not in ${JSON.stringify(query.mailbox)}.`);
     const attachment = attachmentsOf(message.bodyStructure).find((item) => item.part === query.part);
     if (!attachment) throw new WaypostError("MAIL_ATTACHMENT_NOT_FOUND", `Part ${query.part} is not an attachment of UID ${query.uid}. Use attachments[].part from mail_read.`);
     if (attachment.bytes !== null && attachment.bytes > MAX_ATTACHMENT * 1.4) throw new WaypostError("FILE_LIMIT", "The attachment exceeds 25 MiB. Save it from Proton Mail instead.");
     const root = await ensureArtifactsDirectory(config2.artifactsDir);
     const path4 = join5(root, `attachment-${randomUUID()}-${safeFilename(attachment.filename, query.part)}`);
-    const download = await client2.download(String(query.uid), query.part, { uid: true, maxBytes: MAX_ATTACHMENT + 1 });
+    const download = await client3.download(String(query.uid), query.part, { uid: true, maxBytes: MAX_ATTACHMENT + 1 });
     const handle2 = await open4(path4, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | constants4.O_NOFOLLOW, 384);
     const hash2 = createHash3("sha256");
     let bytes = 0;
@@ -116024,15 +116024,15 @@ async function calendarFreeBusy(config2, input2) {
   };
   const relevant = result.events.filter((event) => query.includeAllDay || !event.allDay).map((event) => ({ ...event, s: Math.max(from, event.allDay ? day2(event.start) : Date.parse(event.start)), e: Math.min(to, event.allDay ? day2(event.end) : Date.parse(event.end)) })).filter((event) => event.e > event.s).sort((a, b) => a.s - b.s);
   const busy = [];
-  let open11 = null;
+  let open12 = null;
   for (const event of relevant) {
-    if (open11 && event.s <= open11.e) open11.e = Math.max(open11.e, event.e);
+    if (open12 && event.s <= open12.e) open12.e = Math.max(open12.e, event.e);
     else {
-      if (open11) busy.push({ start: iso(open11.s), end: iso(open11.e) });
-      open11 = { s: event.s, e: event.e };
+      if (open12) busy.push({ start: iso(open12.s), end: iso(open12.e) });
+      open12 = { s: event.s, e: event.e };
     }
   }
-  if (open11) busy.push({ start: iso(open11.s), end: iso(open11.e) });
+  if (open12) busy.push({ start: iso(open12.s), end: iso(open12.e) });
   const conflicts = [];
   for (let i = 0; i < relevant.length && conflicts.length < 50; i++) for (let j = i + 1; j < relevant.length && relevant[j].s < relevant[i].e && conflicts.length < 50; j++) {
     const a = relevant[i], b = relevant[j];
@@ -116494,10 +116494,10 @@ function organizer(config2, count2, approved) {
   if (!config2.mail.organizeEnabled) throw new WaypostError("MAIL_ORGANIZE_DISABLED", "Mail organizing is off. The user can enable it with mail.organizeEnabled in the Waypost config.");
   if (!approved) throw new WaypostError("CONFIRMATION_REQUIRED", `This changes ${count2} message${count2 === 1 ? "" : "s"}. Show the user exactly what will change and pass confirm: true after they approve.`);
 }
-async function writable(client2, name4, operation) {
+async function writable(client3, name4, operation) {
   let lock;
   try {
-    lock = await client2.getMailboxLock(name4);
+    lock = await client3.getMailboxLock(name4);
   } catch (error64) {
     throw imapError(error64, { host: "", imapPort: 0 }, name4);
   }
@@ -116507,16 +116507,16 @@ async function writable(client2, name4, operation) {
     lock.release();
   }
 }
-async function present(client2, requested) {
-  const found = await client2.search({ uid: requested.join(",") }, { uid: true });
+async function present(client3, requested) {
+  const found = await client3.search({ uid: requested.join(",") }, { uid: true });
   const set2 = new Set(found || []);
   const missing = requested.filter((uid2) => !set2.has(uid2));
   if (missing.length === requested.length) throw new WaypostError("MAIL_NOT_FOUND", "None of those UIDs are in this mailbox. UIDs belong to one mailbox; call mail_list on it again.");
   return { uids: requested.filter((uid2) => set2.has(uid2)), missing };
 }
-async function mailboxExists(client2, name4) {
+async function mailboxExists(client3, name4) {
   try {
-    await client2.status(name4, { messages: true });
+    await client3.status(name4, { messages: true });
   } catch (error64) {
     throw imapError(error64, { host: "", imapPort: 0 }, name4);
   }
@@ -116526,9 +116526,9 @@ async function record3(config2, entry) {
 }
 async function flags2(config2, request, flag, add, tool) {
   organizer(config2, request.uids.length, request.confirm);
-  const result = await imap(config2, (client2) => writable(client2, request.mailbox, async () => {
-    const { uids: uids2, missing } = await present(client2, request.uids);
-    const ok = add ? await client2.messageFlagsAdd(uids2.join(","), [flag], { uid: true }) : await client2.messageFlagsRemove(uids2.join(","), [flag], { uid: true });
+  const result = await imap(config2, (client3) => writable(client3, request.mailbox, async () => {
+    const { uids: uids2, missing } = await present(client3, request.uids);
+    const ok = add ? await client3.messageFlagsAdd(uids2.join(","), [flag], { uid: true }) : await client3.messageFlagsRemove(uids2.join(","), [flag], { uid: true });
     if (!ok) throw new WaypostError("MAIL_UPDATE_FAILED", "Bridge did not apply the change. Nothing was retried.");
     return { uids: uids2, missing };
   }));
@@ -116548,11 +116548,11 @@ async function mailMove(config2, input2) {
   if (REFUSED.test(request.to) || request.to.startsWith("Labels/")) throw new WaypostError("MAIL_MOVE_REFUSED", "Waypost does not move mail to Trash, Spam, Sent, Drafts, Starred or All Mail, and labels are applied with mail_label. Choose a folder such as Archive or Folders/<name>.");
   if (request.to === request.mailbox) throw new WaypostError("INPUT_INVALID", "The destination is the same mailbox.");
   organizer(config2, request.uids.length, request.confirm);
-  const result = await imap(config2, async (client2) => {
-    await mailboxExists(client2, request.to);
-    return writable(client2, request.mailbox, async () => {
-      const { uids: uids2, missing } = await present(client2, request.uids);
-      const moved = await client2.messageMove(uids2.join(","), request.to, { uid: true });
+  const result = await imap(config2, async (client3) => {
+    await mailboxExists(client3, request.to);
+    return writable(client3, request.mailbox, async () => {
+      const { uids: uids2, missing } = await present(client3, request.uids);
+      const moved = await client3.messageMove(uids2.join(","), request.to, { uid: true });
       if (!moved) throw new WaypostError("MAIL_UPDATE_FAILED", "Bridge did not move the messages. Nothing was retried.");
       return { uids: uids2, missing, newUids: moved.uidMap ? Object.fromEntries(moved.uidMap) : null };
     });
@@ -116564,11 +116564,11 @@ async function mailLabel(config2, input2) {
   const request = mailLabelSchema.parse(input2);
   organizer(config2, request.uids.length, request.confirm);
   const label = request.label.startsWith("Labels/") ? request.label : `Labels/${request.label}`;
-  const result = await imap(config2, async (client2) => {
-    await mailboxExists(client2, label);
-    return writable(client2, request.mailbox, async () => {
-      const { uids: uids2, missing } = await present(client2, request.uids);
-      const copied = await client2.messageCopy(uids2.join(","), label, { uid: true });
+  const result = await imap(config2, async (client3) => {
+    await mailboxExists(client3, label);
+    return writable(client3, request.mailbox, async () => {
+      const { uids: uids2, missing } = await present(client3, request.uids);
+      const copied = await client3.messageCopy(uids2.join(","), label, { uid: true });
       if (!copied) throw new WaypostError("MAIL_UPDATE_FAILED", "Bridge did not apply the label. Nothing was retried.");
       return { uids: uids2, missing };
     });
@@ -116592,8 +116592,8 @@ async function mailTriage(config2, input2) {
   if (!metadata?.isFile() || metadata.size > 64 * 1024) throw new WaypostError("SIEVE_UNCONFIGURED", "mail.triageSieve must point to a Sieve file no larger than 64 KiB.");
   const script = await readFile4(path4, "utf8");
   if (config2.mailHelper) throw new WaypostError("MAIL_HELPER_UNSUPPORTED", "Triage needs direct Bridge to read full headers.");
-  const message = await imap(config2, (client2) => examine(client2, request.mailbox, async () => {
-    const found = await client2.fetchOne(String(request.uid), { uid: true, size: true, headers: true }, { uid: true });
+  const message = await imap(config2, (client3) => examine(client3, request.mailbox, async () => {
+    const found = await client3.fetchOne(String(request.uid), { uid: true, size: true, headers: true }, { uid: true });
     if (!found || !found.headers) throw new WaypostError("MAIL_NOT_FOUND", `UID ${request.uid} is not in ${JSON.stringify(request.mailbox)}.`);
     return { headers: found.headers, size: found.size ?? 0 };
   }));
@@ -117001,14 +117001,14 @@ function headerBlock(source) {
 async function fromBridge(config2, query, cutoff, options, mailboxes) {
   const matches = [];
   let otherSenders = 0, notifications = 0;
-  await imap(config2, async (client2) => {
-    for (const mailbox3 of mailboxes) await examine(client2, mailbox3, async () => {
+  await imap(config2, async (client3) => {
+    for (const mailbox3 of mailboxes) await examine(client3, mailbox3, async () => {
       const criteria = { since: new Date(cutoff - 864e5) };
       if (query.from) criteria.from = query.from;
-      const found = await client2.search(criteria, { uid: true });
+      const found = await client3.search(criteria, { uid: true });
       const uids2 = (found || []).sort((a, b) => a - b).slice(-MAX_MESSAGES);
       if (!uids2.length) return;
-      for await (const message of client2.fetch(uids2.join(","), { uid: true, envelope: true, internalDate: true, source: { start: 0, maxLength: MAX_SOURCE } }, { uid: true })) {
+      for await (const message of client3.fetch(uids2.join(","), { uid: true, envelope: true, internalDate: true, source: { start: 0, maxLength: MAX_SOURCE } }, { uid: true })) {
         const received = message.internalDate ? new Date(message.internalDate).getTime() : NaN;
         if (!Number.isFinite(received) || received < cutoff || !message.source) continue;
         const from = message.envelope?.from?.[0];
@@ -129936,6 +129936,279 @@ async function remoteDoctor(base2) {
   return checks;
 }
 
+// src/cloudflare.ts
+import { constants as constants11 } from "node:fs";
+import { lstat as lstat4, open as open11, readFile as readFile6, rename as rename5, rm, stat as stat8 } from "node:fs/promises";
+import { basename as basename3, dirname as dirname5, isAbsolute as isAbsolute6, join as join10 } from "node:path";
+import { randomBytes as randomBytes4 } from "node:crypto";
+
+// src/worker-source.ts
+var WORKER_SOURCE = "// Front door: serve Waypost on workers.dev (free, no domain) or a custom domain. With a Workers VPC binding\n// (ORIGIN_VPC) it reaches Waypost through a Cloudflare tunnel that has no public hostname, so the\n// server is reachable only through this Worker. waypost setup cloudflare uploads this file as is. Without one it forwards to the one fixed HTTPS\n// ORIGIN (for example Tailscale Funnel). It passes Authorization and adds no caching, logging or state.\nexport default {\n  async fetch(request, env) {\n    const incoming = new URL(request.url);\n    // Through VPC the tunnel picks the server; keep the public host so Waypost's Host check passes.\n    const origin = env.ORIGIN_VPC ? new URL(`http://${incoming.host}`) : new URL(env.ORIGIN);\n    // Set path and query on a copy of the origin; never resolve the path as a URL, or \"//host\" would pick the upstream.\n    const target = new URL(origin.href);\n    target.pathname = incoming.pathname;\n    target.search = incoming.search;\n    if (target.origin !== origin.origin) return new Response('Bad request', {status:400});\n    const headers = new Headers(request.headers);\n    headers.delete('cookie');\n    const init = {method:request.method, headers, redirect:'manual'};\n    if (!['GET','HEAD'].includes(request.method)) init.body = request.body;\n    const response = env.ORIGIN_VPC ? await env.ORIGIN_VPC.fetch(target, init) : await fetch(target, init);\n    const out = new Headers(response.headers);\n    out.delete('set-cookie');\n    return new Response(response.body, {status:response.status, statusText:response.statusText, headers:out});\n  },\n};\n";
+
+// src/cloudflare.ts
+var API_TOKEN_PERMISSIONS = ["Account: Cloudflare Tunnel Edit", "Account: Connectivity Directory Admin", "Account: Workers Scripts Edit"];
+var DOMAIN_PERMISSIONS = ["Zone: Workers Routes Edit", "Zone: Zone Read"];
+var NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+var ACCOUNT_ID = /^[0-9a-f]{32}$/i;
+async function setupCloudflare(options) {
+  const name4 = options.name ?? "waypost";
+  if (!NAME.test(name4)) throw new WaypostError("INPUT_INVALID", "--name must be lowercase letters, digits and hyphens, up to 63 characters.");
+  if (options.workersSubdomain !== void 0 && !NAME.test(options.workersSubdomain)) throw new WaypostError("INPUT_INVALID", "--workers-subdomain must be lowercase letters, digits and hyphens, up to 63 characters.");
+  if (!isAbsolute6(options.tunnelTokenFile)) throw new WaypostError("INPUT_INVALID", "--tunnel-token-file must be an absolute path.");
+  const held = await inspectTokenFile(options.tunnelTokenFile);
+  const pendingPath = join10(dirname5(options.tunnelTokenFile), `.${basename3(options.tunnelTokenFile)}.pending`);
+  const pending2 = await readTokenId(pendingPath);
+  const owns = (id2) => held.tunnelId === id2 || pending2 === id2;
+  const hostname3 = options.hostname === void 0 ? void 0 : hostOnly(options.hostname);
+  if (hostname3 && options.workersSubdomain !== void 0) throw new WaypostError("INPUT_INVALID", "--workers-subdomain applies only to the workers.dev address; leave it out with --hostname.");
+  const api = client2(options.apiToken, options.apiBase ?? "https://api.cloudflare.com/client/v4");
+  if (options.accountId && !ACCOUNT_ID.test(options.accountId)) throw new WaypostError("INPUT_INVALID", "--account-id must be the 32-character id from the Cloudflare dashboard.");
+  const account = options.accountId || await onlyAccount(api);
+  const originHost = options.originHost ?? "waypost", originPort = options.originPort ?? 8787;
+  const tunnels = (await api.list(`/accounts/${account}/cfd_tunnel?name=${encodeURIComponent(name4)}&is_deleted=false`, "list tunnels")).filter((item) => item.name === name4);
+  if (tunnels.length > 1) throw new WaypostError("TUNNEL_EXISTS", `This account has ${tunnels.length} tunnels named ${name4}, so this can't tell which is this Waypost's. Delete the extras under Networking \u2192 Tunnels, or pass a different --name.`, { tunnels: tunnels.map((item) => item.id) });
+  const reused = tunnels[0];
+  if (reused) {
+    if (!owns(reused.id) && (reused.status !== "inactive" || (reused.connections?.length ?? 0) > 0)) throw new WaypostError("TUNNEL_IN_USE", reused.status === "healthy" || reused.status === "degraded" ? `The ${name4} tunnel is running on a server right now and this host doesn't hold its token (${options.tunnelTokenFile}). Joining it would split that server's traffic with this one. Pass a different --name for your own tunnel. If it is this host's own cloudflared, stop it (docker compose stop cloudflared), delete the ${name4} tunnel, VPC service and Worker in the dashboard and run again.` : `The ${name4} tunnel has run on a server before and this host doesn't hold its token (${options.tunnelTokenFile}), so it belongs to that server. Pass a different --name for your own tunnel. If it was this host's and the token file was lost, delete the ${name4} tunnel, VPC service and Worker in the dashboard and run again.`, { status: reused.status ?? null });
+    if (!owns(reused.id) && !options.reuse) throw new WaypostError("TUNNEL_EXISTS", `The ${name4} tunnel already exists, nothing is connected to it, and this host doesn't hold its token (${options.tunnelTokenFile}). If an earlier run of this command stopped partway, run again with --reuse. Otherwise pass a different --name for your own tunnel.`);
+    if (!(reused.config_src === "cloudflare" || reused.config_src === void 0 && reused.remote_config === true)) throw new WaypostError("TUNNEL_LOCALLY_MANAGED", `The ${name4} tunnel is managed locally, so its public routes live in a cloudflared config file this can't check. Pass a different --name for a fresh tunnel that only your Worker can reach.`);
+    const config2 = (await api.get(`/accounts/${account}/cfd_tunnel/${reused.id}/configurations`, "read the tunnel configuration"))?.config;
+    const routes = (config2?.ingress ?? []).filter((rule) => rule.hostname || !/^http_status:\d{3}$/.test(rule.service ?? ""));
+    const privateRoutes = (await api.list(`/accounts/${account}/teamnet/routes?tunnel_id=${reused.id}&is_deleted=false`, "list the tunnel's private routes")).map((route) => route.network ?? "a private route");
+    if (config2?.["warp-routing"]?.enabled || privateRoutes.length) throw new WaypostError("TUNNEL_HAS_PRIVATE_ROUTES", `The ${name4} tunnel carries private-network traffic (${privateRoutes.length ? privateRoutes.join(", ") : "WARP routing is on"}), which reaches the server without the Worker. Remove those routes under Networking \u2192 Routes and turn off WARP routing for ${name4}, or pass a different --name.`, { routes: privateRoutes });
+    if (routes.length) throw new WaypostError("TUNNEL_HAS_PUBLIC_HOSTNAME", `The ${name4} tunnel still routes public traffic (${routes.map((rule) => rule.hostname ?? `catch-all to ${rule.service}`).join(", ")}), which skips the Worker. Remove those public hostnames (and their DNS records) under Networking \u2192 Tunnels \u2192 ${name4}, or pass a different --name.`, { routes: routes.map((rule) => rule.hostname ?? rule.service ?? "") });
+  }
+  const conflicts = [];
+  const deletedTunnel = async (id2) => /^[0-9a-f-]{36}$/i.test(id2) && await api.get(`/accounts/${account}/cfd_tunnel/${id2}`, "check a tunnel").then((item) => !!item?.deleted_at, () => false);
+  const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
+  const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
+  if (tokenInUse) conflicts.push({ code: "TOKEN_FILE_IN_USE", what: `${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)` });
+  const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
+  const named = services2.filter((item) => item.name === name4);
+  if (named.length > 1) throw new WaypostError("VPC_SERVICE_EXISTS", `This account has ${named.length} VPC services named ${name4}, so this can't tell which is this Waypost's. Delete the extras under Workers VPC, or pass a different --name.`, { services: named.map((item) => item.service_id) });
+  const existing = named[0];
+  const via = (item) => item.host?.resolver_network?.tunnel_id ?? item.host?.network?.tunnel_id;
+  if (reused && !owns(reused.id) && services2.some((item) => via(item) === reused.id)) throw new WaypostError("TUNNEL_IN_USE", `The ${name4} tunnel already has a VPC service on it and this host doesn't hold its token (${options.tunnelTokenFile}), so it was set up on another host. Pass a different --name for your own tunnel. If it was this host's and its token files are gone, delete the ${name4} tunnel, VPC service and Worker in the dashboard and run again.`, { status: reused.status ?? null });
+  const tunnelOf = existing ? via(existing) : void 0;
+  const serviceIsOurs = !!existing && !!tunnelOf && existing.host?.hostname === originHost && existing.http_port === originPort && (!!reused && tunnelOf === reused.id || stale && tunnelOf === held.tunnelId);
+  const others = reused ? services2.filter((item) => item !== existing && via(item) === reused.id).map((item) => item.name) : [];
+  if (others.length) throw new WaypostError("TUNNEL_HAS_VPC_SERVICES", `The ${name4} tunnel also carries the VPC service${others.length > 1 ? "s" : ""} ${others.join(", ")}, which other Workers can use to reach the server without this front door. Delete ${others.length > 1 ? "them" : "it"} under Workers VPC, or pass a different --name.`, { services: others });
+  if (existing && !serviceIsOurs) throw new WaypostError("VPC_SERVICE_EXISTS", `The VPC service ${name4} already exists and isn't this Waypost's. Repointing it would give every Worker bound to it a path to this server, so this won't, even with --replace. Pass a different --name. If it is yours (say, after losing ${options.tunnelTokenFile}), delete the ${name4} tunnel, VPC service and Worker in the dashboard and run again.`, { services: [existing.service_id] });
+  const current = await api.call("GET", `/accounts/${account}/workers/scripts/${name4}/settings`, void 0, "check for an existing Worker").then((json3) => json3.result, (error64) => {
+    if (error64 instanceof WaypostError && error64.details?.cloudflareCode === 10007) return null;
+    throw error64;
+  });
+  const bindings = current?.bindings ?? [];
+  const workerIsOurs = !!current && serviceIsOurs && bindings.length === 1 && bindings[0].name === "ORIGIN_VPC" && bindings[0].type === "vpc_service" && bindings[0].service_id === existing.service_id;
+  if (current && !workerIsOurs) conflicts.push({ code: "WORKER_EXISTS", what: `the Worker ${name4}, which isn't this Waypost's front door, would be overwritten` });
+  const domains = [
+    ...await api.list(`/accounts/${account}/workers/domains?service=${name4}`, "list Worker custom domains"),
+    ...hostname3 ? await api.list(`/accounts/${account}/workers/domains?hostname=${hostname3}`, "list Worker custom domains") : []
+  ];
+  const attached = domains.filter((item) => item.service === name4 && item.hostname !== hostname3).map((item) => item.hostname);
+  if (attached.length) throw new WaypostError("HOSTNAME_ATTACHED", workerIsOurs ? `The ${name4} Worker already serves ${attached.join(", ")}. Run again with --hostname ${attached[0]}, or remove ${attached.length > 1 ? "those domains" : "that domain"} under Workers & Pages \u2192 ${name4} \u2192 Domains & Routes first.` : `The Worker ${name4} serves ${attached.join(", ")} and isn't this Waypost's front door. Pass a different --name.`, { hostnames: attached });
+  const taken = hostname3 ? domains.find((item) => item.hostname === hostname3 && item.service !== name4) : void 0;
+  if (taken) conflicts.push({ code: "HOSTNAME_IN_USE", what: `${hostname3}, which points at the Worker ${taken.service}, would move to ${name4}` });
+  if (conflicts.length && !options.replace)
+    throw new WaypostError(conflicts[0].code, `This would change things on your account that aren't this Waypost's: ${conflicts.map((item) => item.what).join("; ")}. Pass a different --name${taken ? " or --hostname" : ""}${tokenInUse ? " or --tunnel-token-file" : ""}, or --replace to make ${conflicts.length > 1 ? "all of these changes" : "that change"}.`, { conflicts: conflicts.map((item) => item.code) });
+  const zone = hostname3 ? await findZone(api, account, hostname3) : void 0;
+  const subdomain = await workersSubdomain(api, account);
+  if (!hostname3 && !subdomain && !options.workersSubdomain) throw new WaypostError("WORKERS_SUBDOMAIN_NEEDED", `This Cloudflare account has no workers.dev subdomain yet. Run again with --workers-subdomain <name>; your address becomes https://${name4}.<name>.workers.dev.`);
+  if (!hostname3 && subdomain && options.workersSubdomain && subdomain !== options.workersSubdomain) throw new WaypostError("INPUT_INVALID", `This account already uses the workers.dev subdomain ${subdomain}, so your address is https://${name4}.${subdomain}.workers.dev. Leave out --workers-subdomain.`);
+  const registered = hostname3 ? void 0 : subdomain ?? (await api.send("PUT", `/accounts/${account}/workers/subdomain`, { subdomain: options.workersSubdomain }, "register your workers.dev subdomain")).subdomain;
+  const tunnel = reused ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
+  const servicesPath = `/accounts/${account}/connectivity/directory/services`;
+  const undo = !reused || !owns(reused.id);
+  let vpc, wrote = false;
+  const undoService = async () => {
+    const now2 = await api.list(servicesPath, "list VPC services").then((items) => items.find((item) => item.name === name4), () => null);
+    if (now2 === null) return false;
+    if (!now2 || via(now2) !== tunnel.id) return true;
+    return (existing ? api.call("PUT", `${servicesPath}/${existing.service_id}`, { name: existing.name, type: existing.type ?? "http", host: existing.host, http_port: existing.http_port }, "restore the VPC service") : api.call("DELETE", `${servicesPath}/${now2.service_id}`, void 0, "remove the unfinished VPC service")).then(() => true, () => false);
+  };
+  try {
+    const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
+    if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
+    await writeSecret(pendingPath, tunnelToken);
+    const service = { name: name4, type: "http", host: { hostname: originHost, resolver_network: { tunnel_id: tunnel.id } }, http_port: originPort };
+    wrote = true;
+    vpc = existing ? await api.send("PUT", `${servicesPath}/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", servicesPath, service, "create the VPC service");
+    await rename5(pendingPath, options.tunnelTokenFile).catch(() => {
+      throw new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${options.tunnelTokenFile}. Check that its folder exists and that this user can write to it.`);
+    });
+  } catch (error64) {
+    if (undo) {
+      if (!wrote || await undoService()) {
+        await rm(pendingPath, { force: true }).catch(() => void 0);
+        if (!reused) await api.call("DELETE", `/accounts/${account}/cfd_tunnel/${tunnel.id}`, void 0, "remove the unfinished tunnel").catch(() => void 0);
+      } else if (error64 instanceof WaypostError) {
+        throw new WaypostError(error64.code, `${error64.message} Cleanup on Cloudflare couldn't finish, so this host kept what it needs to resume: fix the cause and run the same command again.`, { ...error64.details, resumable: true });
+      }
+    }
+    throw error64;
+  }
+  const form = new FormData();
+  form.set("metadata", JSON.stringify({ main_module: "worker.js", compatibility_date: "2026-09-01", bindings: [{ type: "vpc_service", name: "ORIGIN_VPC", service_id: vpc.service_id }], observability: { enabled: false } }));
+  form.set("worker.js", new File([WORKER_SOURCE], "worker.js", { type: "application/javascript+module" }));
+  await api.send("PUT", `/accounts/${account}/workers/scripts/${name4}`, form, "upload the Worker");
+  let publicUrl;
+  if (hostname3) {
+    if (subdomain) await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: false, previews_enabled: false }, "turn off the workers.dev address");
+    await api.send("PUT", `/accounts/${account}/workers/domains`, { hostname: hostname3, service: name4, zone_id: zone, environment: "production" }, "attach your domain", DOMAIN_PERMISSIONS);
+    publicUrl = `https://${hostname3}`;
+  } else {
+    await api.send("POST", `/accounts/${account}/workers/scripts/${name4}/subdomain`, { enabled: true, previews_enabled: false }, "turn on the workers.dev address");
+    publicUrl = `https://${name4}.${registered}.workers.dev`;
+  }
+  const tokenReplaced = tokenInUse || stale;
+  return {
+    publicUrl,
+    accountId: account,
+    tunnel: { id: tunnel.id, name: name4, created: !reused },
+    vpcService: { id: vpc.service_id, created: !existing },
+    worker: { name: name4, created: !current },
+    tunnelTokenFile: options.tunnelTokenFile,
+    tunnelTokenReplaced: tokenReplaced,
+    next: [
+      `Set up Waypost for this address: docker compose run --rm waypost setup quick --public-url ${publicUrl} --data /data --host 0.0.0.0 --owner <your Proton address> (add --enable-writes to let agents write to the Agents calendar)`,
+      "Start it (this also restarts the tunnel so it uses secrets/tunnel_token): docker compose up -d --force-recreate cloudflared && docker compose up -d",
+      `Check it from outside: docker compose run --rm waypost doctor --remote ${publicUrl}`
+    ],
+    cost: "Free: Cloudflare Tunnel, Workers VPC (open beta) and the Workers Free plan (100,000 requests a day). Everything lives on your own Cloudflare account."
+  };
+}
+function client2(token3, base2) {
+  const call = async (method, path4, body2, step, extra = []) => {
+    let response;
+    try {
+      response = await fetch(base2 + path4, { method, redirect: "error", signal: AbortSignal.timeout(3e4), headers: { Authorization: `Bearer ${token3}`, ...body2 === void 0 || body2 instanceof FormData ? {} : { "Content-Type": "application/json" } }, ...body2 === void 0 ? {} : { body: body2 instanceof FormData ? body2 : JSON.stringify(body2) } });
+    } catch {
+      throw new WaypostError("CLOUDFLARE_UNREACHABLE", `Could not reach the Cloudflare API to ${step}. Check this machine's internet connection.`);
+    }
+    const json3 = await response.json().catch(() => null);
+    if (response.ok && json3?.success) return json3;
+    const first2 = json3?.errors?.[0];
+    if (first2?.code === 6003 || first2?.code === 9109 && /invalid access token/i.test(first2.message)) throw new WaypostError("CLOUDFLARE_TOKEN_REJECTED", "Cloudflare did not accept the API token. Copy it again from My Profile \u2192 API Tokens, or roll a new one.", { httpStatus: response.status, cloudflareCode: first2.code });
+    const denied2 = response.status === 401 || response.status === 403 || [9109, 1e4, 10001].includes(first2?.code ?? 0);
+    throw new WaypostError(denied2 ? "CLOUDFLARE_DENIED" : "CLOUDFLARE_FAILED", denied2 ? `Cloudflare refused to ${step}. Give the API token these permissions: ${[...API_TOKEN_PERMISSIONS, ...extra].join("; ")}.` : `Cloudflare could not ${step}: ${first2 ? `${first2.code} ${first2.message}` : `HTTP ${response.status}`}.`.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 400), { httpStatus: response.status, ...first2 ? { cloudflareCode: first2.code } : {} });
+  };
+  return {
+    call,
+    get: async (path4, step, extra = []) => (await call("GET", path4, void 0, step, extra)).result,
+    send: async (method, path4, body2, step, extra = []) => (await call(method, path4, body2, step, extra)).result,
+    // Ownership checks read these lists, so a partial list is an error, never a shorter answer.
+    list: async (path4, step) => {
+      const items = [], perPage = 50;
+      let previous = "", firstLength = 0, total;
+      const done = () => {
+        if (total !== void 0 && items.length < total) throw new WaypostError("CLOUDFLARE_FAILED", `Cloudflare reported ${total} results but sent ${items.length} when asked to ${step}, so this can't check them all.`);
+        return items;
+      };
+      for (let page = 1; page <= 40; page++) {
+        const json3 = await call("GET", `${path4}${path4.includes("?") ? "&" : "?"}per_page=${perPage}&page=${page}`, void 0, step);
+        const result = json3.result ?? [], first2 = JSON.stringify(result[0] ?? null);
+        if (typeof json3.result_info?.total_count === "number") total = json3.result_info.total_count;
+        if (!result.length) return done();
+        if (first2 === previous) {
+          if (firstLength === perPage) throw new WaypostError("CLOUDFLARE_FAILED", `Cloudflare sent the same ${perPage} results for every page when asked to ${step}, so this can't check them all.`);
+          return done();
+        }
+        if (page === 1) firstLength = result.length;
+        previous = first2;
+        items.push(...result);
+        const pages = json3.result_info?.total_pages;
+        if (pages !== void 0 && pages <= page) return done();
+      }
+      throw new WaypostError("CLOUDFLARE_FAILED", `Cloudflare returned more than 40 pages when asked to ${step}, so this can't check them all.`);
+    }
+  };
+}
+async function onlyAccount(api) {
+  const accounts = (await api.get("/accounts?per_page=50", "list your accounts")).filter((item) => ACCOUNT_ID.test(item.id));
+  if (accounts.length === 1) return accounts[0].id;
+  if (!accounts.length) throw new WaypostError("CLOUDFLARE_DENIED", `The API token can see no Cloudflare account. Give it these permissions: ${API_TOKEN_PERMISSIONS.join("; ")}.`);
+  throw new WaypostError("ACCOUNT_AMBIGUOUS", "The API token can see more than one Cloudflare account. Pass --account-id with the one to use.", { accounts: accounts.map((item) => ({ id: item.id, name: item.name })) });
+}
+async function workersSubdomain(api, account) {
+  return api.call("GET", `/accounts/${account}/workers/subdomain`, void 0, "read your workers.dev subdomain").then((json3) => json3.result?.subdomain || void 0, (error64) => {
+    if (error64 instanceof WaypostError && error64.details?.cloudflareCode === 10007) return void 0;
+    throw error64;
+  });
+}
+async function findZone(api, account, hostname3) {
+  const labels = hostname3.split(".");
+  for (let i = 0; i < labels.length - 1; i++) {
+    const zones2 = await api.get(`/zones?name=${encodeURIComponent(labels.slice(i).join("."))}&account.id=${account}`, "find your domain", DOMAIN_PERMISSIONS);
+    if (zones2[0]) return zones2[0].id;
+  }
+  throw new WaypostError("ZONE_NOT_FOUND", `No domain on this Cloudflare account contains ${hostname3}, or the API token can't read it (it needs ${DOMAIN_PERMISSIONS.join(", ")}). Leave out --hostname to use the free workers.dev address.`);
+}
+function hostOnly(value) {
+  let host;
+  try {
+    host = value.includes("://") ? new URL(value).hostname : value.replace(/\/.*$/, "");
+  } catch {
+    throw new WaypostError("INPUT_INVALID", "--hostname must be a hostname such as waypost.example.com.");
+  }
+  if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host)) throw new WaypostError("INPUT_INVALID", "--hostname must be a hostname such as waypost.example.com.");
+  return host.toLowerCase();
+}
+async function writeSecret(path4, value) {
+  const existing = await lstat4(path4).catch(() => null);
+  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", "--tunnel-token-file must be a regular file, not a link or directory.");
+  const temp = join10(dirname5(path4), `.${randomBytes4(6).toString("hex")}.tmp`);
+  try {
+    const file2 = await open11(temp, constants11.O_WRONLY | constants11.O_CREAT | constants11.O_EXCL | constants11.O_NOFOLLOW, 384);
+    try {
+      await file2.writeFile(value);
+      await file2.sync();
+    } finally {
+      await file2.close();
+    }
+    await rename5(temp, path4);
+  } catch (error64) {
+    await rm(temp, { force: true });
+    if (error64 instanceof WaypostError) throw error64;
+    throw new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
+  }
+}
+async function readTokenId(path4) {
+  const entry = await lstat4(path4).catch(() => null);
+  if (!entry?.isFile() || entry.size === 0 || entry.size > 4096) return void 0;
+  const text3 = await readFile6(path4, "utf8").then((value) => value.trim(), () => "");
+  try {
+    const id2 = JSON.parse(Buffer.from(text3, "base64").toString("utf8")).t;
+    return typeof id2 === "string" ? id2 : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function inspectTokenFile(path4) {
+  const unwritable = () => new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
+  const folder = await stat8(dirname5(path4)).catch(() => null);
+  if (!folder?.isDirectory()) throw unwritable();
+  const existing = await lstat4(path4).catch(() => null);
+  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", "--tunnel-token-file must be a regular file, not a link or directory.");
+  const probe = join10(dirname5(path4), `.${randomBytes4(6).toString("hex")}.tmp`);
+  try {
+    await (await open11(probe, constants11.O_WRONLY | constants11.O_CREAT | constants11.O_EXCL | constants11.O_NOFOLLOW, 384)).close();
+  } catch {
+    throw unwritable();
+  } finally {
+    await rm(probe, { force: true });
+  }
+  if (!existing || existing.size === 0 || existing.size > 4096) return { present: !!existing && existing.size > 0 };
+  const text3 = await readFile6(path4, "utf8").then((value) => value.trim(), () => null);
+  if (text3 === null) return { present: true };
+  if (!text3) return { present: false };
+  try {
+    const id2 = JSON.parse(Buffer.from(text3, "base64").toString("utf8")).t;
+    return typeof id2 === "string" ? { present: true, tunnelId: id2 } : { present: true };
+  } catch {
+    return { present: true };
+  }
+}
+
 // src/cli.ts
 var program2 = new Command().name("waypost").description("Proton Mail, Calendar and Drive for your terminal and agents.").version(VERSION).option("--config <path>", "Configuration file", defaultConfigPath()).showHelpAfterError();
 var configPath = () => resolve7(program2.opts().config);
@@ -130041,10 +130314,10 @@ program2.command("login <service>").description("Sign into the official Drive CL
   await runExecutable(config2.drive.executable, ["auth", "login"], 12e4);
   output2({ service: "drive", status: "signin_command_completed", next: "Run waypost doctor to verify a Drive read." });
 });
-program2.command("agent-config [client]").description("Print a working MCP connection: claude-code (a claude mcp add command), codex, claude (Claude Desktop JSON), cursor or generic.").action(async (client2 = "generic") => {
+program2.command("agent-config [client]").description("Print a working MCP connection: claude-code (a claude mcp add command), codex, claude (Claude Desktop JSON), cursor or generic.").action(async (client3 = "generic") => {
   const entry = fileURLToPath2(new URL("../runtime/waypost.mjs", import.meta.url));
   const args = [entry, "--config", configPath(), "mcp"];
-  if (client2 === "codex") {
+  if (client3 === "codex") {
     const config2 = await loadConfig(configPath());
     const env = config2.mail ? [config2.mail.usernameEnv, config2.mail.passwordEnv] : [];
     process.stdout.write(`[mcp_servers.waypost]
@@ -130052,11 +130325,11 @@ command = ${JSON.stringify(process.execPath)}
 args = ${JSON.stringify(args)}
 ${env.length ? `env_vars = ${JSON.stringify(env)}
 ` : ""}`);
-  } else if (client2 === "claude-code") {
+  } else if (client3 === "claude-code") {
     const quote = (value) => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
     process.stdout.write(`claude mcp add waypost --scope user -- ${[process.execPath, ...args].map(quote).join(" ")}
 `);
-  } else if (["generic", "cursor", "claude"].includes(client2)) process.stdout.write(JSON.stringify({ mcpServers: { waypost: { command: process.execPath, args } } }, null, 2) + "\n");
+  } else if (["generic", "cursor", "claude"].includes(client3)) process.stdout.write(JSON.stringify({ mcpServers: { waypost: { command: process.execPath, args } } }, null, 2) + "\n");
   else throw new WaypostError("CLIENT_INVALID", "Choose claude-code, codex, claude, cursor or generic.");
 });
 program2.command("update").description("Check releases; never install silently.").action(async () => output2(await checkUpdate()));
@@ -130067,6 +130340,11 @@ var setup = program2.command("setup").description("Guided setup for the agent ca
 setup.command("quick").description("One step for a server: agent calendar, remote access, passcode and a Proton feed link, all under one data directory.").requiredOption("--public-url <url>", "Public HTTPS origin, such as https://waypost.example.com").requiredOption("--data <dir>", "Absolute private directory for Waypost state").option("--owner <email>", "Your Proton address, for notes and invitations").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address, 0.0.0.0 inside a container (default 127.0.0.1, or the stored value)").option("--enable-writes", "Let agents create and change agent calendar events (each still needs confirm: true)").action(async (options) => output2(await setupQuick(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port), enableWrites: options.enableWrites })));
 setup.command("calendar").description("Create the agent calendar store.").requiredOption("--dir <dir>", "Absolute private directory for the store").option("--name <name>", "Calendar name shown in Proton (default Agents, or the stored value)").option("--owner <email>", "Your Proton address, for notes and invitations").option("--organizer <email>", "A sending address you own, different from --owner, for invitations").option("--enable-writes", "Let agents write (each call still needs confirm: true)").action(async (options) => output2(await setupCalendar(configPath(), options)));
 setup.command("remote").description("Configure the remote MCP endpoint and print a passcode.").requiredOption("--public-url <url>", "Public HTTPS origin").requiredOption("--state-dir <dir>", "Absolute private directory for OAuth state").option("--port <port>", "Listen port (default 8787, or the stored value)").option("--host <host>", "Listen address (default 127.0.0.1, or the stored value)").action(async (options) => output2(await setupRemote(configPath(), { ...options, port: options.port === void 0 ? void 0 : Number(options.port) })));
+setup.command("cloudflare").description(`Make your own free public address on your Cloudflare account: a tunnel, a Workers VPC service and a workers.dev front door. Reads an API token from CLOUDFLARE_API_TOKEN with ${API_TOKEN_PERMISSIONS.join(", ")}.`).requiredOption("--tunnel-token-file <path>", "Absolute path for the tunnel token, such as /secrets/tunnel_token (written owner-only, never printed)").option("--account-id <id>", "Cloudflare account id (needed only when the token sees several accounts)").option("--name <name>", "Name for the tunnel, VPC service and Worker", "waypost").option("--workers-subdomain <name>", "Register this workers.dev subdomain if the account has none yet").option("--hostname <host>", "Serve a domain you already have on Cloudflare instead of workers.dev").option("--replace", "Overwrite a same-named Worker that is not Waypost's, take a domain another Worker serves, or swap in a new tunnel over the token file's old one").option("--reuse", "Pick up a same-named tunnel that never connected and has no VPC service yet, such as one left by a run that stopped partway").action(async (options) => {
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!apiToken) throw new WaypostError("INPUT_INVALID", `Set CLOUDFLARE_API_TOKEN to a Cloudflare API token with ${API_TOKEN_PERMISSIONS.join(", ")}. Do not put the token in command arguments.`);
+  output2(await setupCloudflare({ ...options, accountId: options.accountId || process.env.CLOUDFLARE_ACCOUNT_ID || void 0, apiToken }));
+});
 var calendarGroup = program2.commands.find((command2) => command2.name() === "calendar");
 var feedGroup = calendarGroup.command("feed").description("Private ICS links that publish the agent calendar to Proton.");
 feedGroup.command("create").description("Create a feed link (shown once).").option("--label <label>", "Where it is used", "Proton").action(async (options) => output2(await createFeedToken(await loadConfig(configPath()), options.label)));
