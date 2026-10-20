@@ -129957,7 +129957,10 @@ async function setupCloudflare(options) {
   if (!isAbsolute6(options.tunnelTokenFile)) throw new WaypostError("INPUT_INVALID", "--tunnel-token-file must be an absolute path.");
   const held = await inspectTokenFile(options.tunnelTokenFile);
   const pendingPath = join10(dirname5(options.tunnelTokenFile), `.${basename3(options.tunnelTokenFile)}.pending`);
-  const pending2 = await readTokenId(pendingPath);
+  const pendingEntry = await lstat4(pendingPath).catch(() => null);
+  if (pendingEntry && !pendingEntry.isFile()) throw new WaypostError("PATH_UNSAFE", `${pendingPath} must be a regular file, not a link or directory. Remove it and run again.`);
+  const pendingToken = await readPending(pendingPath);
+  const pending2 = pendingToken?.tunnelId;
   const owns = (id2) => held.tunnelId === id2 || pending2 === id2;
   const hostname3 = options.hostname === void 0 ? void 0 : hostOnly(options.hostname);
   if (hostname3 && options.workersSubdomain !== void 0) throw new WaypostError("INPUT_INVALID", "--workers-subdomain applies only to the workers.dev address; leave it out with --hostname.");
@@ -129981,6 +129984,11 @@ async function setupCloudflare(options) {
   const conflicts = [];
   const deletedTunnel = async (id2) => /^[0-9a-f-]{36}$/i.test(id2) && await api.get(`/accounts/${account}/cfd_tunnel/${id2}`, "check a tunnel").then((item) => !!item?.deleted_at, () => false);
   const stale = !!held.tunnelId && held.tunnelId !== reused?.id && await deletedTunnel(held.tunnelId);
+  if (pending2 && pending2 !== reused?.id && pending2 !== held.tunnelId) {
+    const abandon = `If you abandoned that setup, delete ${pendingPath} and run again.`;
+    if (pendingToken?.account && pendingToken.account !== account) throw new WaypostError("PENDING_EXISTS", `${pendingPath} holds the token of an unfinished setup on another Cloudflare account (${pendingToken.account}). Finish it there with --account-id ${pendingToken.account}. ${abandon}`, { tunnel: pending2, account: pendingToken.account });
+    if (!await deletedTunnel(pending2)) throw new WaypostError("PENDING_EXISTS", `${pendingPath} holds the token of an unfinished setup for another tunnel. Finish it by running again with the --name you used then. ${abandon}`, { tunnel: pending2 });
+  }
   const tokenInUse = held.present && (!reused || held.tunnelId !== reused.id) && !stale;
   if (tokenInUse) conflicts.push({ code: "TOKEN_FILE_IN_USE", what: `${options.tunnelTokenFile} holds the token of a different tunnel, which would be replaced (the address you set up before would stop working and its claude.ai connector would need adding again)` });
   const services2 = await api.list(`/accounts/${account}/connectivity/directory/services`, "list VPC services");
@@ -130019,7 +130027,7 @@ async function setupCloudflare(options) {
   const tunnel = reused ?? await api.send("POST", `/accounts/${account}/cfd_tunnel`, { name: name4, config_src: "cloudflare" }, "create the tunnel");
   const servicesPath = `/accounts/${account}/connectivity/directory/services`;
   const undo = !reused || !owns(reused.id);
-  let vpc, wrote = false;
+  let vpc, wrote = false, staged = false;
   const undoService = async () => {
     const now2 = await api.list(servicesPath, "list VPC services").then((items) => items.find((item) => item.name === name4), () => null);
     if (now2 === null) return false;
@@ -130030,6 +130038,7 @@ async function setupCloudflare(options) {
     const tunnelToken = await api.get(`/accounts/${account}/cfd_tunnel/${tunnel.id}/token`, "read the tunnel token");
     if (typeof tunnelToken !== "string" || !tunnelToken) throw new WaypostError("CLOUDFLARE_FAILED", "Cloudflare returned an empty tunnel token. Try again in a minute.");
     await writeSecret(pendingPath, tunnelToken);
+    staged = true;
     const service = { name: name4, type: "http", host: { hostname: originHost, resolver_network: { tunnel_id: tunnel.id } }, http_port: originPort };
     wrote = true;
     vpc = existing ? await api.send("PUT", `${servicesPath}/${existing.service_id}`, service, "update the VPC service") : await api.send("POST", servicesPath, service, "create the VPC service");
@@ -130039,7 +130048,7 @@ async function setupCloudflare(options) {
   } catch (error64) {
     if (undo) {
       if (!wrote || await undoService()) {
-        await rm(pendingPath, { force: true }).catch(() => void 0);
+        if (staged) await rm(pendingPath, { force: true }).catch(() => void 0);
         if (!reused) await api.call("DELETE", `/accounts/${account}/cfd_tunnel/${tunnel.id}`, void 0, "remove the unfinished tunnel").catch(() => void 0);
       } else if (error64 instanceof WaypostError) {
         throw new WaypostError(error64.code, `${error64.message} Cleanup on Cloudflare couldn't finish, so this host kept what it needs to resume: fix the cause and run the same command again.`, { ...error64.details, resumable: true });
@@ -130155,7 +130164,7 @@ function hostOnly(value) {
 }
 async function writeSecret(path4, value) {
   const existing = await lstat4(path4).catch(() => null);
-  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", "--tunnel-token-file must be a regular file, not a link or directory.");
+  if (existing && !existing.isFile()) throw new WaypostError("PATH_UNSAFE", `${path4} must be a regular file, not a link or directory.`);
   const temp = join10(dirname5(path4), `.${randomBytes4(6).toString("hex")}.tmp`);
   try {
     const file2 = await open11(temp, constants11.O_WRONLY | constants11.O_CREAT | constants11.O_EXCL | constants11.O_NOFOLLOW, 384);
@@ -130172,16 +130181,20 @@ async function writeSecret(path4, value) {
     throw new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);
   }
 }
-async function readTokenId(path4) {
+async function readPending(path4) {
   const entry = await lstat4(path4).catch(() => null);
-  if (!entry?.isFile() || entry.size === 0 || entry.size > 4096) return void 0;
-  const text3 = await readFile6(path4, "utf8").then((value) => value.trim(), () => "");
+  if (!entry || entry.size === 0) return void 0;
+  const unreadable = () => new WaypostError("PATH_UNSAFE", `${path4} is left from an earlier run and this user can't read it. Fix its owner (or run as the user who made it), or delete it if you abandoned that setup, and run again.`);
+  if (!entry.isFile() || entry.size > 4096) throw unreadable();
+  const text3 = await readFile6(path4, "utf8").then((value) => value.trim(), () => null);
+  if (text3 === null) throw unreadable();
+  if (!text3) return void 0;
   try {
-    const id2 = JSON.parse(Buffer.from(text3, "base64").toString("utf8")).t;
-    return typeof id2 === "string" ? id2 : void 0;
+    const token3 = JSON.parse(Buffer.from(text3, "base64").toString("utf8"));
+    if (typeof token3.t === "string") return { tunnelId: token3.t, account: typeof token3.a === "string" ? token3.a : void 0 };
   } catch {
-    return void 0;
   }
+  throw unreadable();
 }
 async function inspectTokenFile(path4) {
   const unwritable = () => new WaypostError("PATH_UNWRITABLE", `Could not write the tunnel token to ${path4}. Check that its folder exists and that this user can write to it.`);

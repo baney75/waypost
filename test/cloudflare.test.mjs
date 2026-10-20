@@ -696,3 +696,61 @@ test('when the rollback cannot confirm the service is back, the run keeps what i
   assert.deepEqual([resumed.tunnel.created, resumed.vpcService.created], [false, false]);
   await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
 });
+
+test('an earlier run\'s pending token for another tunnel is never overwritten or removed', async t => {
+  const dir = await root(t);
+  const earlier = '11111119-2222-3333-4444-555555555555';
+  await writeFile(join(dir, '.t.pending'), tokenFor(earlier), {mode:0o600});
+  // That tunnel still exists, so a run under another --name is refused before any write.
+  const live = await fakeCloudflare(t, {tunnels:[{id:earlier, name:'waypost', config_src:'cloudflare'}]});
+  await assert.rejects(run(live, join(dir, 't'), {name:'alice'}), error => { assert.equal(error.code, 'PENDING_EXISTS'); assert.match(error.message, /--name you used then/); return true; });
+  assert.deepEqual(live.calls.filter(call => !call.startsWith('GET ')), []);
+  assert.equal(await readFile(join(dir, '.t.pending'), 'utf8'), tokenFor(earlier));
+  // Once that tunnel is gone the file is just stale: a failed run leaves it alone, and a good run replaces it.
+  const gone = await fakeCloudflare(t, {failTokenRead:true, deletedTunnels:[{id:earlier, name:'waypost', deleted_at:'2026-10-19T00:00:00Z'}]});
+  await assert.rejects(run(gone, join(dir, 't'), {name:'alice'}), {code:'CLOUDFLARE_FAILED'});
+  assert.equal(await readFile(join(dir, '.t.pending'), 'utf8'), tokenFor(earlier));
+  gone.failTokenRead = false;
+  const done = await run(gone, join(dir, 't'), {name:'alice'});
+  assert.equal(await readFile(join(dir, 't'), 'utf8'), tokenFor(done.tunnel.id));
+  await assert.rejects(stat(join(dir, '.t.pending')), {code:'ENOENT'});
+});
+
+test('a link or directory at the pending path is refused before anything is created', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  await mkdir(join(dir, '.t.pending'));
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /\.t\.pending must be a regular file/); return true; });
+  assert.deepEqual(cf.calls, []);
+  await rm(join(dir, '.t.pending'), {recursive:true});
+  await symlink(join(dir, 'elsewhere'), join(dir, '.t.pending'));
+  await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
+  assert.deepEqual(cf.calls, []);
+});
+
+test('a pending copy of the token file\'s own token never blocks a run', async t => {
+  const dir = await root(t);
+  const id = '11111110-2222-3333-4444-555555555555';
+  const cf = await fakeCloudflare(t, {tunnels:[{id, name:'waypost', config_src:'cloudflare'}]});
+  await holdToken(join(dir, 't'), id);
+  await writeFile(join(dir, '.t.pending'), tokenFor(id), {mode:0o600});
+  const other = await run(cf, join(dir, 't'), {name:'alice', replace:true});
+  assert.equal(other.tunnel.created, true);
+});
+
+test('a pending token on another account, or one that can\'t be read, is refused before any write, with a way out', async t => {
+  const dir = await root(t);
+  const cf = await fakeCloudflare(t);
+  const foreign = Buffer.from(JSON.stringify({a:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', t:'11111119-2222-3333-4444-555555555555', s:'synthetic-secret'})).toString('base64');
+  await writeFile(join(dir, '.t.pending'), foreign, {mode:0o600});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PENDING_EXISTS'); assert.match(error.message, /--account-id bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/); assert.match(error.message, /delete .*\.t\.pending and run again/); return true; });
+  await writeFile(join(dir, '.t.pending'), 'not a token', {mode:0o600});
+  await assert.rejects(run(cf, join(dir, 't')), error => { assert.equal(error.code, 'PATH_UNSAFE'); assert.match(error.message, /delete it if you abandoned that setup/); return true; });
+  if (process.getuid?.() !== 0) {
+    await writeFile(join(dir, '.t.pending'), tokenFor('11111119-2222-3333-4444-555555555555'), {mode:0o600});
+    await chmod(join(dir, '.t.pending'), 0o000);
+    await assert.rejects(run(cf, join(dir, 't')), {code:'PATH_UNSAFE'});
+    await chmod(join(dir, '.t.pending'), 0o600);
+  }
+  assert.deepEqual(cf.calls.filter(call => !call.startsWith('GET ')), []);
+});
