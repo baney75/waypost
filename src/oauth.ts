@@ -127,7 +127,7 @@ function redirectAllowed(http:HttpConfig, uri:string) {
   if (url.protocol === 'http:' && LOOPBACK.has(url.hostname)) return true;
   return url.protocol === 'https:' && !url.search && http.redirectUris.includes(url.href);
 }
-const registration = z.object({redirect_uris:z.array(z.string()).min(1).max(5), client_name:z.string().max(100).optional(), token_endpoint_auth_method:z.enum(['none','client_secret_post','client_secret_basic']).default('none'), grant_types:z.array(z.string()).optional(), response_types:z.array(z.string()).optional()}).loose();
+const registration = z.object({redirect_uris:z.array(z.string()).min(1).max(5), client_name:z.string().max(100).optional(), token_endpoint_auth_method:z.enum(['none','client_secret_post','client_secret_basic']).default('none'), grant_types:z.array(z.string()).max(10).optional(), response_types:z.array(z.string()).max(10).optional()}).loose();
 const registrations:number[] = [];
 export async function registerClient(config:Config, body:unknown) {
   const http = httpConfig(config);
@@ -136,7 +136,10 @@ export async function registerClient(config:Config, body:unknown) {
   if (registrations.length >= 30) throw new OAuthError(429, 'temporarily_unavailable', 'Too many client registrations. Try again in a few minutes.');
   registrations.push(time);
   const parsed = registration.safeParse(body);
-  if (!parsed.success) throw new OAuthError(400, 'invalid_client_metadata', 'redirect_uris is required (1–5 URIs).');
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path[0];
+    throw new OAuthError(400, 'invalid_client_metadata', field === 'grant_types' || field === 'response_types' ? `${field} must list at most 10 strings.` : field === 'redirect_uris' || field === undefined ? 'redirect_uris is required (1–5 URIs).' : `${String(field)} is invalid.`);
+  }
   const request = parsed.data;
   for (const uri of request.redirect_uris) if (!redirectAllowed(http, uri)) throw new OAuthError(400, 'invalid_redirect_uri', 'Redirect URIs must be an approved https callback (http.redirectUris) or http on localhost.');
   if (request.grant_types?.some(grant => !['authorization_code','refresh_token'].includes(grant))) throw new OAuthError(400, 'invalid_client_metadata', 'Only authorization_code and refresh_token grants are supported.');
