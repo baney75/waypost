@@ -129522,7 +129522,10 @@ async function registerClient(config2, body2) {
   if (registrations.length >= 30) throw new OAuthError(429, "temporarily_unavailable", "Too many client registrations. Try again in a few minutes.");
   registrations.push(time3);
   const parsed = registration.safeParse(body2);
-  if (!parsed.success) throw new OAuthError(400, "invalid_client_metadata", "redirect_uris is required (1\u20135 URIs).");
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path[0];
+    throw new OAuthError(400, "invalid_client_metadata", field === "grant_types" || field === "response_types" ? `${field} must list at most 10 strings.` : field === "redirect_uris" || field === void 0 ? "redirect_uris is required (1\u20135 URIs)." : `${String(field)} is invalid.`);
+  }
   const request = parsed.data;
   for (const uri of request.redirect_uris) if (!redirectAllowed(http2, uri)) throw new OAuthError(400, "invalid_redirect_uri", "Redirect URIs must be an approved https callback (http.redirectUris) or http on localhost.");
   if (request.grant_types?.some((grant) => !["authorization_code", "refresh_token"].includes(grant))) throw new OAuthError(400, "invalid_client_metadata", "Only authorization_code and refresh_token grants are supported.");

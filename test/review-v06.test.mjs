@@ -58,8 +58,14 @@ test('OAuth: open client registration caps every array it accepts and refuses a 
   const config = {version:1, artifactsDir:join(dir, 'artifacts'), timeoutMs:1000, http:{host:'127.0.0.1', port:8787, publicUrl:'https://waypost.example/', stateDir:join(dir, 'auth'), redirectUris:['https://claude.ai/api/mcp/auth_callback'], allowedHosts:[]}};
   const started = Date.now();
   const ok = ['https://claude.ai/api/mcp/auth_callback'];
-  for (const request of [{redirect_uris:Array(200_000).fill(42)}, {redirect_uris:ok, grant_types:Array(200_000).fill(42)}, {redirect_uris:ok, response_types:Array(200_000).fill('code')}, {redirect_uris:ok, grant_types:Array(11).fill('authorization_code')}]) {
-    await assert.rejects(registerClient(config, request), {status:400, error:'invalid_client_metadata'});
+  const cases = [
+    [{redirect_uris:Array(200_000).fill('https://claude.ai/api/mcp/auth_callback')}, /redirect_uris/],
+    [{redirect_uris:ok, grant_types:Array(200_000).fill('authorization_code')}, /grant_types/],
+    [{redirect_uris:ok, response_types:Array(200_000).fill('code')}, /response_types/],
+    [{redirect_uris:ok, grant_types:Array(11).fill('authorization_code')}, /grant_types/],
+  ];
+  for (const [request, field] of cases) {
+    await assert.rejects(registerClient(config, request), error => error.status === 400 && error.error === 'invalid_client_metadata' && field.test(error.description));
   }
   assert.ok(Date.now() - started < 2000, 'a hostile array is refused fast');
 });
