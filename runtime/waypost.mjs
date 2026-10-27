@@ -5998,10 +5998,10 @@ var require_common = __commonJS({
     }
     function testBit(binaryValue, position) {
       const { length } = binaryValue;
-      if (position > length) {
+      if (position >= length) {
         return false;
       }
-      const positionInString = length - position;
+      const positionInString = length - position - 1;
       return binaryValue.substring(positionInString, positionInString + 1) === "1";
     }
   }
@@ -6946,10 +6946,10 @@ var require_ipv6 = __commonJS({
         if (/\//.test(address2)) {
           throw new address_error_1.AddressError("Invalid subnet mask.");
         }
-        const zone = constants62.RE_ZONE_STRING.exec(address2);
-        if (zone) {
-          this.zone = zone[0];
-          address2 = address2.replace(constants62.RE_ZONE_STRING, "");
+        const zoneStart = address2.indexOf("%");
+        if (zoneStart !== -1 && /^.*$/.test(address2.slice(zoneStart))) {
+          this.zone = address2.slice(zoneStart);
+          address2 = address2.slice(0, zoneStart);
         }
         const longest = this.groups * 5 + 5;
         if (address2.length > longest) {
@@ -36771,7 +36771,7 @@ var require_parseley = __commonJS({
     var escapedSequence_2 = p__namespace.token((t) => t.name === "escape" ? t.text.slice(1) : void 0);
     var anyChar_2 = p__namespace.token((t) => t.name === "any" ? t.text : void 0);
     var escapedString_2 = p__namespace.map(p__namespace.many(p__namespace.or(unicodeEscapedSequence_2, escapedSequence_2, anyChar_2)), (cs) => cs.join(""));
-    function unescape3(escapedString) {
+    function unescape2(escapedString) {
       const lexerResult = lexEscapedString2(escapedString);
       const result = escapedString_2({ tokens: lexerResult.tokens, options: void 0 }, 0);
       return result.value;
@@ -36784,9 +36784,9 @@ var require_parseley = __commonJS({
     function optionallySpaced2(parser2) {
       return p__namespace.middle(optionalWhitespace_2, parser2, optionalWhitespace_2);
     }
-    var identifier_2 = p__namespace.token((t) => t.name === "ident" ? unescape3(t.text) : void 0);
-    var hashId_2 = p__namespace.token((t) => t.name === "hash" ? unescape3(t.text.slice(1)) : void 0);
-    var string_2 = p__namespace.token((t) => t.name.startsWith("str") ? unescape3(t.text.slice(1, -1)) : void 0);
+    var identifier_2 = p__namespace.token((t) => t.name === "ident" ? unescape2(t.text) : void 0);
+    var hashId_2 = p__namespace.token((t) => t.name === "hash" ? unescape2(t.text.slice(1)) : void 0);
+    var string_2 = p__namespace.token((t) => t.name.startsWith("str") ? unescape2(t.text.slice(1, -1)) : void 0);
     var namespace_2 = p__namespace.left(p__namespace.option(identifier_2, ""), literal3("|"));
     var qualifiedName_2 = p__namespace.eitherOr(p__namespace.ab(namespace_2, identifier_2, (ns, name5) => ({ name: name5, namespace: ns })), p__namespace.map(identifier_2, (name5) => ({ name: name5, namespace: null })));
     var uniSelector_2 = p__namespace.eitherOr(p__namespace.ab(namespace_2, literal3("*"), (ns) => ({ type: "universal", namespace: ns, specificity: [0, 0, 0] })), p__namespace.map(literal3("*"), () => ({ type: "universal", namespace: null, specificity: [0, 0, 0] })));
@@ -50749,6 +50749,37 @@ var require_utils2 = __commonJS({
       }
       return output3.join("");
     }
+    function removeDotSegmentsRelative(path4) {
+      if (path4 === "" || path4[0] === "/") {
+        return removeDotSegments(path4);
+      }
+      const segments = path4.split("/");
+      const last = segments.length - 1;
+      const output3 = [];
+      let trailingDirectory = false;
+      for (let i = 0; i <= last; i++) {
+        const segment = segments[i];
+        if (segment === "." || segment === "..") {
+          if (segment === "..") {
+            if (output3.length !== 0 && output3[output3.length - 1] !== "..") {
+              output3.pop();
+            } else {
+              output3.push("..");
+            }
+          }
+          trailingDirectory = i === last;
+        } else {
+          output3.push(segment);
+        }
+      }
+      if (trailingDirectory && output3[output3.length - 1] !== "..") {
+        output3.push("");
+      }
+      if (output3.length === 0 || output3[0] === "" || output3[0].includes(":")) {
+        output3.unshift(".");
+      }
+      return output3.join("/");
+    }
     var HOST_DELIMS = { "@": "%40", "/": "%2F", "?": "%3F", "#": "%23", ":": "%3A" };
     var HOST_DELIM_RE = /[@/?#:]/g;
     var HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
@@ -51009,6 +51040,7 @@ var require_utils2 = __commonJS({
       encodeFragment,
       escapePreservingEscapes,
       removeDotSegments,
+      removeDotSegmentsRelative,
       isIPv4,
       isUUID,
       normalizeIPv6,
@@ -51232,16 +51264,18 @@ var require_schemes = __commonJS({
 var require_fast_uri = __commonJS({
   "node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
-    var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils2();
+    var { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils2();
     var { SCHEMES, getSchemeHandler } = require_schemes();
     var VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u;
     var MALFORMED_SCHEME_ERROR = "URI scheme is malformed.";
-    function decodeValidScheme(scheme) {
-      const decodedScheme = unescape(String(scheme));
-      if (!VALID_SCHEME.test(decodedScheme)) {
+    var MALFORMED_HOST_ERROR = "URI host is malformed.";
+    var FORBIDDEN_DOMAIN_HOST_CHARACTER = /[\0-\x20"#/:<>?@[\\\]^`{|}\x7F]/u;
+    function validateScheme(scheme) {
+      const stringScheme = String(scheme);
+      if (!VALID_SCHEME.test(stringScheme)) {
         throw new TypeError(MALFORMED_SCHEME_ERROR);
       }
-      return decodedScheme;
+      return stringScheme;
     }
     function normalize3(uri, options) {
       if (typeof uri === "string") {
@@ -51278,6 +51312,9 @@ var require_fast_uri = __commonJS({
       const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
       const resolvedHost = resolved.host;
       const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
+      if (hasForbiddenDomainHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP)) {
+        throw new Error(MALFORMED_HOST_ERROR);
+      }
       canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
       const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
       if (resolved.error && !encodedASCIIHost) {
@@ -51319,14 +51356,15 @@ var require_fast_uri = __commonJS({
             if (relative4.path[0] === "/") {
               target.path = removeDotSegments(relative4.path);
             } else {
-              if ((base2.userinfo !== void 0 || base2.host !== void 0 || base2.port !== void 0) && !base2.path) {
+              const baseHasAuthority = base2.userinfo !== void 0 || base2.host !== void 0 || base2.port !== void 0;
+              if (baseHasAuthority && !base2.path) {
                 target.path = "/" + relative4.path;
               } else if (!base2.path) {
                 target.path = relative4.path;
               } else {
                 target.path = base2.path.slice(0, base2.path.lastIndexOf("/") + 1) + relative4.path;
               }
-              target.path = removeDotSegments(target.path);
+              target.path = base2.scheme === void 0 && !baseHasAuthority && target.path[0] !== "/" ? removeDotSegmentsRelative(target.path) : removeDotSegments(target.path);
             }
             target.query = relative4.query;
           }
@@ -51364,12 +51402,13 @@ var require_fast_uri = __commonJS({
       const options = Object.assign({}, opts);
       const uriTokens = [];
       if (component.scheme) {
-        component.scheme = decodeValidScheme(component.scheme);
+        component.scheme = validateScheme(component.scheme);
       }
       const schemeHandler = getSchemeHandler(options.scheme || component.scheme);
       if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options);
       const hasAuthority = component.userinfo !== void 0 || component.host !== void 0 || component.port !== void 0;
-      const pathNoScheme = !options.skipEscape && component.scheme === void 0 && !hasAuthority;
+      const schemelessReference = (component.scheme === void 0 || options.reference === "suffix") && !hasAuthority;
+      const pathNoScheme = !options.skipEscape && schemelessReference;
       if (component.path !== void 0) {
         if (!options.skipEscape) {
           component.path = serializePathEncoding(component.path, pathNoScheme);
@@ -51378,7 +51417,7 @@ var require_fast_uri = __commonJS({
         }
       }
       if (options.reference !== "suffix" && component.scheme) {
-        component.scheme = decodeValidScheme(component.scheme);
+        component.scheme = validateScheme(component.scheme);
         uriTokens.push(component.scheme, ":");
       }
       const authority = recomposeAuthority(component);
@@ -51394,9 +51433,9 @@ var require_fast_uri = __commonJS({
       if (component.path !== void 0) {
         let s = component.path;
         if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-          s = removeDotSegments(s);
+          s = schemelessReference && s[0] !== "/" ? removeDotSegmentsRelative(s) : removeDotSegments(s);
         }
-        if (pathNoScheme) {
+        if (schemelessReference) {
           s = serializePathEncoding(s, true);
         }
         if (authority === void 0 && s[0] === "/" && s[1] === "/") {
@@ -51443,15 +51482,33 @@ var require_fast_uri = __commonJS({
       return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
     }
     function canonicalizeHost(parsed, options, schemeHandler, isIP) {
+      if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
+        parsed.error = parsed.error || MALFORMED_HOST_ERROR;
+        return true;
+      }
       if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
+        let url2;
         try {
-          parsed.host = new URL("http://" + parsed.host).hostname;
+          url2 = new URL("http://" + parsed.host);
         } catch (e) {
           parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
           return true;
         }
+        if (!isHostOnlyURL(url2)) {
+          parsed.error = parsed.error || MALFORMED_HOST_ERROR;
+          return true;
+        }
+        parsed.host = url2.hostname;
       }
       return false;
+    }
+    function hasForbiddenDomainHost(parsed, options, schemeHandler, isIP) {
+      return Boolean(
+        parsed.host && isIP === false && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && FORBIDDEN_DOMAIN_HOST_CHARACTER.test(parsed.host)
+      );
+    }
+    function isHostOnlyURL(url2) {
+      return url2.username === "" && url2.password === "" && url2.port === "" && url2.pathname === "/" && url2.search === "" && url2.hash === "" && url2.hostname !== "";
     }
     function parseWithStatus(uri, opts) {
       const options = Object.assign({}, opts);
@@ -51507,9 +51564,8 @@ var require_fast_uri = __commonJS({
         parsed.query = matches[7];
         parsed.fragment = matches[8];
         if (parsed.scheme !== void 0) {
-          const decodedScheme = unescape(parsed.scheme);
-          if (VALID_SCHEME.test(decodedScheme)) {
-            parsed.scheme = decodedScheme.toLowerCase();
+          if (VALID_SCHEME.test(parsed.scheme)) {
+            parsed.scheme = parsed.scheme.toLowerCase();
           } else {
             parsed.error = parsed.error || MALFORMED_SCHEME_ERROR;
             malformedScheme = true;
@@ -51537,7 +51593,7 @@ var require_fast_uri = __commonJS({
             malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
             parsed.host = isIP ? ipv6result.host : ipv6result.host.toLowerCase();
             if (malformedIPLiteral) {
-              parsed.error = parsed.error || "URI host is malformed.";
+              parsed.error = parsed.error || MALFORMED_HOST_ERROR;
               malformedAuthorityOrPort = true;
             }
           } else {
@@ -51565,7 +51621,7 @@ var require_fast_uri = __commonJS({
           if (!isIP) {
             host = normalizePercentEncoding(host.toLowerCase());
           }
-          parsed.host = reescapeHostDelimiters(host, isIP);
+          parsed.host = isIP || options.scheme !== "null" ? reescapeHostDelimiters(host, isIP) : host;
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (parsed.path) {
@@ -58738,6 +58794,7 @@ __export(util_exports, {
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
+  sizeCaps: () => sizeCaps,
   slugify: () => slugify,
   stringifyPrimitive: () => stringifyPrimitive,
   toZod: () => toZod,
@@ -59256,6 +59313,18 @@ function prefixIssues(path4, issues) {
 }
 function unwrapMessage(message) {
   return typeof message === "string" ? message : message?.message;
+}
+function sizeCaps(defChecks) {
+  const caps = [];
+  for (const ch of defChecks ?? []) {
+    const d = ch._zod.def;
+    if (!/_(length|size)$|_equals$/.test(d.check))
+      break;
+    const max = d.maximum ?? d.length ?? d.size;
+    if (max >= 0)
+      caps.push([max, ch]);
+  }
+  return caps;
 }
 function attachSchema(issues, start, inst) {
   var _a5;
@@ -60677,7 +60746,7 @@ ${content.join("\n")}
 var version = {
   major: 4,
   minor: 6,
-  patch: 5
+  patch: 7
 };
 
 // node_modules/zod/v4/core/schemas.js
@@ -61433,6 +61502,31 @@ var $ZodDate = /* @__PURE__ */ $constructor("$ZodDate", (inst, def) => {
     return payload;
   };
 });
+function capSize(inst, size) {
+  const caps = sizeCaps(inst._zod.def.checks);
+  if (!caps.length)
+    return;
+  const cap = Math.min(...caps.map((c) => c[0]));
+  const parse7 = inst._zod.parse;
+  inst._zod.parse = (payload, ctx) => {
+    const n = size(payload.value);
+    if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
+      for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
+        if (n > max && ch._zod.def.when(payload)) {
+          const start = payload.issues.length;
+          ch._zod.check(payload);
+          payload.issues[start].continue = false;
+          attachSchema(payload.issues, start, inst);
+          return payload;
+        }
+      }
+    }
+    return parse7(payload, ctx);
+  };
+}
+var arraySize = (input2) => Array.isArray(input2) ? input2.length : -1;
+var mapSize = (input2) => input2 instanceof Map ? input2.size : -1;
+var setSize = (input2) => input2 instanceof Set ? input2.size : -1;
 function handleArrayResult(result, final, index) {
   if (result.issues.length) {
     final.issues.push(...prefixIssues(index, result.issues));
@@ -61476,6 +61570,7 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     }
     return payload;
   };
+  capSize(inst, arraySize);
 });
 function handlePropertyResult(result, final, key, input2, optin, optout) {
   const isPresent = key in input2;
@@ -62432,6 +62527,7 @@ var $ZodMap = /* @__PURE__ */ $constructor("$ZodMap", (inst, def) => {
       return Promise.all(proms).then(() => payload);
     return payload;
   };
+  capSize(inst, mapSize);
 });
 function handleMapResult(keyResult, valueResult, final, key, input2, inst, ctx) {
   if (keyResult.issues.length) {
@@ -62498,6 +62594,7 @@ var $ZodSet = /* @__PURE__ */ $constructor("$ZodSet", (inst, def) => {
       return Promise.all(proms).then(() => payload);
     return payload;
   };
+  capSize(inst, setSize);
 });
 function handleSetResult(result, final) {
   if (result.issues.length) {
@@ -72028,9 +72125,15 @@ function generateNullableCheck(doc, ctx, schema, accessor, buildsValue = true) {
   doc.write(`}`);
   return outputVar;
 }
+function generateSizeGate(doc, schema, size) {
+  for (const [max, check2] of sizeCaps(schema._zod.def.checks)) {
+    doc.write(`if (${size} > ${numericOperand(max, check2._zod.def.check)}) return INVALID;`);
+  }
+}
 function generateArrayCheck(doc, ctx, schema, accessor, buildsValue = true) {
   const def = schema._zod.def;
   doc.write(`if (!Array.isArray(${accessor})) return INVALID;`);
+  generateSizeGate(doc, schema, `${accessor}.length`);
   const outputVar = buildsValue ? newVar(ctx) : null;
   const iVar = newVar(ctx);
   const elemVar = newVar(ctx);
@@ -72430,6 +72533,7 @@ function literalPropertyKey(ctx, key) {
 function generateMapCheck(doc, ctx, schema, accessor) {
   const def = schema._zod.def;
   doc.write(`if (!(${accessor} instanceof Map)) return INVALID;`);
+  generateSizeGate(doc, schema, `${accessor}.size`);
   const outputVar = newVar(ctx);
   const kVar = newVar(ctx);
   const valVar = newVar(ctx);
@@ -72446,6 +72550,7 @@ function generateMapCheck(doc, ctx, schema, accessor) {
 function generateSetCheck(doc, ctx, schema, accessor) {
   const def = schema._zod.def;
   doc.write(`if (!(${accessor} instanceof Set)) return INVALID;`);
+  generateSizeGate(doc, schema, `${accessor}.size`);
   const outputVar = newVar(ctx);
   const valVar = newVar(ctx);
   doc.write(`const ${outputVar} = new Set();`);
@@ -101629,7 +101734,7 @@ var unicodeEscapedSequence_ = token((t) => t.name === "unicode" ? String.fromCod
 var escapedSequence_ = token((t) => t.name === "escape" ? t.text.slice(1) : void 0);
 var anyChar_ = token((t) => t.name === "any" ? t.text : void 0);
 var escapedString_ = map3(many(first(unicodeEscapedSequence_, escapedSequence_, anyChar_)), (cs) => cs.join(""));
-function unescape2(escapedString) {
+function unescape(escapedString) {
   const lexerResult = lexEscapedString(escapedString);
   const result = escapedString_({ tokens: lexerResult.tokens, options: void 0 }, 0);
   return result.value;
@@ -101642,9 +101747,9 @@ var optionalWhitespace_ = option(whitespace_, null);
 function optionallySpaced(parser2) {
   return middle(optionalWhitespace_, parser2, optionalWhitespace_);
 }
-var identifier_ = token((t) => t.name === "ident" ? unescape2(t.text) : void 0);
-var hashId_ = token((t) => t.name === "hash" ? unescape2(t.text.slice(1)) : void 0);
-var string_ = token((t) => t.name.startsWith("str") ? unescape2(t.text.slice(1, -1)) : void 0);
+var identifier_ = token((t) => t.name === "ident" ? unescape(t.text) : void 0);
+var hashId_ = token((t) => t.name === "hash" ? unescape(t.text.slice(1)) : void 0);
+var string_ = token((t) => t.name.startsWith("str") ? unescape(t.text.slice(1, -1)) : void 0);
 var namespace_ = left(option(identifier_, ""), literal2("|"));
 var qualifiedName_ = eitherOr(ab(namespace_, identifier_, (ns, name4) => ({ name: name4, namespace: ns })), map3(identifier_, (name4) => ({ name: name4, namespace: null })));
 var uniSelector_ = eitherOr(ab(namespace_, literal2("*"), (ns) => ({ type: "universal", namespace: ns, specificity: [0, 0, 0] })), map3(literal2("*"), () => ({ type: "universal", namespace: null, specificity: [0, 0, 0] })));
