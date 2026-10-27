@@ -130054,7 +130054,7 @@ import { randomBytes as randomBytes4 } from "node:crypto";
 var WORKER_SOURCE = `// Front door: serve Waypost on workers.dev (free, no domain) or a custom domain. With a Workers VPC binding
 // (ORIGIN_VPC) it reaches Waypost through a Cloudflare tunnel that has no public hostname, so the
 // server is reachable only through this Worker. waypost setup cloudflare uploads this file as is. Without one it forwards to the one fixed HTTPS
-// ORIGIN (for example Tailscale Funnel). It passes Authorization and adds no caching, logging or state.
+// ORIGIN (for example Tailscale Funnel). It passes Authorization and adds no caching or state; it logs only an origin fetch error's message, never request data.
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
@@ -130072,8 +130072,9 @@ export default {
     let response;
     try {
       response = env.ORIGIN_VPC ? await env.ORIGIN_VPC.fetch(target, init) : await fetch(target, init);
-    } catch {
+    } catch (error) {
       // An offline server or tunnel makes the fetch throw. Uncaught, Cloudflare shows a bare "error code: 1101".
+      console.error('waypost origin fetch failed:', String(error?.message ?? error));
       return new Response('Waypost server unreachable: this front door is up, but the Waypost server behind it is not answering.\\n', {status:502, headers:{'content-type':'text/plain; charset=utf-8', 'cache-control':'no-store', 'retry-after':'60'}});
     }
     const out = new Headers(response.headers);

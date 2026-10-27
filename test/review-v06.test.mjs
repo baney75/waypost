@@ -44,15 +44,25 @@ test('the Worker front door sends VPC traffic only through the binding, keeping 
 test('the Worker front door answers 502 with a plain reason when the server or tunnel is down', async () => {
   const worker = (await import('../deploy/cloudflare-worker/worker.js')).default;
   const original = globalThis.fetch;
-  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  const originalError = console.error;
+  const calls = [];
+  console.error = () => {};
   try {
-    for (const env of [{ORIGIN:'https://origin.example'}, {ORIGIN_VPC:{fetch: async () => { throw new Error('Network connection lost.'); }}}]) {
+    const cases = [
+      [{ORIGIN:'https://origin.example'}, async () => { calls.push('public'); throw new TypeError('fetch failed'); }],
+      [{ORIGIN_VPC:{fetch: async () => { calls.push('vpc'); throw new Error('Network connection lost.'); }}}, async () => { calls.push('public'); throw new Error('public fetch used'); }],
+    ];
+    for (const [env, publicFetch] of cases) {
+      globalThis.fetch = publicFetch;
       const response = await worker.fetch(new Request('https://front.example/mcp', {method:'POST', body:'{}'}), env);
       assert.equal(response.status, 502);
       assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(response.headers.get('retry-after'), '60');
+      assert.match(response.headers.get('content-type'), /^text\/plain/);
       assert.match(await response.text(), /Waypost server unreachable/);
     }
-  } finally { globalThis.fetch = original; }
+    assert.deepEqual(calls, ['public', 'vpc']);
+  } finally { globalThis.fetch = original; console.error = originalError; }
 });
 
 test('Sieve :matches runs in linear time and :regex is never executed', () => {
