@@ -129513,7 +129513,7 @@ function redirectAllowed(http2, uri) {
   if (url2.protocol === "http:" && LOOPBACK.has(url2.hostname)) return true;
   return url2.protocol === "https:" && !url2.search && http2.redirectUris.includes(url2.href);
 }
-var registration = external_exports.object({ redirect_uris: external_exports.array(external_exports.string()).min(1).max(5), client_name: external_exports.string().max(100).optional(), token_endpoint_auth_method: external_exports.enum(["none", "client_secret_post", "client_secret_basic"]).default("none"), grant_types: external_exports.array(external_exports.string()).optional(), response_types: external_exports.array(external_exports.string()).optional() }).loose();
+var registration = external_exports.object({ redirect_uris: external_exports.array(external_exports.string()).min(1).max(5), client_name: external_exports.string().max(100).optional(), token_endpoint_auth_method: external_exports.enum(["none", "client_secret_post", "client_secret_basic"]).default("none"), grant_types: external_exports.array(external_exports.string()).max(10).optional(), response_types: external_exports.array(external_exports.string()).max(10).optional() }).loose();
 var registrations = [];
 async function registerClient(config2, body2) {
   const http2 = httpConfig(config2);

@@ -127,7 +127,7 @@ function redirectAllowed(http:HttpConfig, uri:string) {
   if (url.protocol === 'http:' && LOOPBACK.has(url.hostname)) return true;
   return url.protocol === 'https:' && !url.search && http.redirectUris.includes(url.href);
 }
-const registration = z.object({redirect_uris:z.array(z.string()).min(1).max(5), client_name:z.string().max(100).optional(), token_endpoint_auth_method:z.enum(['none','client_secret_post','client_secret_basic']).default('none'), grant_types:z.array(z.string()).optional(), response_types:z.array(z.string()).optional()}).loose();
+const registration = z.object({redirect_uris:z.array(z.string()).min(1).max(5), client_name:z.string().max(100).optional(), token_endpoint_auth_method:z.enum(['none','client_secret_post','client_secret_basic']).default('none'), grant_types:z.array(z.string()).max(10).optional(), response_types:z.array(z.string()).max(10).optional()}).loose();
 const registrations:number[] = [];
 export async function registerClient(config:Config, body:unknown) {
   const http = httpConfig(config);

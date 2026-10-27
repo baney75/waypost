@@ -53,11 +53,14 @@ test('Sieve :matches runs in linear time and :regex is never executed', () => {
   assert.ok(result.unsupported.includes(':regex matching'));
 });
 
-test('OAuth: open client registration refuses an oversized redirect_uris array without building an issue per entry', async t => {
+test('OAuth: open client registration caps every array it accepts and refuses a huge one fast', async t => {
   const dir = await root(t);
   const config = {version:1, artifactsDir:join(dir, 'artifacts'), timeoutMs:1000, http:{host:'127.0.0.1', port:8787, publicUrl:'https://waypost.example/', stateDir:join(dir, 'auth'), redirectUris:['https://claude.ai/api/mcp/auth_callback'], allowedHosts:[]}};
   const started = Date.now();
-  await assert.rejects(registerClient(config, {redirect_uris:Array(200_000).fill(42)}), {status:400, error:'invalid_client_metadata'});
+  const ok = ['https://claude.ai/api/mcp/auth_callback'];
+  for (const request of [{redirect_uris:Array(200_000).fill(42)}, {redirect_uris:ok, grant_types:Array(200_000).fill(42)}, {redirect_uris:ok, response_types:Array(200_000).fill('code')}, {redirect_uris:ok, grant_types:Array(11).fill('authorization_code')}]) {
+    await assert.rejects(registerClient(config, request), {status:400, error:'invalid_client_metadata'});
+  }
   assert.ok(Date.now() - started < 2000, 'a hostile array is refused fast');
 });
 
