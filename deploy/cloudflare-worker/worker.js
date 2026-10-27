@@ -16,7 +16,13 @@ export default {
     headers.delete('cookie');
     const init = {method:request.method, headers, redirect:'manual'};
     if (!['GET','HEAD'].includes(request.method)) init.body = request.body;
-    const response = env.ORIGIN_VPC ? await env.ORIGIN_VPC.fetch(target, init) : await fetch(target, init);
+    let response;
+    try {
+      response = env.ORIGIN_VPC ? await env.ORIGIN_VPC.fetch(target, init) : await fetch(target, init);
+    } catch {
+      // An offline server or tunnel makes the fetch throw. Uncaught, Cloudflare shows a bare "error code: 1101".
+      return new Response('Waypost server unreachable: this front door is up, but the Waypost server behind it is not answering.\n', {status:502, headers:{'content-type':'text/plain; charset=utf-8', 'cache-control':'no-store', 'retry-after':'60'}});
+    }
     const out = new Headers(response.headers);
     out.delete('set-cookie');
     return new Response(response.body, {status:response.status, statusText:response.statusText, headers:out});

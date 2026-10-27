@@ -41,6 +41,20 @@ test('the Worker front door sends VPC traffic only through the binding, keeping 
   } finally { globalThis.fetch = original; }
 });
 
+test('the Worker front door answers 502 with a plain reason when the server or tunnel is down', async () => {
+  const worker = (await import('../deploy/cloudflare-worker/worker.js')).default;
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  try {
+    for (const env of [{ORIGIN:'https://origin.example'}, {ORIGIN_VPC:{fetch: async () => { throw new Error('Network connection lost.'); }}}]) {
+      const response = await worker.fetch(new Request('https://front.example/mcp', {method:'POST', body:'{}'}), env);
+      assert.equal(response.status, 502);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.match(await response.text(), /Waypost server unreachable/);
+    }
+  } finally { globalThis.fetch = original; }
+});
+
 test('Sieve :matches runs in linear time and :regex is never executed', () => {
   assert.equal(wildcard('*@*.example.com', 'ada@mail.example.com'), true);
   assert.equal(wildcard('a?c', 'ABC'), true);
