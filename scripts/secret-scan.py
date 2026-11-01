@@ -142,13 +142,19 @@ def added_lines(diff_args: list[str], cwd: Path) -> list[tuple[str, int, str]]:
     output = subprocess.run(["git", "diff", "--no-color", "--unified=0", *diff_args], cwd=cwd,
                             capture_output=True, text=True, check=True).stdout
     lines, path, number = [], "", 0
+    in_hunk = False
     for raw in output.splitlines():
-        if raw.startswith("+++ "):
-            path = raw[6:] if raw.startswith("+++ b/") else raw[4:]
+        if raw.startswith("diff "):
+            in_hunk = False
         elif raw.startswith("@@"):
+            in_hunk = True
             match = re.search(r"\+(\d+)", raw)
             number = int(match.group(1)) if match else 0
-        elif raw.startswith("+") and not raw.startswith("+++"):
+        elif not in_hunk and raw.startswith("+++"):
+            # File header only outside hunks. Inside a hunk, a content line that
+            # begins with "++" is emitted as "+++...", which must still be scanned.
+            path = raw[6:] if raw.startswith("+++ b/") or raw.startswith("+++ i/") else raw[4:]
+        elif in_hunk and raw.startswith("+"):
             lines.append((path, number, raw[1:]))
             number += 1
     return lines
@@ -180,13 +186,18 @@ def commit_added_lines(rev_range: str, cwd: Path) -> list[tuple[str, int, str]]:
         patch = commit_patch(sha, cwd)
         path, number = "", 0
         short = sha[:12]
+        in_hunk = False
         for raw in patch.splitlines():
-            if raw.startswith("+++ "):
-                path = f"{short}:{raw[6:]}" if raw.startswith("+++ b/") else f"{short}:{raw[4:]}"
+            if raw.startswith("diff "):
+                in_hunk = False
             elif raw.startswith("@@"):
+                in_hunk = True
                 match = re.search(r"\+(\d+)", raw)
                 number = int(match.group(1)) if match else 0
-            elif raw.startswith("+") and not raw.startswith("+++"):
+            elif not in_hunk and raw.startswith("+++"):
+                rest = raw[6:] if raw.startswith("+++ b/") or raw.startswith("+++ i/") else raw[4:]
+                path = f"{short}:{rest}"
+            elif in_hunk and raw.startswith("+"):
                 lines.append((path, number, raw[1:]))
                 number += 1
     return lines
@@ -194,12 +205,18 @@ def commit_added_lines(rev_range: str, cwd: Path) -> list[tuple[str, int, str]]:
 
 def file_lines(paths: list[Path]) -> list[tuple[str, int, str]]:
     lines = []
+    errors: list[str] = []
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except (UnicodeDecodeError, OSError) as exc:
+            errors.append(f"{path}: unreadable ({exc.__class__.__name__})")
             continue
         lines += [(str(path), n, line) for n, line in enumerate(text.splitlines(), 1)]
+    if errors:
+        for msg in errors:
+            print(msg, file=sys.stderr)
+        raise SystemExit(2)
     return lines
 
 
