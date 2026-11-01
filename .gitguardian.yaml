@@ -1,0 +1,5 @@
+# Narrow ignores only. Never blanket test/** or mail/auth paths.
+# IMAP demo passwords are randomBytes per run (test/fixtures/imap-server.mjs).
+version: 2
+secret:
+  ignored_paths: []
