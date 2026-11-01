@@ -1,0 +1,12 @@
+#!/bin/sh
+# Local secret scan on staged lines. Enable once per checkout:
+#   git config core.hooksPath .githooks
+# Prints file, line and pattern name; never the matched value.
+set -e
+root="$(git rev-parse --show-toplevel)"
+py="$(command -v python3 || true)"
+if [ -z "$py" ]; then
+  echo "pre-commit: python3 required for scripts/secret-scan.py" >&2
+  exit 1
+fi
+"$py" "$root/scripts/secret-scan.py" --staged --cwd "$root"
