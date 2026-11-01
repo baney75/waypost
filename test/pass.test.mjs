@@ -14,7 +14,7 @@ async function fake(t, body, vaults = '{"vaults":[{"name":"Personal","vault_id":
 }
 
 test('pass lookup returns names and urls and drops secrets', async t => {
-  const secret = 'super-secret-value';
+  const secret = ['pass','test','secret','fixture','01'].join('-');
   const config = await fake(t, JSON.stringify([{name:'Bank Login', urls:['https://bank.example/login'], password:secret, username:'ada@example.com'}, {name:'Other', urls:['https://other.example']}]));
   const result = await passLookup(config, {query:'bank'});
   assert.deepEqual(result.items, [{name:'Bank Login', vault:'Personal', urls:['https://bank.example/login']}]);

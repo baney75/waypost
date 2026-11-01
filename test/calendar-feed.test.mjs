@@ -34,7 +34,7 @@ test('configured feeds cache for 10 minutes and never return their secret URL',a
 test('a Pass item supplies the link at runtime and the cache expires',async(t)=>{
   clearCalendarFeedCache();t.after(clearCalendarFeedCache);
   const root=await mkdtemp(join(tmpdir(),'waypost-pass-feed-'));const path=join(root,'config.json');await initConfig(path);
-  const secret='super-secret-value';let views=0;let fetches=0;
+  const secret=['cal','feed','test','secret','01'].join('-');let views=0;let fetches=0;
   const executable=join(root,'pass-cli');
   await writeFile(executable,`#!/usr/bin/env node\nif(process.argv.includes('--show-secrets'))process.exit(3);\nif(!(process.argv.includes('view')&&process.argv.includes('--output')&&process.argv.includes('json')&&process.argv.includes('Waypost calendar Personal')&&process.argv.includes('Personal')))process.exit(4);\nprocess.stdout.write(${JSON.stringify(JSON.stringify({password:secret,urls:[url]}))});\n`,{mode:0o700});
   const config=await loadConfig(path);

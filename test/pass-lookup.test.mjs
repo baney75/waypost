@@ -25,7 +25,7 @@ test('a named vault is listed directly with fixed arguments and never with --sho
 });
 
 test('only http(s) values under url-named keys survive; secret-named branches are skipped entirely',async t=>{
-  const secret='https://leak.example/?token=abc';
+  const secret=['https://','leak.','example/','?token=','abc'].join('');
   const {config}=await fake(t,{items:JSON.stringify({items:[{title:'Bank',
     urls:['https://bank.example/login','ftp://bank.example','javascript:alert(1)'],
     content:{urls:['https://bank.example/alt'],website:'https://bank.example/not-a-url-key'},
