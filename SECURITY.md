@@ -36,3 +36,18 @@ Mail, event descriptions, and filenames remain untrusted data. The agent must no
 Waypost does not preserve Proton’s encryption boundary once content is returned to an agent. Your model provider may receive the selected plaintext. MCP metadata labels read/write behavior; the implementation enforces the local policy.
 
 Keep Bridge, the official Drive CLI, Node.js, and Waypost updated. Install pinned releases and verify their checksums. Security review and passing tests cover checked paths; they do not establish that every possible deployment is safe.
+
+## Local secret scan
+
+`.githooks/pre-commit` runs `scripts/secret-scan.py` on what you staged. The script
+flags token prefixes, PEM headers, basic-auth URLs and a short list of other shapes,
+and prints the file, line number and pattern name (never the matched value). Enable it
+once per checkout:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+IMAP and Bridge demo passwords already come from `randomBytes` in
+`test/fixtures/imap-server.mjs`; keep that pattern. End a look-alike line with
+`secret-scan: allow` if you must keep one.
